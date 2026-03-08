@@ -11,7 +11,7 @@ from config import DIARY_IDLE_SECONDS, DIARY_MIN_TURNS, DIARY_MAX_LENGTH
 # 导入配置参数
 from config import (
     DEEPSEEK_API_KEY, DEEPSEEK_BASE_URL, NAPCAT_WS_URL,
-    TARGET_QQ, TARGET_GROUP, DEBOUNCE_TIME, DIARY_THRESHOLD,
+    TARGET_QQ, TARGET_GROUPS, DEBOUNCE_TIME, DIARY_THRESHOLD,
     MIN_ACTIVE_ENERGY, COST_PER_REPLY
 )
 from yuki_core import YukiState, HistoryManager, BASE_SETTING
@@ -30,7 +30,7 @@ async def summarize_memory(chat_id, history):
     dialogue_msgs = [msg for msg in history if msg["role"] != "system"]
     content_to_summarize = json.dumps(dialogue_msgs, ensure_ascii=False)
     time_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
-    summary_prompt = f"你现在是 Yuki。请以 Yuki 的口吻写一篇 150 字以内的日记，总结这段对话。要求真实记录，尤其是叙述和性格概述。当前时间：{time_str}"
+    summary_prompt = f"你现在是 Yuki。请以 Yuki 的口吻写一篇 200 字以内的日记，总结这段对话。要求真实记录，尤其是完整叙述和性格概述。当前时间：{time_str}"
     try:
         response = yuki.client.chat.completions.create(
             model="deepseek-chat",
@@ -42,6 +42,7 @@ async def summarize_memory(chat_id, history):
         diary_entry = response.choices[0].message.content
         # 存入向量记忆库
         memory_rag.save_diary(diary_entry, chat_id=chat_id)
+        print(f"✅ 日记已存入记忆库：{diary_entry[:50]}...")
         # 构建新历史：保留系统消息 + 新日记作为系统消息 + 最近 KEEP_LAST_DIALOGUE 条对话
         system_messages = [msg for msg in history if msg["role"] == "system"]
         new_diary_node = {"role": "system", "content": f"【日记({time_str})】：\n{diary_entry}"}
@@ -229,32 +230,54 @@ async def process_messages(chat_id, websocket, mode):
 
 
     # ------------------- 日记触发检查（空闲+轮数/保底） -------------------
-    # 获取当前时间
-    now = time.time()
-    # 计算空闲时间（如果没有记录，则设为0表示从未发言）
-    last_msg = yuki.last_message_time.get(cid, 0)
-    idle_seconds = now - last_msg if last_msg else 0
-
-    # 计算非系统消息数量
-    non_system_msgs = [msg for msg in history_dict[cid] if msg["role"] != "system"]
-    non_system_count = len(non_system_msgs)
-    total_len = len(history_dict[cid])
-
-    # 判断是否触发日记
-    trigger_diary = False
-    if total_len >= DIARY_MAX_LENGTH:
+    # 保底触发：历史总长度超过 DIARY_MAX_LENGTH 时强制写日记
+    if len(history_dict[cid]) >= DIARY_MAX_LENGTH and cid not in yuki.writing_diary:
         print(f"📚 历史长度达到保底阈值 {DIARY_MAX_LENGTH}，触发写日记")
-        trigger_diary = True
-    elif non_system_count >= DIARY_MIN_TURNS and idle_seconds >= DIARY_IDLE_SECONDS:
-        print(f"⏱️ 空闲 {idle_seconds:.1f} 秒且对话轮数达到 {non_system_count}，触发写日记")
-        trigger_diary = True
+        yuki.writing_diary.add(cid)
+        try:
+            history_dict[cid] = await summarize_memory(chat_id, history_dict[cid])
+            history_manager.save(history_dict)
+        finally:
+            yuki.writing_diary.discard(cid)
 
-    if trigger_diary:
-        history_dict[cid] = await summarize_memory(chat_id, history_dict[cid])
-        history_manager.save(history_dict)
-        # 注意：写日记后历史被压缩，但最后消息时间不变（因为最后一条用户消息仍然存在）
+
+async def idle_diary_checker():
+    """后台任务，每30秒检查一次空闲群聊"""
+    while True:
+        await asyncio.sleep(30)  # 检查间隔，可根据需要调整
+        now = time.time()
+        print(f"⏰ 后台检查中时间中...{now}")  # 调试输出
+        history_dict = history_manager.load()
+        for cid, last_msg in list(yuki.last_message_time.items()):
+            # 跳过正在写日记的群聊
+            if cid in yuki.writing_diary:
+                continue
+
+            # 计算空闲时间
+            idle_seconds = now - last_msg
+            if idle_seconds < DIARY_IDLE_SECONDS:
+                continue  # 空闲时间不足
+
+            # 检查对话轮数
+            if cid not in history_dict:
+                continue
+            non_system_msgs = [msg for msg in history_dict[cid] if msg["role"] != "system"]
+            non_system_count = len(non_system_msgs)
+            if non_system_count < DIARY_MIN_TURNS:
+                continue  # 轮数不足
+
+            # 满足条件，触发写日记
+            print(f"⏰ 后台检查：群 {cid} 空闲 {idle_seconds:.1f} 秒，轮数 {non_system_count}，触发写日记")
+            yuki.writing_diary.add(cid)
+            try:
+                new_history = await summarize_memory(int(cid), history_dict[cid])
+                history_dict[cid] = new_history
+                history_manager.save(history_dict)
+            finally:
+                yuki.writing_diary.discard(cid)
 
 async def main_logic(mode):
+    asyncio.create_task(idle_diary_checker())   # 启动后台检查
     print(f"连接 NapCat 服务端 | 模式: {mode} | 初始精力: {yuki.energy}")
     async for websocket in websockets.connect(NAPCAT_WS_URL):
         try:
@@ -265,11 +288,19 @@ async def main_logic(mode):
                 msg_type = data.get("message_type")
                 if mode == "private" and msg_type == "private" and data.get("user_id") == TARGET_QQ:
                     manage_buffer(data.get("user_id"), data.get("raw_message"), websocket, "private")
-                elif mode == "group" and msg_type == "group" and data.get("group_id") == TARGET_GROUP:
-                    sender = data.get("sender", {})
-                    # 优先使用群名片，若没有则用个人昵称
-                    sender_name = sender.get("card") or sender.get("nickname") or "未知路人"
-                    manage_buffer(data.get("group_id"), f"{sender_name}说: {data.get('raw_message')}", websocket, "group")
+                
+                elif mode == "group" and msg_type == "group":
+                    group_id = data.get("group_id")
+                    # 如果 TARGET_GROUPS 为空列表，则接收所有群；否则只接收列表中的群
+                    if not TARGET_GROUPS or group_id in TARGET_GROUPS:
+                        sender = data.get("sender", {})
+                        sender_name = sender.get("card") or sender.get("nickname") or "未知路人"
+                        manage_buffer(group_id, f"{sender_name}说: {data.get('raw_message')}", websocket, "group")
+                # elif mode == "group" and msg_type == "group" and data.get("group_id") == TARGET_GROUP:
+                #     sender = data.get("sender", {})
+                #     # 优先使用群名片，若没有则用个人昵称
+                #     sender_name = sender.get("card") or sender.get("nickname") or "未知路人"
+                #     manage_buffer(data.get("group_id"), f"{sender_name}说: {data.get('raw_message')}", websocket, "group")
         except:
             await asyncio.sleep(3)
 
@@ -281,4 +312,5 @@ def manage_buffer(chat_id, content, websocket, mode):
 
 if __name__ == "__main__":
     choice = input("1. 私聊 / 2. 群聊: ")
+    
     asyncio.run(main_logic("private" if choice == "1" else "group"))

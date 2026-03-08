@@ -30,6 +30,7 @@ class YukiState:
         self.message_buffer = {}
         self.buffer_tasks = {}
         self.last_message_time = {}   # 记录每个群聊的最后用户消息时间戳
+        self.writing_diary = set()            # 记录正在写日记的群聊ID，防止并发
 
     def update_energy(self):
         """计算并更新当前精力值"""
