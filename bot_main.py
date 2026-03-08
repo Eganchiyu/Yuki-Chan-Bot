@@ -266,7 +266,9 @@ async def main_logic(mode):
                 if mode == "private" and msg_type == "private" and data.get("user_id") == TARGET_QQ:
                     manage_buffer(data.get("user_id"), data.get("raw_message"), websocket, "private")
                 elif mode == "group" and msg_type == "group" and data.get("group_id") == TARGET_GROUP:
-                    sender_name = data.get("sender", {}).get("nickname", "未知路人")
+                    sender = data.get("sender", {})
+                    # 优先使用群名片，若没有则用个人昵称
+                    sender_name = sender.get("card") or sender.get("nickname") or "未知路人"
                     manage_buffer(data.get("group_id"), f"{sender_name}说: {data.get('raw_message')}", websocket, "group")
         except:
             await asyncio.sleep(3)
