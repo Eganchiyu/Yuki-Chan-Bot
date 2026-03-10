@@ -1,0 +1,18 @@
+# 忽略整个文件夹
+Legacy/
+.idea/
+meme_cache/
+chat_log/
+.env
+chat_history.json
+yuki_chat_all_nekonochi.log
+chat_history.json
+meme_cache.json
+.vscode/
+__pycache__/
+yuki_memory/
+meme_cache_stats.json
+test_api.py
+test_memory.py
+manual_diary.py
+import_old_diaries.py
