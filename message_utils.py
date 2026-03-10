@@ -137,3 +137,38 @@ class MessageSender:
         action = "send_private_msg" if mode == "private" else "send_group_msg"
         params = {"message": message, "user_id" if mode == "private" else "group_id": int(chat_id)}
         await self.websocket.send(json.dumps({"action": action, "params": params}))
+
+
+def smart_truncate(content, max_len, suffix="..."):
+    """
+    智能截断逻辑：保留CQ码完整性，仅截断长文本
+    """
+    import re
+    if len(content) <= max_len:
+        return content
+        
+    parts = re.split(r'(\[CQ:.*?\])', content)
+    result = []
+    total_len = 0
+
+    for part in parts:
+        if not part: continue
+        is_cq = part.startswith('[CQ:') and part.endswith(']')
+        part_len = len(part)
+
+        if is_cq:
+            if total_len + part_len <= max_len:
+                result.append(part)
+                total_len += part_len
+            else:
+                break
+        else:
+            if total_len + part_len <= max_len:
+                result.append(part)
+                total_len += part_len
+            else:
+                available = max_len - total_len - len(suffix)
+                if available > 0:
+                    result.append(part[:available] + suffix)
+                break
+    return ''.join(result)

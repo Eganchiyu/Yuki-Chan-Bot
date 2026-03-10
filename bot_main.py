@@ -2,6 +2,7 @@
 import json
 import asyncio
 import websockets
+import message_utils
 import datetime
 import time
 import re
@@ -311,58 +312,22 @@ async def main_logic(mode):
             await asyncio.sleep(3)
 
 def manage_buffer(chat_id, content, websocket, mode):
-    # ------------------- 过滤/截断逻辑 -------------------
+    # 1. 预处理：调用工具函数进行截断（如果有需要）
     if FILTER_LONG_MESSAGES:
-        # 只有当消息真正超过最大长度时，才执行截断逻辑
-        if len(content) > MAX_MESSAGE_LENGTH:
-            print(f"[System] 检测到超长消息 ({len(content)} 字符)，进行智能截断")
-            # 按顺序分割，保留CQ码和文本的交替
-            parts = re.split(r'(\[CQ:.*?\])', content)
-            result = []
-            total_len = 0
-
-            for part in parts:
-                if not part:
-                    continue
-                is_cq = part.startswith('[CQ:') and part.endswith(']')
-                part_len = len(part)
-
-                if is_cq:
-                    # CQ码必须完整保留，放不下则丢弃后续所有内容
-                    if total_len + part_len <= MAX_MESSAGE_LENGTH:
-                        result.append(part)
-                        total_len += part_len
-                    else:
-                        break
-                else:
-                    if total_len + part_len <= MAX_MESSAGE_LENGTH:
-                        # 整段文本能放下
-                        result.append(part)
-                        total_len += part_len
-                    else:
-                        # 文本超长，截断并添加后缀
-                        available = MAX_MESSAGE_LENGTH - total_len - len(MESSAGE_TRUNCATE_SUFFIX)
-                        if available > 0:
-                            result.append(part[:available] + MESSAGE_TRUNCATE_SUFFIX)
-                        break
-
-            content = ''.join(result)
-            print(f"[System] 截断后长度: {len(content)} 字符")
+        content = message_utils.smart_truncate(content, MAX_MESSAGE_LENGTH, MESSAGE_TRUNCATE_SUFFIX)
     
-    # ------------------- 消息入队与任务调度 -------------------
-    # 确保缓冲区存在
+    # 2. 状态维护：进入缓冲区
     if chat_id not in yuki.message_buffer: 
         yuki.message_buffer[chat_id] = []
-    
-    # 将处理（或未处理）的消息加入 buffer
     yuki.message_buffer[chat_id].append(content)
     
-    # 实现防抖逻辑：如果已有任务在倒计时，取消它并重新计时
+    # 3. 异步调度：防抖逻辑
     if chat_id in yuki.buffer_tasks: 
         yuki.buffer_tasks[chat_id].cancel()
     
-    # 开启新的异步处理任务
-    yuki.buffer_tasks[chat_id] = asyncio.create_task(process_messages(chat_id, websocket, mode))
+    yuki.buffer_tasks[chat_id] = asyncio.create_task(
+        process_messages(chat_id, websocket, mode)
+    )
 
 if __name__ == "__main__":
     print("[System] Yuki 正在初始化...")
