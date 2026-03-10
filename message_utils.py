@@ -30,9 +30,9 @@ class CQCodeParser:
                     if data.get("echo") == echo:
                         return data
             except asyncio.TimeoutError:
-                print(f"请求 {action} 超时")
+                print(f"[CQCodeParser] 请求 {action} 超时")
         except Exception as e:
-            print(f"发送请求失败: {e}")
+            print(f"[CQCodeParser] 发送请求失败: {e}")
             try:
                 await self.close()
             except:
@@ -51,7 +51,7 @@ class CQCodeParser:
             if response and response.get("retcode") == 0:
                 return response.get("data")
         except Exception as e:
-            print(f"获取用户信息失败: {e}")
+            print(f"[CQCodeParser] 获取用户信息失败: {e}")
         return None
     async def get_group_member_info(self, group_id: str, user_id: str) -> Optional[Dict]:
         """获取群成员信息"""
@@ -66,7 +66,7 @@ class CQCodeParser:
             if response and response.get("retcode") == 0:
                 return response.get("data")
         except Exception as e:
-            print(f"获取群成员信息失败: {e}")
+            print(f"[CQCodeParser] 获取群成员信息失败: {e}")
         return None
     async def get_user_nickname(self, user_id: str, group_id: str = None) -> str:
         """获取用户昵称，如果提供群号则优先使用群名片"""

@@ -4,7 +4,11 @@ import asyncio
 import websockets
 import datetime
 import time
-from memory_rag import memory_rag
+import re
+
+from yuki_core import YukiState, HistoryManager, BASE_SETTING
+from message_utils import CQCodeParser, MessageSender
+from meme_processor import MemeProcessor
 from config import RETRIEVAL_TOP_K, KEEP_LAST_DIALOGUE
 # ------------------- 日记触发检查（空闲+轮数/保底） -------------------
 from config import DIARY_IDLE_SECONDS, DIARY_MIN_TURNS, DIARY_MAX_LENGTH
@@ -12,20 +16,13 @@ from config import DIARY_IDLE_SECONDS, DIARY_MIN_TURNS, DIARY_MAX_LENGTH
 from config import (
     DEEPSEEK_API_KEY, DEEPSEEK_BASE_URL, NAPCAT_WS_URL,
     TARGET_QQ, TARGET_GROUPS, DEBOUNCE_TIME, DIARY_THRESHOLD,
-    MIN_ACTIVE_ENERGY, COST_PER_REPLY
+    MIN_ACTIVE_ENERGY, COST_PER_REPLY, MAX_MESSAGE_LENGTH, 
+    MESSAGE_TRUNCATE_SUFFIX, FILTER_LONG_MESSAGES
 )
-from yuki_core import YukiState, HistoryManager, BASE_SETTING
-from message_utils import CQCodeParser, MessageSender
-from meme_processor import MemeProcessor
 
-# 初始化各模块
-message_processor = CQCodeParser(NAPCAT_WS_URL)
-meme_processor = MemeProcessor()
-yuki = YukiState(DEEPSEEK_API_KEY, DEEPSEEK_BASE_URL)
-history_manager = HistoryManager()
 
 async def summarize_memory(chat_id, history):
-    print(f"[{chat_id}] 记忆有点长了，Yuki 正在写日记回顾...")
+    print(f"[System] [{chat_id}] 记忆有点长了，Yuki 正在写日记回顾...")
     # 提取对话内容（不包括系统消息）
     dialogue_msgs = [msg for msg in history if msg["role"] != "system"]
     content_to_summarize = json.dumps(dialogue_msgs, ensure_ascii=False)
@@ -42,7 +39,7 @@ async def summarize_memory(chat_id, history):
         diary_entry = response.choices[0].message.content
         # 存入向量记忆库
         memory_rag.save_diary(diary_entry, chat_id=chat_id)
-        print(f"✅ 日记已存入记忆库：{diary_entry[:50]}...")
+        print(f"[System] 日记已存入记忆库：{diary_entry[:50]}...")
         # 构建新历史：保留系统消息 + 新日记作为系统消息 + 最近 KEEP_LAST_DIALOGUE 条对话
         system_messages = [msg for msg in history if msg["role"] == "system"]
         new_diary_node = {"role": "system", "content": f"【日记({time_str})】：\n{diary_entry}"}
@@ -58,15 +55,16 @@ async def should_i_reply(history, current_text):
     current_e = yuki.update_energy()
 
     if any(keyword in current_text for keyword in ["主人", "哥哥", "Yuki", "yuki"]):
-        print(f"!!! 检测到关键召唤，Yuki 强制清醒 (当前精力: {current_e:.1f})")
+        print(f"[System] 检测到关键召唤，Yuki 强制清醒 (当前精力: {current_e:.1f})")
         return True
 
     if current_e < MIN_ACTIVE_ENERGY:
-        print(f"Yuki 太累了... 正在潜水回复体力 (当前精力: {current_e:.1f})")
+        print(f"[System] Yuki 太累了... 正在潜水回复体力 (当前精力: {current_e:.1f})")
         return False
 
     try:
-        system_context = [msg for msg in history if msg.get("role") == "system"]
+        print(f"[System] 正在构建判定消息... (当前精力: {current_e:.1f})")
+        # system_context = [msg for msg in history if msg.get("role") == "system"]
         recent_dialogue = [msg for msg in history if msg.get("role") != "system"][-10:]
 
         dialogue_text = ""
@@ -86,7 +84,7 @@ async def should_i_reply(history, current_text):
                     [{"role": "system", "content": f"最近对话：\n{dialogue_text}"}] +
                     [{"role": "user", "content": check_prompt}])
 
-        print(f"[DEBUG] 构建的messages: {messages}")
+        print(f"[System] 构建的messages: {messages}")
 
         response = yuki.client.chat.completions.create(
             model="deepseek-chat",
@@ -98,7 +96,7 @@ async def should_i_reply(history, current_text):
         result = response.choices[0].message.content.strip().upper()
         return "YES" in result
     except Exception as e:
-        print(f"判定失败原因: {e}")
+        print(f"[ERROR] 判定失败原因: {e}")
         return False
 
 async def clean_cq_code(text: str, group_id: str = None) -> str:
@@ -106,6 +104,7 @@ async def clean_cq_code(text: str, group_id: str = None) -> str:
     清理CQ码，解析@为用户名，并对动画表情进行AI理解
     可传入群号 group_id 以在解析 @ 时使用群名片
     """
+    print(f"[System] 解析CQ码中")
     modified_text, image_urls = meme_processor.extract_urls_from_text(text)
 
     if image_urls:
@@ -129,6 +128,8 @@ async def process_messages(chat_id, websocket, mode):
     messages = yuki.message_buffer.get(chat_id, [])
     if not messages: return
 
+    print(f"[System] 收到消息，准备处理... (chat_id={chat_id})")
+
     raw_combined_text = "\n".join(messages)
     # 如果是群聊模式，传入 chat_id 作为群号
     group_id = chat_id if mode == "group" else None
@@ -151,11 +152,12 @@ async def process_messages(chat_id, websocket, mode):
 
     if mode == "group":
         if not await should_i_reply(history_dict[cid], combined_text):
-            print("Yuki 决定继续潜水...")
+            print("[System] Yuki 决定继续潜水...")
             return
 
     try:
-        print(f"Yuki 正在思考... (剩余精力: {yuki.energy:.1f})")
+        print("[System] Yuki 决定回复！")
+        print(f"[System] Yuki 正在回忆...")
 
         # ------------------- RAG 检索：根据当前用户消息查找相关日记 ------------------------
 
@@ -182,7 +184,7 @@ async def process_messages(chat_id, websocket, mode):
             threshold = DIARY_THRESHOLD
         )
         # ---------- 新增调试打印 ----------
-        print(f"🔍 检索到 {len(relevant_diaries)} 条相关日记:")
+        print(f"[System] 检索到 {len(relevant_diaries)} 条相关日记:")
         for i, diary in enumerate(relevant_diaries, 1):
             # 只打印前100字符，避免刷屏
             preview = diary[:100] + "..." if len(diary) > 100 else diary
@@ -211,11 +213,13 @@ async def process_messages(chat_id, websocket, mode):
         #     combined_API_message.append({"role": "user", "content": combined_text})
 
         # --------------------- 发送对话补全到DeepSeek ----------------------
+        print(f"[System] Yuki 正在打字...(剩余精力: {yuki.energy:.1f})")
         response = yuki.client.chat.completions.create(
             model="deepseek-chat",
             messages=combined_API_message  # 使用新构建的消息列表
         )
         Yuki_Answer = response.choices[0].message.content
+        Yuki_Answer = re.sub(r'\s*FINISHED\s*$', '', Yuki_Answer, flags=re.IGNORECASE)
 
         if mode == "group":
             yuki.consume_energy()
@@ -225,19 +229,15 @@ async def process_messages(chat_id, websocket, mode):
         history_manager.save(history_dict)
 
         sender = MessageSender(websocket)
+        print(f"[System] Yuki 正在发送消息...(剩余精力: {yuki.energy:.1f})")
         await sender.send(chat_id, Yuki_Answer, mode=mode)
     except Exception as e:
         print(f"Deepseek 调用失败: {e}")
 
-    # if len(history_dict[cid]) > DIARY_THRESHOLD:
-    #     history_dict[cid] = await summarize_memory(chat_id, history_dict[cid])
-    #     history_manager.save(history_dict)
-
-
-    # ------------------- 日记触发检查（空闲+轮数/保底） -------------------
+        # ------------------- 日记触发检查（空闲+轮数/保底） -------------------
     # 保底触发：历史总长度超过 DIARY_MAX_LENGTH 时强制写日记
     if len(history_dict[cid]) >= DIARY_MAX_LENGTH and cid not in yuki.writing_diary:
-        print(f"📚 历史长度达到保底阈值 {DIARY_MAX_LENGTH}，触发写日记")
+        print(f"[System] 历史长度达到保底阈值 {DIARY_MAX_LENGTH}，触发写日记")
         yuki.writing_diary.add(cid)
         try:
             history_dict[cid] = await summarize_memory(chat_id, history_dict[cid])
@@ -283,7 +283,8 @@ async def idle_diary_checker():
 
 async def main_logic(mode):
     asyncio.create_task(idle_diary_checker())   # 启动后台检查
-    print(f"连接 NapCat 服务端 | 模式: {mode} | 初始精力: {yuki.energy}")
+    print("[System] 已启动后台空闲日记检查任务")
+    print(f"[System] 连接 NapCat 服务端 | 模式: {mode} | 初始精力: {yuki.energy}")
     async for websocket in websockets.connect(NAPCAT_WS_URL):
         try:
             async for message in websocket:
@@ -310,12 +311,72 @@ async def main_logic(mode):
             await asyncio.sleep(3)
 
 def manage_buffer(chat_id, content, websocket, mode):
-    if chat_id not in yuki.message_buffer: yuki.message_buffer[chat_id] = []
+    # ------------------- 过滤/截断逻辑 -------------------
+    if FILTER_LONG_MESSAGES:
+        # 只有当消息真正超过最大长度时，才执行截断逻辑
+        if len(content) > MAX_MESSAGE_LENGTH:
+            print(f"[System] 检测到超长消息 ({len(content)} 字符)，进行智能截断")
+            # 按顺序分割，保留CQ码和文本的交替
+            parts = re.split(r'(\[CQ:.*?\])', content)
+            result = []
+            total_len = 0
+
+            for part in parts:
+                if not part:
+                    continue
+                is_cq = part.startswith('[CQ:') and part.endswith(']')
+                part_len = len(part)
+
+                if is_cq:
+                    # CQ码必须完整保留，放不下则丢弃后续所有内容
+                    if total_len + part_len <= MAX_MESSAGE_LENGTH:
+                        result.append(part)
+                        total_len += part_len
+                    else:
+                        break
+                else:
+                    if total_len + part_len <= MAX_MESSAGE_LENGTH:
+                        # 整段文本能放下
+                        result.append(part)
+                        total_len += part_len
+                    else:
+                        # 文本超长，截断并添加后缀
+                        available = MAX_MESSAGE_LENGTH - total_len - len(MESSAGE_TRUNCATE_SUFFIX)
+                        if available > 0:
+                            result.append(part[:available] + MESSAGE_TRUNCATE_SUFFIX)
+                        break
+
+            content = ''.join(result)
+            print(f"[System] 截断后长度: {len(content)} 字符")
+    
+    # ------------------- 消息入队与任务调度 -------------------
+    # 确保缓冲区存在
+    if chat_id not in yuki.message_buffer: 
+        yuki.message_buffer[chat_id] = []
+    
+    # 将处理（或未处理）的消息加入 buffer
     yuki.message_buffer[chat_id].append(content)
-    if chat_id in yuki.buffer_tasks: yuki.buffer_tasks[chat_id].cancel()
+    
+    # 实现防抖逻辑：如果已有任务在倒计时，取消它并重新计时
+    if chat_id in yuki.buffer_tasks: 
+        yuki.buffer_tasks[chat_id].cancel()
+    
+    # 开启新的异步处理任务
     yuki.buffer_tasks[chat_id] = asyncio.create_task(process_messages(chat_id, websocket, mode))
 
 if __name__ == "__main__":
-    choice = input("1. 私聊 / 2. 群聊: ")
+    print("[System] Yuki 正在初始化...")
+    start_time = time.time()
+    # 初始化各模块
+    message_processor = CQCodeParser(NAPCAT_WS_URL)
+    meme_processor = MemeProcessor()
+    yuki = YukiState(DEEPSEEK_API_KEY, DEEPSEEK_BASE_URL)
+    history_manager = HistoryManager()
+    print("[System] 开始初始化记忆系统（RAG）...")
+    from memory_rag import MemoryRAG
+    memory_rag = MemoryRAG()
+    end_time = time.time()
+    print(f"[System] 初始化完成，耗时 {end_time - start_time:.1f} 秒")
+    choice = input("[System] 选择模式：1. 私聊模式  2. 群聊模式（默认）\n请输入数字: ").strip()
     
     asyncio.run(main_logic("private" if choice == "1" else "group"))

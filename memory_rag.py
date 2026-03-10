@@ -14,14 +14,14 @@ class MemoryRAG:
         return cls._instance
 
     def _initialize(self):
-        print("🧠 初始化记忆库...")
+        print("[RAG] 初始化记忆库...")
         self.model = SentenceTransformer(EMBED_MODEL)
         self.client = chromadb.PersistentClient(path=VECTOR_DB_PATH)
         self.collection = self.client.get_or_create_collection(
             name="diaries",
             metadata={"hnsw:space": "cosine"}
         )
-        print("✅ 记忆库初始化完成")
+        print("[RAG] 记忆库初始化完成")
 
     def save_diary(self, content, chat_id=None, people=None, emotion=None):
         """保存日记到向量库，chat_id用于群聊隔离"""
@@ -40,7 +40,7 @@ class MemoryRAG:
             metadatas=[metadata],
             ids=[doc_id]
         )
-        print(f"📝 日记已存入 (chat_id={chat_id}): {content[:50]}...")
+        print(f"[RAG] 日记已存入 (chat_id={chat_id}): {content[:50]}...")
 
     def search_memory(self, query, chat_id=None, top_k=RETRIEVAL_TOP_K, threshold=1.0):
         if not query.strip():
@@ -63,4 +63,3 @@ class MemoryRAG:
             return filtered
         return []
 
-memory_rag = MemoryRAG()

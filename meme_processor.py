@@ -11,7 +11,7 @@ import hashlib
 from datetime import datetime
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception
 from config import SILICONFLOW_API_KEY, SILICONFLOW_API_URL, CACHE_DIR, CACHE_FILE, MAX_CONCURRENT_MEME, DEBUG, \
-    REQUEST_TIMEOUT
+    REQUEST_TIMEOUT, OPENAI_API_URL, OPENAI_API_KEY
 
 
 def log(msg):
@@ -31,22 +31,22 @@ class MemeCache:
     def _load_cache(self):
         """从文件加载缓存到内存"""
         # 使用 print 强制输出，不受 DEBUG 控制
-        print(f"【缓存调试】重新加载缓存文件: {CACHE_FILE}")
+        print(f"[MemeCache] 重新加载缓存文件: {CACHE_FILE}")
         if os.path.exists(CACHE_FILE):
             try:
                 with open(CACHE_FILE, "r", encoding="utf-8") as f:
                     new_cache = json.load(f)
                 # 检查是否有变化
                 if new_cache != self.cache:
-                    print(f"【缓存调试】缓存已更新，原有 {len(self.cache)} 条，现在 {len(new_cache)} 条")
+                    print(f"[MemeCache] 缓存已更新，原有 {len(self.cache)} 条，现在 {len(new_cache)} 条")
                     self.cache = new_cache
                 else:
-                    print(f"【缓存调试】缓存无变化，仍为 {len(self.cache)} 条")
+                    print(f"[MemeCache] 缓存无变化，仍为 {len(self.cache)} 条")
             except Exception as e:
-                print(f"【缓存调试】加载缓存失败: {e}")
+                print(f"[MemeCache] 加载缓存失败: {e}")
                 self.cache = {}
         else:
-            print(f"【缓存调试】缓存文件不存在")
+            print(f"[MemeCache] 缓存文件不存在")
             self.cache = {}
 
     def _load_stats(self):
@@ -56,12 +56,12 @@ class MemeCache:
             try:
                 with open(stats_file, "r", encoding="utf-8") as f:
                     self.stats = json.load(f)
-                print(f"【统计调试】已加载 {len(self.stats)} 条统计信息")
+                print(f"[MemeCache] 已加载 {len(self.stats)} 条统计信息")
             except Exception as e:
-                print(f"【统计调试】加载统计信息失败: {e}")
+                print(f"[MemeCache] 加载统计信息失败: {e}")
                 self.stats = {}
         else:
-            print(f"【统计调试】统计文件不存在，将创建新文件")
+            print(f"[MemeCache] 统计文件不存在，将创建新文件")
             self.stats = {}
 
     def save_stats(self):
@@ -70,18 +70,18 @@ class MemeCache:
         try:
             with open(stats_file, "w", encoding="utf-8") as f:
                 json.dump(self.stats, f, ensure_ascii=False, indent=2)
-            print(f"【统计调试】统计信息已保存到 {stats_file}")
+            print(f"[MemeCache] 统计信息已保存到 {stats_file}")
         except Exception as e:
-            print(f"【统计调试】保存统计信息失败: {e}")
+            print(f"[MemeCache] 保存统计信息失败: {e}")
 
     def save(self):
         try:
             with open(CACHE_FILE, "w", encoding="utf-8") as f:
                 json.dump(self.cache, f, ensure_ascii=False, indent=2)
-            print(f"【缓存调试】缓存已保存到 {CACHE_FILE}")
+            print(f"[MemeCache] 缓存已保存到 {CACHE_FILE}")
             self.save_stats()  # 同时保存统计信息
         except Exception as e:
-            print(f"【缓存调试】保存缓存失败: {e}")
+            print(f"[MemeCache] 保存缓存失败: {e}")
 
     def get(self, key):
         # 每次获取前重新加载文件，确保手动修改生效
@@ -91,12 +91,12 @@ class MemeCache:
         # 如果命中缓存，增加统计次数
         if value is not None:
             self.stats[key] = self.stats.get(key, 0) + 1
-            print(f"【统计调试】key {key[:30]}... 使用次数: {self.stats[key]}")
+            print(f"[MemeCache] key {key[:30]}... 使用次数: {self.stats[key]}")
             # 每10次命中自动保存一次统计
             if self.stats[key] % 10 == 0:
                 self.save_stats()
         
-        print(f"【缓存调试】获取 key: {key[:50]}... = {value}")
+        print(f"[MemeCache] 获取 key: {key[:50]}... = {value}")
         return value
 
     def set(self, key, value):
@@ -104,7 +104,7 @@ class MemeCache:
         # 新添加的缓存，初始化统计次数为0
         if key not in self.stats:
             self.stats[key] = 0
-            print(f"【统计调试】初始化统计: {key[:30]}... = 0")
+            print(f"[MemeCache] 初始化统计: {key[:30]}... = 0")
 
     def clear(self):
         self.cache = {}
@@ -114,7 +114,7 @@ class MemeCache:
         stats_file = CACHE_FILE.replace('.json', '_stats.json')
         if os.path.exists(stats_file):
             os.remove(stats_file)
-        print("【缓存调试】缓存和统计已清空")
+        print("[MemeCache] 缓存和统计已清空")
 
     def get_stats_report(self):
         """生成统计报告，按使用次数排序"""
@@ -161,7 +161,7 @@ class MemeCache:
                 if key in self.stats:
                     del self.stats[key]
             self.save()
-            print(f"【清理调试】已清理 {len(to_delete)} 条使用次数低于 {threshold} 的缓存")
+            print(f"[MemeCache] 已清理 {len(to_delete)} 条使用次数低于 {threshold} 的缓存")
         
         return to_delete
 
@@ -194,7 +194,8 @@ class MemeProcessor:
             log(f"压缩失败: {e}")
             return None
 
-    def is_retryable_error(self, exception):
+    @staticmethod  # 加上这个装饰器 # 修改这个函数，加上 self 参数
+    def is_retryable_error(exception):  # 加上 self
         if isinstance(exception, asyncio.TimeoutError):
             return True
         if isinstance(exception, aiohttp.ClientError):
@@ -203,26 +204,29 @@ class MemeProcessor:
             return True
         return False
 
+    # 然后修改 @retry 的调用方式
     @retry(
         stop=stop_after_attempt(3),
         wait=wait_exponential(multiplier=2, min=4, max=60),
-        retry=retry_if_exception(is_retryable_error),
+        retry=retry_if_exception(is_retryable_error),  # 这里也要改
         reraise=True
     )
     async def call_api(self, b64_data):
+        print(f"token:{OPENAI_API_KEY[:10]}, url:{OPENAI_API_URL}")
         headers = {
-            "Authorization": f"Bearer {SILICONFLOW_API_KEY}",
+            "Authorization": f"Bearer {OPENAI_API_KEY}",
             "Content-Type": "application/json"
         }
+        #Qwen/Qwen3-VL-8B-Instruct
         payload = {
-            "model": "Qwen/Qwen3-VL-8B-Instruct",
+            "model": "qwen3-vl-flash",
             "messages": [
                 {
                     "role": "user",
                     "content": [
                         {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64_data}"}},
                         {"type": "text",
-                         "text": "用词或短句描述这个表情包的核心意思，不超过10个字。如果是多文字图片，输出文字，可超过字数限制。长段文字直接输出“长段文字”"}
+                         "text": "用词或短句描述这个群友发的表情包的描述或表达的情感，不超过12个字。带文字图片输出文字。长段文字直接输出“长段文字”"}
                     ]
                 }
             ],
@@ -230,12 +234,14 @@ class MemeProcessor:
             "temperature": 0.75
         }
         async with aiohttp.ClientSession(timeout=REQUEST_TIMEOUT) as session:
-            async with session.post(SILICONFLOW_API_URL, json=payload, headers=headers) as resp:
+            async with session.post(OPENAI_API_URL, json=payload, headers=headers) as resp:
+                print(f"[DEBUG] 响应状态码: {resp.status}")
                 if resp.status == 200:
                     result = await resp.json()
                     return result["choices"][0]["message"]["content"]
                 else:
                     text = await resp.text()
+                    print(f"[DEBUG] 错误响应: {text}")  # 看看具体错误
                     log(f"API 返回错误 {resp.status}: {text[:200]}")
                     raise aiohttp.ClientResponseError(
                         request_info=resp.request_info,
@@ -250,12 +256,12 @@ class MemeProcessor:
         cache_key = f"url:{img_url}"
 
         # 使用 print 强制输出调试信息
-        print(f"【URL调试】完整URL: {img_url}")
-        print(f"【URL调试】缓存key: {cache_key}")
+        print(f"[Meme Understanding] 完整URL: {img_url}")
+        print(f"[Meme Understanding] 缓存key: {cache_key}")
 
         cached = self.cache.get(cache_key)
         if cached:
-            print(f"【URL调试】命中URL缓存: {cached}")
+            print(f"[Meme Understanding] 命中URL缓存: {cached}")
             return f"[动画表情:{cached}]"
 
         try:
@@ -295,7 +301,7 @@ class MemeProcessor:
             self.cache.set(img_hash, clean_analysis)
             self.cache.set(cache_key, clean_analysis)
             self.cache.save()
-            print(f"【缓存调试】已保存新结果: {clean_analysis}")
+            print(f"[MemeCache] 已保存新结果: {clean_analysis}")
 
             return f"[动画表情:{clean_analysis}]"
 
