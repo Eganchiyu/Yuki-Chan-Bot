@@ -226,7 +226,7 @@ class MemeProcessor:
                     "content": [
                         {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64_data}"}},
                         {"type": "text",
-                         "text": "用词或短句描述这个群友发的表情包的描述或表达的情感，不超过12个字。带文字图片输出文字。长段文字直接输出“长段文字”"}
+                         "text": "用词或短句描述这个群友发的表情包的描述或表达的情感，不超过15个字。带文字图片输出文字。长段文字直接输出“长段文字”"}
                     ]
                 }
             ],

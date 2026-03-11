@@ -74,11 +74,11 @@ async def should_i_reply(history, current_text):
             role_name = "" if msg["role"] == "user" else "Yuki说:"
             dialogue_text += f"{role_name}{msg['content']}\n"
 
-        energy_desc = "精力充沛，很愿意找人聊天" if current_e > 90 else "精力正常，偶尔会回复消息" if current_e > 60 else "疲惫，只想接少数有趣的话题" if current_e > 30 else "非常疲惫，只有认为必须发言时才发言"
+        energy_desc = "精力充沛，很愿意找人聊天" if current_e > 90 else "精力正常，会选择性接有趣的话题" if current_e > 45 else "疲惫，只想接少数有趣的话题" if current_e > 25 else "非常疲惫，只有认为必须发言时才发言"
 
         check_prompt = (
             f"【Yuki的当前状态】\n精力值：{current_e:.1f}/100 ({energy_desc})，发言消耗{COST_PER_REPLY}点精力\n\n"
-            f"请分析对话氛围，判断现在是否要发言。判断依据：当前发言者是不是说完了要说的全部内容、感兴趣程度、提问对象等，应合理判断氛围\n注意：如果对方表述不完整或模糊，如[图片]，可以不发言"
+            f"请分析对话氛围，判断现在是否要发言。判断依据：当前发言者是不是说完了要说的全部内容、是不是感兴趣、提问对象等，应合理判断氛围\n注意：如果对方表述不完整或模糊，如[图片]，可以不发言"
             f"如果要发言，请回答'YES'。如果想继续潜水观察，请回答'NO'。"
         )
 

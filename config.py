@@ -28,7 +28,7 @@ DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "").strip()
 DEEPSEEK_BASE_URL = "https://api.ytea.top/v1"
 SILICONFLOW_API_KEY = os.getenv("SILICONFLOW_API_KEY", "").strip()
 SILICONFLOW_API_URL = "https://api.siliconflow.cn/v1/chat/completions"
-OPENAI_API_KEY = "sk-X1BZhjc24oeZfH9dSinRn8UVQnV4kUvLHEhCCyJbWYTCcbQG"
+OPENAI_API_KEY = DEEPSEEK_API_KEY  # 复用 DeepSeek 的 Key
 OPENAI_API_URL = "https://api.ytea.top/v1/chat/completions"
 
 # 调试输出（确认后可以删除）
@@ -43,8 +43,8 @@ NAPCAT_WS_URL = "ws://127.0.0.1:3001"
 # ================= 目标配置 =================
 TARGET_QQ = 2962538973
 # TARGET_GROUP = 1034986009
-# TARGET_GROUPS = [1057020972, 1034986009, 1085409165, 742134223]   # 示例
-TARGET_GROUPS = [1085409165]
+TARGET_GROUPS = [1057020972, 1034986009, 1085409165, 742134223]   # 示例
+# TARGET_GROUPS = [1085409165]
 # TARGET_GROUP = 1057020972
 # TARGET_GROUP = 1085409165 #测试群
 # TARGET_GROUP = 818038143 #薄脆原味生态圈
@@ -57,12 +57,12 @@ CACHE_DIR = "meme_cache"
 CACHE_FILE = "meme_cache.json"
 
 # ================= 时间配置 =================
-DEBOUNCE_TIME = 2
+DEBOUNCE_TIME = 18
 
 REQUEST_TIMEOUT = aiohttp.ClientTimeout(total=60, connect=10, sock_read=30)
 
 # ================= 精力值配置 =================
-INITIAL_ENERGY = 90
+INITIAL_ENERGY = 100
 MAX_ENERGY = 100.0
 RECOVERY_PER_MIN = 0.8
 COST_PER_REPLY = 4

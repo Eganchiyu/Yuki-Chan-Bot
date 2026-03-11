@@ -53,7 +53,8 @@ class MemoryRAG:
         query_emb = self.model.encode(query).tolist()
         where_filter = {}
         if chat_id is not None:
-            where_filter["chat_id"] = str(chat_id)
+            # 这里我们允许查询时同时检索特定 chat_id 和 manual_record 的记忆，确保手动录入的记忆也能被检索到
+            where_filter["chat_id"] = {"$in": [str(chat_id), "manual_record"]}
         results = self.collection.query(
             query_embeddings=[query_emb],
             n_results=top_k,

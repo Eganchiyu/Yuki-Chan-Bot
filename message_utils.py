@@ -15,7 +15,12 @@ class CQCodeParser:
 
     async def ensure_connection(self):
         if self.websocket is None:
-            self.websocket = await websockets.connect(self.ws_url)
+            # 增加 ping_interval 和 ping_timeout 防止 1011 错误（心跳超时）
+            self.websocket = await websockets.connect(
+                self.ws_url, 
+                ping_interval=20, 
+                ping_timeout=20
+            )
         return self.websocket
 
     async def send_request(self, action: str, params: dict, echo: str) -> Optional[Dict]:
@@ -24,25 +29,24 @@ class CQCodeParser:
             request = {"action": action, "params": params, "echo": echo}
             await ws.send(json.dumps(request))
             try:
-                while True:
+                # 增加一个计数器，避免死循环导致 keepalive 失效
+                retry_count = 0
+                while retry_count < 10: 
                     response = await asyncio.wait_for(ws.recv(), timeout=5.0)
                     data = json.loads(response)
                     if data.get("echo") == echo:
                         return data
+                    retry_count += 1
             except asyncio.TimeoutError:
                 print(f"[CQCodeParser] 请求 {action} 超时")
         except Exception as e:
             print(f"[CQCodeParser] 发送请求失败: {e}")
-            try:
-                await self.close()
-            except:
-                pass
-            self.websocket = None
+            self.websocket = None # 出错时重置，下次会自动重连
         return None
 
     async def get_user_info(self, user_id: str) -> Optional[Dict]:
         try:
-            uid = int(user_id) if user_id.isdigit() else user_id
+            uid = int(user_id) if str(user_id).isdigit() else user_id
             response = await self.send_request(
                 "get_stranger_info",
                 {"user_id": uid, "no_cache": False},
@@ -53,11 +57,11 @@ class CQCodeParser:
         except Exception as e:
             print(f"[CQCodeParser] 获取用户信息失败: {e}")
         return None
+
     async def get_group_member_info(self, group_id: str, user_id: str) -> Optional[Dict]:
-        """获取群成员信息"""
         try:
-            uid = int(user_id) if user_id.isdigit() else user_id
-            gid = int(group_id) if group_id.isdigit() else group_id
+            uid = int(user_id) if str(user_id).isdigit() else user_id
+            gid = int(group_id) if str(group_id).isdigit() else group_id
             response = await self.send_request(
                 "get_group_member_info",
                 {"group_id": gid, "user_id": uid, "no_cache": False},
@@ -68,66 +72,35 @@ class CQCodeParser:
         except Exception as e:
             print(f"[CQCodeParser] 获取群成员信息失败: {e}")
         return None
+
     async def get_user_nickname(self, user_id: str, group_id: str = None) -> str:
-        """获取用户昵称，如果提供群号则优先使用群名片"""
-        # 如果提供了群号，尝试从群成员缓存中获取
-        if group_id:
-            cache_key = f"{group_id}_{user_id}"
+        # 统一转为字符串处理，防止 int 导致的缓存 Key 冲突或方法缺失
+        u_str = str(user_id)
+        g_str = str(group_id) if group_id else None
+
+        if g_str:
+            cache_key = f"{g_str}_{u_str}"
             if cache_key in self.nickname_cache:
                 return self.nickname_cache[cache_key]
-            # 获取群成员信息
-            member_info = await self.get_group_member_info(group_id, user_id)
+            
+            member_info = await self.get_group_member_info(g_str, u_str)
             if member_info:
-                # 优先使用群名片 (card)，如果没有则使用昵称 (nickname)
-                nickname = member_info.get("card") or member_info.get("nickname") or f"用户{user_id}"
+                nickname = member_info.get("card") or member_info.get("nickname") or f"用户{u_str}"
                 self.nickname_cache[cache_key] = nickname
                 return nickname
-            # 如果获取失败，回退到个人昵称（继续执行下面的逻辑）
 
-        # 原逻辑：获取个人昵称
-        if user_id in self.nickname_cache:
-            return self.nickname_cache[user_id]
-        if user_id.lower() == "all":
+        if u_str in self.nickname_cache:
+            return self.nickname_cache[u_str]
+        
+        if u_str.lower() == "all":
             return "全体成员"
-        user_info = await self.get_user_info(user_id)
+            
+        user_info = await self.get_user_info(u_str)
         if user_info and user_info.get("nickname"):
             nickname = user_info["nickname"]
-            self.nickname_cache[user_id] = nickname
+            self.nickname_cache[u_str] = nickname
             return nickname
-        return f"用户{user_id}"
-
-    async def parse_at_cq_codes(self, text: str, group_id: str = None) -> str:
-        """解析 @ CQ 码，将 QQ 号替换为昵称，可指定群号以使用群名片"""
-        if not text:
-            return text
-        pattern = r'\[CQ:at,qq=(\d+|all)[^\]]*\]'
-        matches = list(re.finditer(pattern, text))
-        if not matches:
-            return text
-        result = text
-        for match in reversed(matches):
-            cq_code = match.group(0)
-            qq = match.group(1)
-            nickname = await self.get_user_nickname(qq, group_id)
-            result = result[:match.start()] + f"@{nickname}" + result[match.end():]
-        return result
-
-
-    async def parse_all_cq_codes(self, text: str, group_id: str = None) -> str:
-        """解析所有 CQ 码，可指定群号用于 @ 解析"""
-        text = await self.parse_at_cq_codes(text, group_id)
-        text = re.sub(r'\[CQ:image[^\]]*\]', '[图片]', text)
-        text = re.sub(r'\[CQ:face[^\]]*\]', '[表情]', text)
-        text = re.sub(r'\[CQ:record[^\]]*\]', '[语音]', text)
-        text = re.sub(r'\[CQ:video[^\]]*\]', '[视频]', text)
-        text = re.sub(r'\[CQ:file[^\]]*\]', '[文件]', text)
-        return text
-
-    async def close(self):
-        if self.websocket:
-            await self.websocket.close()
-            self.websocket = None
-
+        return f"用户{u_str}"
 
 class MessageSender:
     def __init__(self, websocket):
