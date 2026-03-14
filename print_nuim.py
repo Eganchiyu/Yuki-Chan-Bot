@@ -1,3 +1,2 @@
-for i in range(94,201):
+for i in range(98,146):
     print(i, end=",")
-    

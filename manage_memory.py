@@ -53,4 +53,9 @@ def manage_memory():
         print(f"操作失败: 索引越界或输入有误 ({e})")
 
 if __name__ == "__main__":
-    manage_memory()
+    while True:
+        manage_memory()
+        cont = input("继续管理记忆吗？(y/n): ").strip().lower()
+        if cont != 'y':
+            break
+    

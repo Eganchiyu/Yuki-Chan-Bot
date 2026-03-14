@@ -64,7 +64,6 @@ async def summarize_memory(chat_id, history):
         
         new_history_json = (
             [msg for msg in history if msg["role"] == "system"] +
-            [{"role": "system", "content": f"{diary_content}"}] +
             dialogue_msgs[-KEEP_LAST_DIALOGUE:]
         )
         return new_history_json
@@ -257,7 +256,9 @@ async def process_messages(chat_id, websocket, mode):
         print(f"Deepseek 调用失败: {e}")
 
     # --------------------- 日记触发检查：如果历史过长，强制写日记 ----------------------
-    if len(history_dict[cid]) >= DIARY_MAX_LENGTH and cid not in yuki.writing_diary:
+    effective_history = [message for message in history_dict[cid] if message["role"] != "system"]
+
+    if len(effective_history) >= DIARY_MAX_LENGTH and cid not in yuki.writing_diary:
         print(f"[System] 历史长度达到保底阈值 {DIARY_MAX_LENGTH}，触发写日记")
         yuki.writing_diary.add(cid)
         try:
@@ -319,18 +320,18 @@ async def main_logic(mode):
 
                 msg_type = data.get("message_type")
                 if mode == "private" and msg_type == "private" and data.get("user_id") == TARGET_QQ:
-                    manage_buffer(data.get("user_id"), data.get("raw_message"), websocket, "private")
+                    await manage_buffer(data.get("user_id"), data.get("raw_message"), websocket, "private")
                 
                 elif mode == "group" and msg_type == "group":
                     group_id = data.get("group_id")
                     if not TARGET_GROUPS or group_id in TARGET_GROUPS: # 如果 TARGET_GROUPS 为空列表，则接收所有群；否则只接收列表中的群
                         sender = data.get("sender", {})
                         sender_name = sender.get("card") or sender.get("nickname") or "未知路人"
-                        manage_buffer(group_id, f"【“{sender_name}”】说: {data.get('raw_message')}", websocket, "group")
+                        await manage_buffer(group_id, f"【“{sender_name}”】说: {data.get('raw_message')}", websocket, "group")
         except:
             await asyncio.sleep(3)
 
-def manage_buffer(chat_id, content, websocket, mode):
+async def manage_buffer(chat_id, content, websocket, mode):
     global message_buffer, buffer_tasks, real_time_debounce_time
 
     if real_time_debounce_time <= 0:
@@ -367,7 +368,7 @@ def manage_buffer(chat_id, content, websocket, mode):
         real_time_debounce_time = 0.1  # 提升召唤消息的响应速度
     if chat_id in yuki.buffer_tasks: yuki.buffer_tasks[chat_id].cancel()
     yuki.buffer_tasks[chat_id] = asyncio.create_task(process_messages(chat_id, websocket, mode))
-    asyncio.sleep(0.5)  # 确保任务已启动
+    await asyncio.sleep(1)  # 确保任务已启动
     real_time_debounce_time = DEBOUNCE_TIME  # 重置为默认防抖时间
 
 if __name__ == "__main__":
