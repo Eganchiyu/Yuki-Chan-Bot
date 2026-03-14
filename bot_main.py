@@ -26,6 +26,7 @@ from config import (
 # 初始化全局变量：消息缓冲和定时任务
 message_buffer = {}
 buffer_tasks = {}
+real_time_debounce_time = DEBOUNCE_TIME
 
 async def summarize_memory(chat_id, history):
     '''根据当前对话历史写日记，并存入记忆库，返回更新后的历史'''
@@ -162,7 +163,8 @@ async def clean_cq_code(text):
 
 async def process_messages(chat_id, websocket, mode):
     """处理缓冲中的消息，进行API交互和回复 """
-    await asyncio.sleep(DEBOUNCE_TIME)
+    global real_time_debounce_time
+    await asyncio.sleep(real_time_debounce_time)  # 防抖等待，合并短时间内的多条消息
     messages = yuki.message_buffer.get(chat_id, [])
     if not messages: return
 
@@ -240,6 +242,8 @@ async def process_messages(chat_id, websocket, mode):
         Yuki_Answer = response.choices[0].message.content
         Yuki_Answer = re.sub(r'\s*FINISHED\s*$', '', Yuki_Answer, flags=re.IGNORECASE)
 
+        real_time_debounce_time = DEBOUNCE_TIME  # 重置防抖时间，准备处理下一轮消息
+
         history_manager.append_to_log(chat_id, "Yuki", Yuki_Answer)
         history_dict[cid].append({"role": "assistant", "content": Yuki_Answer})
         history_manager.save(history_dict)
@@ -286,10 +290,11 @@ async def idle_diary_checker():
             non_system_msgs = [msg for msg in history_dict[cid] if msg["role"] != "system"]
             non_system_count = len(non_system_msgs)
             if non_system_count < DIARY_MIN_TURNS :  # 如果轮数不足但空闲时间已经是阈值的两倍，不输出
-                print(
-                    f"[System] 群 {cid} 空闲 {idle_seconds:.1f} 秒，但对话轮数仅 {non_system_count}，继续观察..."
-                    f"({datetime.datetime.now().strftime('%H:%M:%S')})"
-                )
+                if idle_seconds < DIARY_IDLE_SECONDS * 2:
+                    print(
+                        f"[System] 群 {cid} 空闲 {idle_seconds:.1f} 秒，但对话轮数仅 {non_system_count}，继续观察..."
+                        f"({datetime.datetime.now().strftime('%H:%M:%S')})"
+                    )
                 continue  # 轮数不足
 
             # 满足条件，触发写日记
@@ -326,7 +331,11 @@ async def main_logic(mode):
             await asyncio.sleep(3)
 
 def manage_buffer(chat_id, content, websocket, mode):
-    global message_buffer, buffer_tasks
+    global message_buffer, buffer_tasks, real_time_debounce_time
+
+    if real_time_debounce_time <= 0:
+        real_time_debounce_time = DEBOUNCE_TIME  # 重置防抖时间，避免长时间关闭防抖导致过度频繁响应
+
     cid_str = str(chat_id)
     yuki.last_message_time[str(cid_str)] = time.time()
     if len(content) > MAX_MESSAGE_LENGTH:
@@ -351,10 +360,15 @@ def manage_buffer(chat_id, content, websocket, mode):
         print(f"[System] 压缩后长度: {len(content)} 字符")
     
     # 入队
+    
     if chat_id not in yuki.message_buffer: yuki.message_buffer[chat_id] = []
     yuki.message_buffer[chat_id].append(content)
+    if "yuki" in content.lower():
+        real_time_debounce_time = 0.1  # 提升召唤消息的响应速度
     if chat_id in yuki.buffer_tasks: yuki.buffer_tasks[chat_id].cancel()
     yuki.buffer_tasks[chat_id] = asyncio.create_task(process_messages(chat_id, websocket, mode))
+    asyncio.sleep(0.5)  # 确保任务已启动
+    real_time_debounce_time = DEBOUNCE_TIME  # 重置为默认防抖时间
 
 if __name__ == "__main__":
     print("[System] Yuki 正在初始化...")
