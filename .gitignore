@@ -13,3 +13,4 @@ __pycache__/
 yuki_memory/
 meme_cache_stats.json
 models/
+utils/

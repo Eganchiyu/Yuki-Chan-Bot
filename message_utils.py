@@ -171,3 +171,5 @@ def smart_truncate(content, max_len, suffix="..."):
     new_content = ''.join(result)
     print(f"[System] 截断后长度: {len(new_content)} 字符")
     return new_content
+
+    

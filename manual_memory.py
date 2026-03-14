@@ -3,7 +3,7 @@ import datetime
 import sys
 from memory_rag import MemoryRAG
 
-def save_manual_diary():
+def save_manual_diary(cid = "manual_record"):
     # 初始化 RAG 实例
     try:
         rag = MemoryRAG()
@@ -24,13 +24,12 @@ def save_manual_diary():
                 break
                 
             # 使用统一的标识符
-            manual_chat_id = "manual_record" 
+            # manual_chat_id = "manual_record" 
             
             # 执行存入
             rag.save_diary(
                 content=content,
-                chat_id=manual_chat_id,
-                emotion="manual_input"
+                chat_id=cid
             )
             
             curr_time = datetime.datetime.now().strftime('%H:%M:%S')
@@ -43,4 +42,7 @@ def save_manual_diary():
             print(f"存入失败: {e}")
 
 if __name__ == "__main__":
-    save_manual_diary()
+    cid = input("请输入聊天 ID（默认为 'manual_record'，直接回车即可）: ").strip()
+    if not cid:
+        cid = "manual_record"
+    save_manual_diary(cid)
