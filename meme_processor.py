@@ -9,9 +9,10 @@ import re
 import json
 import hashlib
 from datetime import datetime
+import time
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception
-from config import SILICONFLOW_API_KEY, SILICONFLOW_API_URL, CACHE_DIR, CACHE_FILE, MAX_CONCURRENT_MEME, DEBUG, \
-    REQUEST_TIMEOUT, OPENAI_API_URL, OPENAI_API_KEY
+from config import CACHE_DIR, CACHE_FILE, MAX_CONCURRENT_MEME, DEBUG, \
+    REQUEST_TIMEOUT, TEATOP_API_URL, TEATOP_API_KEY
 
 
 def log(msg):
@@ -191,9 +192,9 @@ class MemeProcessor:
         reraise=True
     )
     async def call_api(self, b64_data):
-        print(f"token:{OPENAI_API_KEY[:10]}, url:{OPENAI_API_URL}")
+        print(f"token:{TEATOP_API_KEY[:10]}, url:{TEATOP_API_URL}")
         headers = {
-            "Authorization": f"Bearer {OPENAI_API_KEY}",
+            "Authorization": f"Bearer {TEATOP_API_KEY}",
             "Content-Type": "application/json"
         }
         #Qwen/Qwen3-VL-8B-Instruct
@@ -213,7 +214,7 @@ class MemeProcessor:
             "temperature": 0.75
         }
         async with aiohttp.ClientSession(timeout=REQUEST_TIMEOUT) as session:
-            async with session.post(OPENAI_API_URL, json=payload, headers=headers) as resp:
+            async with session.post(TEATOP_API_URL, json=payload, headers=headers) as resp:
                 print(f"[DEBUG] 响应状态码: {resp.status}")
                 if resp.status == 200:
                     result = await resp.json()
@@ -229,8 +230,13 @@ class MemeProcessor:
                         message=text
                     )
 
-    async def understand_from_url(self, img_url):
-        # 强制重新加载缓存文件
+    async def understand_from_url(self, img_url, yuki):
+        # 1. 熔断拦截
+        yuki.check_auto_recovery()
+        if yuki.is_degraded:
+            return "[动画表情]"
+
+        # 2. 缓存处理
         img_url = img_url.replace("&amp;", "&")
         cache_key = f"url:{img_url}"
 
@@ -247,9 +253,6 @@ class MemeProcessor:
                         print(f"[Meme Understanding] 下载失败，HTTP {resp.status}")
                         return "[动画表情]"
                     content = await resp.read()
-                    if len(content) > 10 * 1024 * 1024:
-                        print("[Meme Understanding] 图片超过10MB，跳过")
-                        return "[动画表情]"
 
             img_hash = self.get_image_hash(content)
 
