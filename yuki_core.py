@@ -8,7 +8,7 @@ from openai import OpenAI
 import threading
 from config import (
     INITIAL_ENERGY, MAX_ENERGY, RECOVERY_PER_MIN, COST_PER_REPLY, MIN_ACTIVE_ENERGY,
-    HISTORY_FILE, LOG_FILE, DIARY_THRESHOLD,
+    HISTORY_FILE, LOG_FILE,
     DEEPSEEK_API_KEY, DEEPSEEK_BASE_URL, TEATOP_API_KEY, TEATOP_BASE_URL
 )
 
@@ -20,7 +20,7 @@ YUKI_SETTING_PRIVATE = BASE_SETTING + (
     "仅输出台词和括号内的动作。字数限制150字以内。"
 )
 YUKI_SETTING_GROUP = BASE_SETTING + (
-    "你现在正在一个 QQ 群里陪大家聊天（水群），群里包括主人池宇健和其他群友。【行为规范】1. 保持你可爱的妹妹人设。 2. 默认不讲话，看到有趣的话题可以插话。 3. 仅输出回复内容。 4. 字数限制80字以内。"
+    "你现在正在一个 QQ 群里陪大家聊天（水群），群里包括主人池宇健和其他群友。【行为规范】1. 保持你可爱的妹妹人设。 2. 默认不讲话，看到有趣的话题可以插话。 3.动态选择字数，但是限制80字以内。  4. 仅输出回复内容，减少使用换行符。"
 )
 
 
@@ -71,6 +71,7 @@ class YukiState:
                 if self.is_degraded or (attempt > 0 and max_retries > 1):
                     # 降级模式或非首次尝试失败后，直连 DeepSeek 官方
                     client = OpenAI(api_key=DEEPSEEK_API_KEY, base_url=DEEPSEEK_BASE_URL)
+                    model = "deepseek-chat"
                     if not self.is_degraded and attempt > 0:
                         self.is_degraded = True
                         self.last_fail_time = time.time()
