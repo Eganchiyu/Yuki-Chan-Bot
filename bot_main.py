@@ -16,7 +16,7 @@ from config import KEEP_LAST_DIALOGUE
 from config import DIARY_IDLE_SECONDS, DIARY_MIN_TURNS, DIARY_MAX_LENGTH
 
 # 从 config 导入 API 配置和目标配置
-from config import DEEPSEEK_API_KEY, DEEPSEEK_BASE_URL
+from config import DEEPSEEK_API_KEY, DEEPSEEK_BASE_URL, TEATOP_BASE_URL, TEATOP_API_URL, TEATOP_API_KEY
 from config import NAPCAT_WS_URL, TARGET_QQ, TARGET_GROUPS
 from config import (
     DEBOUNCE_TIME,
@@ -41,12 +41,12 @@ async def summarize_memory(chat_id, history):
         f"要求真实记录，尤其是完整叙述和性格概述，不要删减重要内容。"
         f"当前时间：{time_str}。\n"
         f"注意：如果对话中有提到性格、喜好、习惯等细节，请务必写入日记，这些是Yuki记忆的重要组成部分。"
-        f"日记格式要求：\n 不用加标题、天气、颜文字和时间戳，直接正文开头。"
+        f"日记格式要求：\n 不用加标题、天气、颜文字和时间戳，直接正文开头，不要换行。"
     )
     
     try:
         diary_content = yuki.robust_api_call(
-            model="deepseek-chat",
+            model="deepseek-v3",
             messages=[
                 {"role": "system", "content": f"{BASE_SETTING}"},
                 {"role": "user", "content": (
@@ -54,7 +54,12 @@ async def summarize_memory(chat_id, history):
                     f"---任务指令---\n"
                     f"{summary_prompt}"
                 )}
-            ]
+            ],
+            temperature=0.7,  # 降低温度，让它说话更稳、更常用
+            top_p=0.8,  # 稍微收窄采样范围，过滤冷门词
+            frequency_penalty=0.1,  # 极低的惩罚，允许它说大白话
+            presence_penalty=0.0,  # 不强迫它聊新话题
+            max_tokens=200  # 强制短句，短句更容易显自然
         )
         diary_content = re.sub(r'\s*FINISHED\s*$', '', diary_content, flags=re.IGNORECASE)
         diary_content = f"【日记({time_str})】：\n{diary_content}"
@@ -126,10 +131,10 @@ async def should_i_reply(history, current_text):
         print(f"[System] 判定消息构建完成，正在发送API请求... (当前精力: {current_e:.1f})")
 
         result = yuki.robust_api_call(
-            model="deepseek-chat",
+            model="deepseek-v3",
             messages=messages,
             max_tokens=10,
-            temperature=0.7
+            temperature=0.6
         ).strip().upper()
         result = re.sub(r'\s*FINISHED\s*$', '', result, flags=re.IGNORECASE)
 
@@ -245,8 +250,13 @@ async def process_messages(chat_id, websocket, mode):
         # --------------------- 发送对话补全到DeepSeek ----------------------
         print(f"[System] Yuki 正在打字...(剩余精力: {yuki.energy:.1f})")
         Yuki_Answer = yuki.robust_api_call(
-            model="deepseek-chat",
-            messages=combined_API_message
+            model = "deepseek-v3",
+            messages = combined_API_message,
+            temperature =0.7,  # 降低温度，让它说话更稳、更常用
+            top_p = 0.75,  # 稍微收窄采样范围，过滤冷门词
+            frequency_penalty = 0.05,  # 极低的惩罚，允许它说大白话
+            presence_penalty = 0.0,  # 不强迫它聊新话题
+            max_tokens = 100  # 强制短句，短句更容易显自然
         )
         Yuki_Answer = re.sub(r'\s*FINISHED\s*$', '', Yuki_Answer, flags=re.IGNORECASE)
 
@@ -413,7 +423,7 @@ if __name__ == "__main__":
     start_time = time.time()
     message_processor = CQCodeParser(NAPCAT_WS_URL)
     meme_processor = MemeProcessor()
-    yuki = YukiState(DEEPSEEK_API_KEY, DEEPSEEK_BASE_URL)
+    yuki = YukiState(TEATOP_API_KEY, TEATOP_BASE_URL)
     history_manager = HistoryManager()
     print("[System] 开始初始化记忆系统（RAG）...")
     from memory_rag import MemoryRAG
