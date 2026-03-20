@@ -5,10 +5,10 @@ import time
 import re
 from core.brain import YukiState
 from core.engine import YukiEngine
+from core.history_manager import HistoryManager
 from modules.message.CQProtocol import smart_truncate
 from modules.message.build_context import build_chat_context
-from core.history_manager import HistoryManager
-from modules.message.CQParser import CQCodeParser, meme_processor
+from modules.message.CQParser import CQCodeParser
 from modules.vision.processor import MemeProcessor
 from network.ws_connection import BotConnector
 from network.ws_sender import MessageSender
@@ -16,11 +16,9 @@ from network.api_request import ApiCall
 from config import *
 
 # 初始化全局变量：消息缓冲和定时任务
-message_buffer = {}
 real_time_debounce_time = DEBOUNCE_TIME
 
-
-async def process_messages(chat_id, mode):
+async def main_process(chat_id, mode):
     """处理缓冲中的消息，进行API交互和回复 """
     global real_time_debounce_time
     await asyncio.sleep(real_time_debounce_time)  # 防抖等待，合并短时间内的多条消息
@@ -41,7 +39,7 @@ async def process_messages(chat_id, mode):
         for content in understood_contents:
             combined_text = combined_text.replace("[图片占位符]", content, 1)
 
-    # 2. 剩下的文本解析（@、回复等）交给 parser
+    # 剩下的CQ码文本解析（@、回复等）交给 parser
     combined_text = await parser.parse_all_cq_codes(combined_text)
     combined_text = combined_text.replace("\n", "  ").strip()
     print(f"[{chat_id}] 收到消息{combined_text}")
@@ -86,7 +84,7 @@ async def process_messages(chat_id, mode):
         )
         Yuki_Answer = re.sub(r'\s*FINISHED\s*$', '', Yuki_Answer, flags=re.IGNORECASE)
 
-
+        # 保存回复到上下文
         history_manager.append_to_log(chat_id, "Yuki", Yuki_Answer)
         history_dict[chat_id].append({"role": "assistant", "content": Yuki_Answer})
         history_manager.save(history_dict)
@@ -100,17 +98,15 @@ async def process_messages(chat_id, mode):
         print(f"Deepseek 调用失败: {e}")
 
     # 日记触发检查：如果历史过长，强制写日记
-        # 4. 强制检查日记
-        if len(history_dict[chat_id]) > DIARY_MAX_LENGTH:
-            new_history = await engine.do_summarize(chat_id, history_dict[chat_id])
-            history_manager.save(new_history)
+    if len(history_dict[chat_id]) > DIARY_MAX_LENGTH:
+        new_history = await engine.do_summarize(chat_id, history_dict[chat_id])
+        history_manager.save(new_history)
 
 
-async def main_logic(mode):
+async def napcat_listen(mode):
     asyncio.create_task(engine.idle_diary_checker())   # 启动后台检查
     print("[System] 已启动后台空闲日记检查任务")
     print(f"[System] 连接 NapCat 服务端 | 模式: {mode} | 初始精力: {yuki.energy}")
-
 
     async for data in connector.listen():
         if data.get("post_type") != "message": continue
@@ -130,7 +126,7 @@ async def main_logic(mode):
                 await manage_buffer(group_id, f"【“{name}”】说: {raw_msg}", mode, raw_message=raw_msg)
 
 async def manage_buffer(chat_id, content, mode, raw_message=''):
-    global message_buffer, real_time_debounce_time
+    global real_time_debounce_time
 
     if real_time_debounce_time <= 0:
         real_time_debounce_time = DEBOUNCE_TIME  # 重置防抖时间，避免长时间关闭防抖导致过度频繁响应
@@ -154,7 +150,7 @@ async def manage_buffer(chat_id, content, mode, raw_message=''):
     if "yuki" in content.lower():
         real_time_debounce_time = 5  # 提升召唤消息的响应速度
     if chat_id in yuki.buffer_tasks: yuki.buffer_tasks[chat_id].cancel()
-    yuki.buffer_tasks[chat_id] = asyncio.create_task(process_messages(chat_id, mode))
+    yuki.buffer_tasks[chat_id] = asyncio.create_task(main_process(chat_id, mode))
 
 if __name__ == "__main__":
     print("[System] Yuki 正在初始化...")
@@ -168,12 +164,17 @@ if __name__ == "__main__":
     parser = CQCodeParser(connector)
     # 实例化表情处理器
     meme_processor = MemeProcessor()
+    # 实例化Yuki状态
     yuki = YukiState()
+    # 实例化LLM请求器
     llm = ApiCall(TEATOP_API_KEY, TEATOP_BASE_URL)
+    # 实例化历史记录管理器
     history_manager = HistoryManager()
     print("[System] 开始初始化记忆系统（RAG）...")
     from modules.memory.rag import MemoryRAG
+    # 初始化向量记忆库
     memory_rag = MemoryRAG()
+    # 实例化Yuki主引擎
     engine = YukiEngine(llm, memory_rag, history_manager, yuki)
     end_time = time.time()
     print(f"[System] 初始化完成，耗时 {end_time - start_time:.1f} 秒")
@@ -184,4 +185,4 @@ if __name__ == "__main__":
         for cid in h_dict.keys():
             yuki.last_message_time[str(cid)] = time.time()
         print(f"DEBUG: 已预载 {len(yuki.last_message_time)} 个群组到巡检名单")
-    asyncio.run(main_logic("private" if choice == "1" else "group"))
+    asyncio.run(napcat_listen("private" if choice == "1" else "group"))

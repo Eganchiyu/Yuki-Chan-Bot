@@ -3,9 +3,7 @@ from typing import Dict
 from modules.message.GetMeta import MetaGetter
 from network.ws_connection import BotConnector
 from modules.message.CQProtocol import CQProtocol
-from modules.vision.processor import MemeProcessor
 
-meme_processor = MemeProcessor()
 class CQCodeParser:
     """
     调用CQMetaGetter获取原json格式数据，解码数据后调用CQProtocol替换CQ码，返回解析后的原字符串
