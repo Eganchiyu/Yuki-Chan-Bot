@@ -12,8 +12,8 @@ import os
 from core.brain import YukiState
 from core.prompts import BASE_SETTING
 from core.history import HistoryManager
-from modules.message.protocol import CQCodeParser
-from modules.message.formatter import smart_truncate
+from modules.message.CQParser import CQCodeParser
+from modules.message.CQProtocol import smart_truncate
 from network.connection import BotConnector
 from network.sender import MessageSender
 from modules.vision.processor import MemeProcessor

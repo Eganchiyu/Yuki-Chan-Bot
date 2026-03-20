@@ -64,10 +64,10 @@ class CQProtocol:
     def replace_at_placeholder(text, qq, nickname):
         """只负责把特定的 CQ 码换成名字"""
         pattern = rf'\[CQ:at,qq={qq}[^\]]*\]'
-        return re.sub(pattern, f"@{nickname}", text)
-
+        text = re.sub(pattern, f"@{nickname}", text)
+        return text
     @staticmethod
-    def replace_reply_placeholder(data):
+    def replace_reply_placeholder(data) -> str:
         if not data:
             print("[CQProtocol] 引用历史回复消息错误")
             return "【引用不明历史消息】"
