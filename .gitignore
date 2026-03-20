@@ -1,16 +1,9 @@
 # 忽略整个文件夹
-Legacy/
+before_refactor/Legacy/
 .idea/
-meme_cache/
-chat_log/
 .env
-chat_history.json
-yuki_chat_all_nekonochi.log
-meme_cache.json
 .vscode/
 __pycache__/
 yuki_memory/
-meme_cache_stats.json
 models/
-utils/
-teatop.py
+data/
