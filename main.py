@@ -265,7 +265,6 @@ async def process_messages(chat_id, mode):
         )
         Yuki_Answer = re.sub(r'\s*FINISHED\s*$', '', Yuki_Answer, flags=re.IGNORECASE)
 
-        # real_time_debounce_time = DEBOUNCE_TIME  # 重置防抖时间，准备处理下一轮消息
 
         history_manager.append_to_log(chat_id, "Yuki", Yuki_Answer)
         history_dict[cid].append({"role": "assistant", "content": Yuki_Answer})
@@ -364,7 +363,7 @@ async def manage_buffer(chat_id, content, mode, raw_message=''):
     yuki.last_message_time[str(cid_str)] = time.time()
 
     content = smart_truncate(content, max_len=MAX_MESSAGE_LENGTH, suffix='...')
-    
+
     # --- 拦截帮助指令并存入历史 ---
     if raw_message in ['help', '/help', 'yuki帮助', 'yuki功能', '帮助', '功能']:
         await sender.send_local_image(chat_id, "utils/yuki_help.png", mode=mode)

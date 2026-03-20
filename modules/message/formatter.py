@@ -37,7 +37,7 @@ class CQProtocol:
     """纯粹的翻译官：只管文本替换，不碰网络"""
 
     @staticmethod
-    def clean_multimedia(text: str) -> str:
+    def replace_other_CQ_codes(text: str) -> str:
         """把所有多媒体码换成占位符"""
         text = re.sub(r'\[CQ:image[^\]]*\]', '[图片]', text)
         text = re.sub(r'\[CQ:face[^\]]*\]', '[表情]', text)
@@ -50,3 +50,28 @@ class CQProtocol:
     @staticmethod
     def is_at_me(text: str, self_id: str) -> bool:
         return f"[CQ:at,qq={self_id}]" in text
+
+    @staticmethod
+    def extract_at_uids(text: str):
+        """只负责把文本里的 QQ 号都找出来，不查名字"""
+        return re.findall(r'\[CQ:at,qq=(\d+|all)\]', text)
+
+    @staticmethod
+    def extract_reply_matches(text: str):
+        return re.findall(r'\[CQ:reply,id=(\d+)\]', text)
+
+    @staticmethod
+    def replace_at_placeholder(text, qq, nickname):
+        """只负责把特定的 CQ 码换成名字"""
+        pattern = rf'\[CQ:at,qq={qq}[^\]]*\]'
+        return re.sub(pattern, f"@{nickname}", text)
+
+    @staticmethod
+    def replace_reply_placeholder(data):
+        if not data:
+            print("[CQProtocol] 引用历史回复消息错误")
+            return "【引用不明历史消息】"
+        sender = data.get("sender", {}).get("nickname", "人")
+        text = re.sub(r'\[CQ:.*?\]', '', data.get("raw_message", ""))
+        text = smart_truncate(text)
+        return f"【引用{sender}的消息: {text}】"
