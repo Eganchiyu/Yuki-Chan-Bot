@@ -54,7 +54,7 @@ async def main_process(chat_id, mode):
     # 添加当前消息到上下文池
     history_dict[chat_id].append({"role": "user", "content": combined_text})
 
-    if (mode == "group") and (not await engine.decide_to_reply(history_dict[chat_id], combined_text)): # 判定是否回复
+    if (mode == "group") and (not await engine.decide_to_reply(history_dict[chat_id], combined_text, chat_id)): # 判定是否回复
         # 保存获取的上下文信息
         history_manager.save(history_dict)
         print("[System] Yuki 决定继续潜水...")
@@ -78,8 +78,7 @@ async def main_process(chat_id, mode):
     print(f"[System] Yuki 正在发送消息...(剩余精力: {yuki.energy:.1f})")
     await sender.send(chat_id, Yuki_Answer, mode=mode)
 
-    # except Exception as e:
-    #     print(f"Deepseek 调用失败: {e}")
+
 
     # 日记触发检查：如果历史过长，强制写日记
     if len(history_dict[chat_id]) > DIARY_MAX_LENGTH:
@@ -164,7 +163,7 @@ if __name__ == "__main__":
     # 初始化向量记忆库
     memory_rag = MemoryRAG()
     # 实例化Yuki主引擎
-    engine = YukiEngine(llm, memory_rag, history_manager, yuki)
+    engine = YukiEngine(llm, memory_rag, history_manager, yuki, sender)
     end_time = time.time()
     print(f"[System] 初始化完成，耗时 {end_time - start_time:.1f} 秒")
     choice = input("[System] 选择模式：1. 私聊模式  2. 群聊模式（默认）\n请输入数字: ").strip()

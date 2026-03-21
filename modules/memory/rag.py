@@ -11,6 +11,7 @@ from config import EMBED_MODEL, VECTOR_DB_PATH, RETRIEVAL_TOP_K
 
 class MemoryRAG:
     _instance = None
+
     def __new__(cls):
         if cls._instance is None:
             cls._instance = super().__new__(cls)
@@ -27,6 +28,7 @@ class MemoryRAG:
         )
         self.blacklist_path = "blacklist.txt"
         self.name_blacklist = self._load_blacklist()
+
         print(f"[RAG] 已加载 {len(self.name_blacklist)} 个屏蔽词")
         print("[RAG] 记忆库初始化完成")
 
@@ -122,7 +124,7 @@ class MemoryRAG:
             return filtered
         return []
 
-    def search_diaries(self, query_text, chat_id=None, n_results=20):
+    def search_diaries(self, query_text, chat_id=None, n_results=12, top_k = 5):
         """
         并行双池检索：语义池与关键词池并行提取，算法全透明调试版
         """
@@ -137,7 +139,7 @@ class MemoryRAG:
         cid_str = str(chat_id) if chat_id else None
         filter_cond = {"chat_id": {"$in": [cid_str, "manual_record"]}} if cid_str else None
 
-        raw_keywords = jieba.analyse.extract_tags(query_text, topK=5, withWeight=True)
+        raw_keywords = jieba.analyse.extract_tags(query_text, topK=top_k, withWeight=True)
 
         # 直接调用类属性中的黑名单
         keywords_with_weight = [
@@ -225,7 +227,8 @@ class MemoryRAG:
         return final_results[:12]
 
 
-    def _calculate_final_item(self, doc, meta, base_score, keywords_with_weight):
+    @staticmethod
+    def _calculate_final_item(doc, meta, base_score, keywords_with_weight):
         keyword_boost = 0.0
         matched_words = []
         for kw, weight in keywords_with_weight:
@@ -248,7 +251,7 @@ class MemoryRAG:
         all_data = self.collection.get()
 
         if not all_data or not all_data['documents']:
-            return
+            return None
 
         seen = {} # (content, chat_id) -> (id, timestamp)
         to_delete = []
@@ -276,5 +279,7 @@ class MemoryRAG:
             for i in range(0, len(to_delete), 100):
                 self.collection.delete(ids=to_delete[i:i+100])
             print(f"[RAG] 清理完成，已删除 {len(to_delete)} 条重复记录")
+            return None
         else:
             print("[RAG] 未发现重复记录")
+            return None

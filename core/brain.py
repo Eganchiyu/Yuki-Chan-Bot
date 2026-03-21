@@ -93,7 +93,7 @@ class YukiState:
         follow_desire = recent_activity_level * 80 * (self.energy / 100)
 
         # 模式 B: 破冰
-        ice_break_desire = (1.0 - recent_activity_level) * 60 * max(0, (self.energy - 70) / 50)
+        ice_break_desire = (1.0 - recent_activity_level) * 60 * max(0, (self.energy - 70) / 30)
 
         # 融合平滑时间权重
         total_desire = max(follow_desire, ice_break_desire) * self.get_smooth_time_weight()
