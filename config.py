@@ -10,7 +10,7 @@ MAX_MESSAGE_LENGTH: int = 200  # 最大消息长度，防止token炸弹
 # ================= 日记触发配置 =================
 DIARY_IDLE_SECONDS = 120          # 空闲触发时间（秒），2分钟
 DIARY_MIN_TURNS = 10               # 最小对话轮数（非系统消息条数）
-DIARY_MAX_LENGTH = 100             # 保底历史长度阈值（超过则强制写日记）
+DIARY_MAX_LENGTH = 50             # 保底历史长度阈值（超过则强制写日记）
 
 # ================= RAG 记忆配置 =================
 VECTOR_DB_PATH = "before_refactor/yuki_memory"  # 向量数据库路径
@@ -33,8 +33,8 @@ NAPCAT_WS_URL = "ws://127.0.0.1:3001"
 # ================= 目标配置 =================
 TARGET_QQ = 737337230
 # TARGET_GROUP = 1034986009 #猫猫窝
-# TARGET_GROUPS = [1057020972, 1085409165, 818038143, 742134223, 1034986009, 1057868210, 1056258919]   # 示例
-TARGET_GROUPS = [782427668]
+TARGET_GROUPS = [1057020972, 742134223, 1034986009, 1057868210, 1056258919]   # 示例
+# TARGET_GROUPS = [782427668]
 # TARGET_GROUP = 1057020972 #ncbot乐园
 # TARGET_GROUP = 1085409165 #测试群
 # TARGET_GROUP = 818038143 #薄脆原味生态圈
@@ -59,15 +59,20 @@ CACHE_DIR = os.path.join(BASE_DIR,"data")
 CACHE_FILE = os.path.join(CACHE_DIR, "meme_cache.json")
 
 # ================= 时间配置 =================
-DEBOUNCE_TIME = 12
+DEBOUNCE_TIME = 25
 REQUEST_TIMEOUT = aiohttp.ClientTimeout(total=60, connect=10, sock_read=30)
 
 # ================= 精力值配置 =================
-INITIAL_ENERGY = 100
+INITIAL_ENERGY = 90
 MAX_ENERGY = 100.0
 RECOVERY_PER_MIN = 0.8
-COST_PER_REPLY = 2
-MIN_ACTIVE_ENERGY = 13.0
+COST_PER_REPLY = 5
+MIN_ACTIVE_ENERGY = 25.0
+
+SENSITIVITY = 0.2
+DECAY_LEVEL = 0.6
+SIGMOID_CENTRE = 50.00
+SIGMOID_ALPHA = 0.08
 
 # ================= 并发配置 =================
 MAX_CONCURRENT_MEME = 1
