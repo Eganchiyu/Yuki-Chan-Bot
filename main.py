@@ -78,6 +78,9 @@ async def main_process(chat_id, mode):
     print(f"[System] Yuki 正在发送消息...(剩余精力: {yuki.energy:.1f})")
     await sender.send(chat_id, Yuki_Answer, mode=mode)
 
+    # 提高群聊的活跃度
+    await yuki.boost_activity(chat_id)
+
 
 
     # 日记触发检查：如果历史过长，强制写日记
@@ -92,10 +95,13 @@ async def main_process(chat_id, mode):
         print(f"[{chat_id}] 日记写入完成，全量历史已同步。")
 
 async def napcat_listen(mode):
-    asyncio.create_task(engine.idle_diary_checker())   # 启动后台检查
+    if mode == "group":
+        asyncio.create_task(yuki.decay_heartbeat())
+    # 启动日记检查
+    asyncio.create_task(engine.idle_diary_checker())
     print("[System] 已启动后台空闲日记检查任务")
     print(f"[System] 连接 NapCat 服务端 | 模式: {mode} | 初始精力: {yuki.energy}")
-
+    asyncio.create_task(engine.ice_break_monitor())
     async for data in connector.listen():
         if data.get("post_type") != "message": continue
 
