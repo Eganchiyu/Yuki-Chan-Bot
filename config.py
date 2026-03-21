@@ -63,7 +63,7 @@ DEBOUNCE_TIME = 25
 REQUEST_TIMEOUT = aiohttp.ClientTimeout(total=60, connect=10, sock_read=30)
 
 # ================= 精力值配置 =================
-INITIAL_ENERGY = 100
+INITIAL_ENERGY = 75
 MAX_ENERGY = 100.0
 RECOVERY_PER_MIN = 0.8
 COST_PER_REPLY = 5

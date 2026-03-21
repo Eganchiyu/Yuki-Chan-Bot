@@ -106,12 +106,15 @@ class YukiEngine:
             print(f"[DEBUG] \n {messages}")
             print(f"[System] 判定消息构建完成，正在发送API请求... (当前精力: {current_e:.1f})")
 
-            result = await self.llm.robust_api_call(
+            raw_response = await self.llm.robust_api_call(
                 model="deepseek-chat",
                 messages=messages,
                 max_tokens=10,
                 temperature=0.6
-            ).strip().upper()
+            )
+
+            # 2. 拿到字符串后再进行各种清洗
+            result = raw_response.strip().upper()
             result = re.sub(r'\s*FINISHED\s*$', '', result, flags=re.IGNORECASE)
 
             return "YES" in result
