@@ -173,6 +173,9 @@ async def manage_buffer(chat_id, content, mode, raw_message='', sender_name = ''
     # 判定是否为机器人（可以根据名称含 BOT，或者特定的 QQ 号判定）
     is_bot = "BOT" in sender_name or "机器人" in sender_name
 
+    if chat_id not in yuki.message_buffer:
+        yuki.message_buffer[chat_id] = []
+
     yuki.message_buffer[chat_id].append({
         "name": sender_name,
         "content": content,  # 这是带 【“姓名”】说: 的完整格式
