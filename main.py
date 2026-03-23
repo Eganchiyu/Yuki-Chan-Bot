@@ -104,8 +104,8 @@ async def napcat_listen(mode):
     asyncio.create_task(engine.idle_diary_checker())
     asyncio.create_task(engine.ice_break_monitor())
 
-    for chat_id in TARGET_GROUPS:
-        print(f"[System] 初始化{chat_id}精力为{yuki.update_energy(chat_id)}")
+    # for chat_id in TARGET_GROUPS:
+    #     print(f"[System] 初始化{chat_id}精力为{yuki.update_energy(chat_id)}")
     print(f"[System] 已启动后台辅助任务 (日记检查/破冰/精力衰减)")
 
     print(f"[System] 准备连接 NapCat 服务端 | 模式: {mode}")
@@ -215,10 +215,14 @@ if __name__ == "__main__":
     end_time = time.time()
     print(f"[System] 初始化完成，耗时 {end_time - start_time:.1f} 秒")
     choice = input("[System] 选择模式：1. 私聊模式  2. 群聊模式（默认）\n请输入数字: ").strip()
-    if choice == "2":
+    if choice != "2":
         # 初始化巡检名单，预载历史中的群聊ID和最后消息时间，确保后台检查能正常工作
         h_dict = history_manager.load()
         for cid in h_dict.keys():
             yuki.last_message_time[str(cid)] = time.time()
+            current_e = yuki.update_energy(str(cid))
+            yuki.update_desire_to_reply(str(cid))
+            print(
+                f"[System] 预热群组 {str(cid)}: 精力 {current_e:.1f}, 初始欲望 {yuki.desire_to_start_topic.get(str(cid), 0)}%")
         print(f"DEBUG: 已预载 {len(yuki.last_message_time)} 个群组到巡检名单")
     asyncio.run(napcat_listen("private" if choice == "1" else "group"))
