@@ -43,8 +43,8 @@ def build_ice_break_prompt(chat_id, relevant_diaries: list, history_dict: dict):
     )
     instructions = (
         f"【任务要求】\n"
-        f"1. 请根据上方的“参考记忆”和下方的“最近历史记录”，选择一个有趣的切入点自然地开口。\n"
-        f"2. 减少使用“大家好”、“有人在吗”、“既然没人说话”等客套开场白。\n"
+        f"1. 请根据上方的“最近历史记录”和下方的“日记内容”，选择一个有趣的切入点自然地开口。\n"
+        f"2. 减少使用客套开场白。\n"
         f"3. 语气要像个真实的女孩子，可以是一个突然的感慨、一个随意的分享，或者对之前某个话题的‘后知后觉’。\n"
         f"4. 限制在 30-60 字以内\n"
     )
@@ -55,19 +55,23 @@ def build_ice_break_prompt(chat_id, relevant_diaries: list, history_dict: dict):
         {"role": "system", "content": base_setting + active_instruction},
     ]
 
-    for diary_obj in reversed(relevant_diaries):
-        content = diary_obj['content'].replace('\n', ' ')
-        messages.append({"role": "system", "content": f"【回忆】{content}"})
-        print(f"【回忆】{content}")
-
-    messages = messages + [{"role": "system", "content": instructions}]
-
     recent_history = [msg for msg in history_dict.get(chat_id, [])[-3:] if msg["role"] != "system"]
 
     if recent_history:
         messages.extend(recent_history)
 
+    messages = messages + [{"role": "system", "content": instructions}]
+
+    for diary_obj in reversed(relevant_diaries):
+        content = diary_obj['content'].replace('\n', ' ')
+        messages.append({"role": "system", "content": f"【回忆】{content}"})
+        print(f"【回忆】{content}")
+
     # 7. 放置触发指令 (User 角色放在最后效果最好)
-    messages.append({"role": "user", "content": "(你看着安静的群聊，忽然想起了什么，决定开口说一句话...)"})
+    messages.append({"role": "user", "content": (
+        f"群聊安静中，大家已经有一段时间没说话了。\n"
+        f"当前时间：{now.strftime('%Y-%m-%d %H:%M')}({time_desc})\n\n"
+        f"(你看着安静的群聊，忽然想起了什么，决定开口说一句话...)"
+    )})
 
     return messages
