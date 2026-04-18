@@ -3,7 +3,10 @@ import json
 import os
 
 import chromadb
-import jieba.analyse
+import warnings
+with warnings.catch_warnings():
+    warnings.simplefilter("ignore", UserWarning)
+    import jieba.analyse
 from sentence_transformers import SentenceTransformer
 
 from config import EMBED_MODEL, VECTOR_DB_PATH, RETRIEVAL_TOP_K, ROBOT_NAME

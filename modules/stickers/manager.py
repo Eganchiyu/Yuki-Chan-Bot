@@ -6,8 +6,11 @@ import time
 import os
 from typing import List, Dict, Optional, Any
 import chromadb
-import jieba
-import jieba.analyse
+import warnings
+with warnings.catch_warnings():
+    warnings.simplefilter("ignore", UserWarning)
+    import jieba
+    import jieba.analyse
 from sentence_transformers import SentenceTransformer
 
 from config import EMBED_MODEL, VECTOR_DB_PATH, ROBOT_NAME

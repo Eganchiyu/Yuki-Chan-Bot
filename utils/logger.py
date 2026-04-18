@@ -4,6 +4,7 @@ import logging.handlers
 import os
 import sys
 import time
+import datetime
 
 from config import BASE_DIR, DEBUG
 
@@ -11,6 +12,42 @@ LOGS_DIR = os.path.join(BASE_DIR, "logs")
 os.makedirs(LOGS_DIR, exist_ok=True)
 
 LOG_FILE = os.path.join(LOGS_DIR, "yuki.log")
+
+# ---------- 启动时日志归档 ----------
+
+def _archive_existing_log(keep: int = 30):
+    """
+    启动时：若 yuki.log 已存在，按最后修改时间重命名为归档文件，
+    并只保留最近 keep 个归档。
+    """
+    if not os.path.exists(LOG_FILE) or os.path.getsize(LOG_FILE) == 0:
+        return
+
+    mtime = os.path.getmtime(LOG_FILE)
+    mtime_str = datetime.datetime.fromtimestamp(mtime).strftime("%Y%m%d_%H%M%S")
+    archive_path = os.path.join(LOGS_DIR, f"yuki_{mtime_str}.log")
+
+    # 防冲突
+    counter = 1
+    original = archive_path
+    while os.path.exists(archive_path):
+        base, ext = os.path.splitext(original)
+        archive_path = f"{base}_{counter}{ext}"
+        counter += 1
+
+    os.rename(LOG_FILE, archive_path)
+
+    # 清理过期归档
+    archives = [
+        f for f in os.listdir(LOGS_DIR)
+        if f.startswith("yuki_") and f.endswith(".log")
+    ]
+    archives.sort(
+        key=lambda f: os.path.getmtime(os.path.join(LOGS_DIR, f)),
+        reverse=True
+    )
+    for old in archives[keep:]:
+        os.remove(os.path.join(LOGS_DIR, old))
 
 # ---------- 公用方法 ----------
 
@@ -87,9 +124,9 @@ class ColoredConsoleFormatter(logging.Formatter):
         c_reset = self.C_RESET
 
         return (
-            f"{c_time}{asctime}{c_reset} "
+            f"{c_time}[{asctime}]{c_reset} "
             f"{c_lvl}{level}{c_reset} "
-            f"{c_loc}{location}{c_reset} "
+            f"{c_loc}{location}{c_reset} | "
             f"{msg}"
         )
 
@@ -115,11 +152,15 @@ def _try_enable_windows_ansi():
 def setup_logging(level: int = None):
     """
     配置全局日志：
+    - 启动时自动归档旧日志
     - 控制台输出（对齐结构 + ANSI 颜色）
-    - 文件持久化（TimedRotatingFileHandler 按天归档，保留 30 天）
+    - 文件持久化（追加写入当前 yuki.log）
     """
     if level is None:
         level = logging.DEBUG if DEBUG else logging.INFO
+
+    # 先归档上一次的日志
+    _archive_existing_log(keep=30)
 
     root = logging.getLogger()
     root.setLevel(level)
@@ -136,17 +177,10 @@ def setup_logging(level: int = None):
     console_handler.setFormatter(ColoredConsoleFormatter())
     root.addHandler(console_handler)
 
-    # 文件 handler：按天归档，保留最近 30 天
-    file_handler = logging.handlers.TimedRotatingFileHandler(
-        LOG_FILE,
-        when="midnight",
-        interval=1,
-        backupCount=30,
-        encoding="utf-8"
-    )
+    # 文件 handler：追加写入新日志
+    file_handler = logging.FileHandler(LOG_FILE, mode="a", encoding="utf-8")
     file_handler.setLevel(logging.DEBUG)
     file_handler.setFormatter(PrettyFormatter())
-    file_handler.suffix = "%Y-%m-%d"
     root.addHandler(file_handler)
 
 

@@ -269,12 +269,12 @@ if __name__ == "__main__":
         asyncio.run(napcat_listen("private" if choice == "1" else "group"))
 
     except (FileNotFoundError, ImportError, KeyError) as e:
-        logger.error("\n" + "=" * 50)
+        logger.error("=" * 50)
         logger.error("启动失败：环境配置似乎不完整")
         logger.error(f"具体错误: {e}")
         logger.error("-" * 50)
         logger.error("💡 建议操作：")
-        logger.error("   请运行 [ python quick_setup.py ] 进行一键修复/配置。")
+        logger.error("   请运行 [ python setup.py ] 进行一键修复/配置。")
         logger.error("   该脚本会自动安装依赖、生成配置文件并下载模型。")
         logger.error("=" * 50 + "\n")
         sys.exit(1)

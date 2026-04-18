@@ -6,7 +6,8 @@ import os
 def download_model():
 # 从你 config 里的配置读取
     model_name = "shibing624/text2vec-base-chinese"
-    save_path = "../models/text2vec-base-chinese"
+    # 使用基于当前文件位置的绝对路径，确保无论从哪运行都保存到项目目录
+    save_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "models", "text2vec-base-chinese"))
 
     print(f"正在准备导出语义嵌入式模型（用于辅助RAG向量检索）: {model_name}")
     print("这一步会访问huggingface官网下载模型，大小约400MB，需连接外网。")
