@@ -1,6 +1,9 @@
 from typing import Optional, Dict
 
 from network.ws_connection import BotConnector
+from utils.logger import get_logger
+
+logger = get_logger("message_meta")
 
 
 class MetaGetter:
@@ -18,7 +21,7 @@ class MetaGetter:
             if response and response.get("retcode") == 0:
                 return response.get("data")
         except Exception as e:
-            print(f"获取用户信息失败: {e}")
+            logger.error(f"获取用户信息失败: {e}")
         return None
 
     async def get_reply_text(self, msg_id: str) -> Optional[dict]:
@@ -33,5 +36,5 @@ class MetaGetter:
             if response and response.get("status") == "ok":
                 return response.get("data")
         except Exception as e:
-            print(f"获取回复消息失败: {e}")
+            logger.error(f"获取回复消息失败: {e}")
         return None

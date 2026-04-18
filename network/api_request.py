@@ -4,6 +4,9 @@ import asyncio
 import aiohttp
 import json
 from config import BACKUP_API_KEY, DEEPSEEK_BASE_URL, BACKUP_MODEL
+from utils.logger import get_logger
+
+logger = get_logger("api_request")
 
 
 class ApiCall:
@@ -38,7 +41,7 @@ class ApiCall:
         # 如果降级超过 120 秒，尝试给主线路一个机会
         if self.is_degraded and (time.time() - self.last_fail_time > 120):
             self.is_degraded = False
-            print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] [System] 尝试恢复 TeaTop 主线路...")
+            logger.info("[System] 尝试恢复 TeaTop 主线路...")
 
     async def _raw_post(self, url, key, model, messages, timeout, **kwargs):
         """底层 HTTP 请求，完全模拟你测试脚本的 fetch_test"""
@@ -91,7 +94,7 @@ class ApiCall:
                 return result
 
             # 主线一旦出任何错，记录降级并立刻转向备用
-            print(f"[API] 主线路失效: {result}。触发熔断，切换官方线路。")
+            logger.warning(f"[API] 主线路失效: {result}。触发熔断，切换官方线路。")
             self.is_degraded = True
             self.last_fail_time = time.time()
 
@@ -108,7 +111,7 @@ class ApiCall:
             return result
         else:
             # 官方也报错，返回兜底话术
-            print(f"[Critical] 全线不可用: {result}")
+            logger.error(f"[Critical] 全线不可用: {result}")
             return "（Yuki 好像有点不舒服，暂时连接不上大脑...哥哥等会再找我好吗？）"
 
     @classmethod

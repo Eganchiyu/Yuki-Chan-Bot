@@ -10,6 +10,9 @@ from core.prompts import BASE_SETTING, SUMMARY_PROMPT, build_chat_context
 from config import *
 from core.prompts import build_ice_break_prompt
 from core.maid import maid_evolution_loop
+from utils.logger import get_logger
+
+logger = get_logger("engine")
 
 
 class YukiEngine:
@@ -33,7 +36,7 @@ class YukiEngine:
                                                         )
         await asyncio.sleep(0.2)
         # 发送对话补全到DeepSeek
-        print(f"[System] Yuki 正在打字...")
+        logger.info("[System] Yuki 正在打字...")
         try:
             Yuki_Answer = await self.llm.robust_api_call(
                 model=LLM_MODEL,
@@ -56,10 +59,10 @@ class YukiEngine:
                     "goal": task_desc,
                     "chat_id": chat_id
                 })
-                print(f"📤 已委托小女仆：{task_desc}")
+                logger.info(f"📤 已委托小女仆：{task_desc}")
             return Yuki_Answer
         except Exception as e:
-            print(f"调用失败: {e}")
+            logger.error(f"调用失败: {e}")
             return f"API 接口调用失败"
 
     async def decide_to_reply(self, history, message_objs, chat_id,force_reply = False):
@@ -85,27 +88,27 @@ class YukiEngine:
 
         # 逻辑干预：
         if human_calling:
-            print(f"[System] 检测到人类关键召唤，Yuki 强制清醒")
+            logger.info("[System] 检测到人类关键召唤，Yuki 强制清醒")
             return True
 
         if bot_calling_only and any(any(kw in m["raw_text"].lower() for kw in keywords) for m in message_objs):
             desire *= 0.7  # 你的核心诉求：欲望乘 0.7
-            print(f"[System] 检测到仅有 BOT 在召唤 Yuki，为了防止无限套娃，本次放行。欲望打折：{desire:.1}%")
+            logger.info(f"[System] 检测到仅有 BOT 在召唤 Yuki，为了防止无限套娃，本次放行。欲望打折：{desire:.1}%")
 
         # --- 强干预层 ---
         if desire >= 80:
-            print(f"[Decision] {chat_id} 欲望爆表({desire}%)，强制回复！")
+            logger.info(f"[Decision] {chat_id} 欲望爆表({desire}%)，强制回复！")
             return True
         if desire <= 30:
-            print(f"[Decision] {chat_id} 欲望低迷({desire}%)，拒绝营业。")
+            logger.info(f"[Decision] {chat_id} 欲望低迷({desire}%)，拒绝营业。")
             return False
 
         if current_e < MIN_ACTIVE_ENERGY:
-            print(f"[System] Yuki 太累了... 正在潜水回复体力 (当前精力: {current_e:.1f})")
+            logger.info(f"[System] Yuki 太累了... 正在潜水回复体力 (当前精力: {current_e:.1f})")
             return False
 
         try:
-            print(f"[System] 正在构建判定消息... (当前精力: {current_e:.1f})")
+            logger.info(f"[System] 正在构建判定消息... (当前精力: {current_e:.1f})")
             recent_dialogue = [msg for msg in history if msg.get("role") != "system"][-10:]
 
             dialogue_text = ""
@@ -132,8 +135,8 @@ class YukiEngine:
                     f"{check_prompt}"
                 )}
             ]
-            print(f"[DEBUG] \n {messages}")
-            print(f"[System] 判定消息构建完成，正在发送API请求... (当前精力: {current_e:.1f})")
+            logger.debug(f"[DEBUG] \n {messages}")
+            logger.info(f"[System] 判定消息构建完成，正在发送API请求... (当前精力: {current_e:.1f})")
 
             raw_response = await self.llm.robust_api_call(
                 model=LLM_MODEL,
@@ -148,11 +151,11 @@ class YukiEngine:
 
             return "YES" in result
         except Exception as e:
-            print(f"[ERROR] 判定失败原因: {e}")
+            logger.error(f"[ERROR] 判定失败原因: {e}")
             return False
 
     async def do_summarize(self, chat_id, history):
-        print(f"[System] [{chat_id}] 记忆有点长了，Yuki 正在写日记回顾...")
+        logger.info(f"[System] [{chat_id}] 记忆有点长了，Yuki 正在写日记回顾...")
         dialogue_msgs = [msg for msg in history if msg["role"] != "system"]
         content_to_summarize = json.dumps(dialogue_msgs, ensure_ascii=False)
         try:
@@ -175,12 +178,12 @@ class YukiEngine:
             diary_content = re.sub(r'\s*FINISHED\s*$', '', diary_content, flags=re.IGNORECASE)
             diary_content = f"【日记({datetime.datetime.now().strftime("%Y-%m-%d %H:%M")})】：\n{diary_content}"
             self.rag.save_diary(diary_content, chat_id=chat_id)
-            print(f"[System] 日记已存入记忆库：{diary_content}")
+            logger.info(f"[System] 日记已存入记忆库：{diary_content}")
 
             return [msg for msg in history if msg["role"] == "system"] + dialogue_msgs[-KEEP_LAST_DIALOGUE:]
 
         except Exception as e:
-            print(f"[System ERROR] 写日记失败: {e}")
+            logger.error(f"[System ERROR] 写日记失败: {e}")
             return history
 
     async def idle_diary_checker(self):
@@ -188,7 +191,7 @@ class YukiEngine:
         while True:
             await asyncio.sleep(30)  # 检查间隔，可根据需要调整
             now = time.time()
-            print(f"⏰ 后台检查中时间中...{now}")  # 调试输出
+            logger.debug(f"⏰ 后台检查中时间中...{now}")  # 调试输出
             history_dict = self.history.load()
             for cid, last_msg in list(self.yuki.last_message_time.items()):
                 # 跳过正在写日记的群聊
@@ -209,7 +212,7 @@ class YukiEngine:
                     continue  # 轮数不足
 
                 # 满足条件，触发写日记
-                print(f"⏰ 后台检查：群 {cid} 空闲 {idle_seconds:.1f} 秒，轮数 {non_system_count}，触发写日记")
+                logger.info(f"⏰ 后台检查：群 {cid} 空闲 {idle_seconds:.1f} 秒，轮数 {non_system_count}，触发写日记")
                 self.yuki.writing_diary.add(cid)
                 try:
                     new_history = await self.do_summarize(int(cid), history_dict[cid])
@@ -222,7 +225,7 @@ class YukiEngine:
         while True:
             await asyncio.sleep(random.randint(600, 1800))
             target_list = [str(gid) for gid in TARGET_GROUPS]
-            print(f"已加载{len(target_list)}条数据")
+            logger.info(f"已加载{len(target_list)}条数据")
             pending_ice_break = []
 
             async with self.yuki.lock:
@@ -233,21 +236,21 @@ class YukiEngine:
                     activity = self.yuki.group_activity.get(cid, 0.0)
                     desire = self.yuki.desire_to_start_topic.get(cid, 0)
 
-                    print(f"正在检查{cid}：群聊活跃度{activity} | 发言欲望{desire}")
+                    logger.info(f"正在检查{cid}：群聊活跃度{activity} | 发言欲望{desire}")
 
                     # 获取当前的失败次数，默认为 0
                     fail_count = self.yuki.ice_break_fail_count.get(cid, 0)
-                    print(f"[IceBreak] {cid} 破冰失败次数为 {fail_count}")
+                    logger.info(f"[IceBreak] {cid} 破冰失败次数为 {fail_count}")
 
                     # 修改判定条件：只有失败次数 < 2 时才允许破冰
                     if activity < 0.5 and desire > 75 and fail_count < 2:
                         if random.random() < 0.8:
                             pending_ice_break.append(cid)
                     elif fail_count >= 2:
-                        print(f"[IceBreak] {cid} 连续两次破冰无果，进入自闭模式，等待群友先开口。")
+                        logger.info(f"[IceBreak] {cid} 连续两次破冰无果，进入自闭模式，等待群友先开口。")
 
             for cid in pending_ice_break:
-                print(f"[IceBreak] 目标群 {cid} 触发冷场唤醒")
+                logger.info(f"[IceBreak] 目标群 {cid} 触发冷场唤醒")
                 asyncio.create_task(self.break_ice(cid))
 
 
@@ -274,7 +277,7 @@ class YukiEngine:
 
         prompt = build_ice_break_prompt(chat_id, relevant_diaries, history_dict)
 
-        print(f"[System] Yuki 正在破冰... (Query: {query})")
+        logger.info(f"[System] Yuki 正在破冰... (Query: {query})")
         try:
             # 4. API 调用
             Yuki_Answer = await self.llm.robust_api_call(
@@ -299,11 +302,11 @@ class YukiEngine:
                 self.yuki.consume_energy(chat_id)
                 current_energy = self.yuki.energy[chat_id]
 
-            print(f"[System] 破冰成功！发送给 {chat_id} (剩余精力: {current_energy:.1f})")
+            logger.info(f"[System] 破冰成功！发送给 {chat_id} (剩余精力: {current_energy:.1f})")
             await self.sender.send(chat_id, Yuki_Answer, mode="group")
 
         except Exception as e:
-            print(f"Deepseek 破冰调用失败: {e}")
+            logger.error(f"Deepseek 破冰调用失败: {e}")
             return f"API 调用失败"
 
 # core/engine.py 末尾新增（或替换原来的 maid_worker）
@@ -319,7 +322,7 @@ async def maid_worker(engine, yuki_state, sender, history_manager):
         # 更新当前任务状态（让 Yuki 能感知到“小女仆正在干这个”）
         yuki_state.maid_current_tasks[chat_id] = goal
 
-        print(f"🧹 小女仆开始后台工作: {goal} (chat_id: {chat_id})")
+        logger.info(f"🧹 小女仆开始后台工作: {goal} (chat_id: {chat_id})")
 
         # 非阻塞执行（线程池运行同步的 ollama 循环）
         result_dict = await maid_evolution_loop(
@@ -333,7 +336,7 @@ async def maid_worker(engine, yuki_state, sender, history_manager):
         # 构造汇报内容
         report = f"【小女仆完成! 小女仆汇报】\n任务：「{goal}」\n结果：{result_dict.get('result', '未知结果')}"
 
-        print(f"✅ 小女仆任务完成，准备交还给主流程: {chat_id}")
+        logger.info(f"✅ 小女仆任务完成，准备交还给主流程: {chat_id}")
 
         # === 关键修改部分 ===
         try:
@@ -361,14 +364,14 @@ async def maid_worker(engine, yuki_state, sender, history_manager):
                 asyncio.create_task(
                     engine.process_callback(chat_id, mode, debounce_flag=False,force_reply=True)
                 )
-                print(f"🚀 已通过 process_callback 触发 main_process (chat_id: {chat_id})")
+                logger.info(f"🚀 已通过 process_callback 触发 main_process (chat_id: {chat_id})")
             else:
-                print(f"⚠️ process_callback 未设置，无法触发回复流程")
+                logger.warning(f"⚠️ process_callback 未设置，无法触发回复流程")
 
-            print(f"🚀 已将小女仆汇报交还给 main_process，强制触发回复流程 (chat_id: {chat_id})")
+            logger.info(f"🚀 已将小女仆汇报交还给 main_process，强制触发回复流程 (chat_id: {chat_id})")
 
         except Exception as e:
-            print(f"❌ 处理小女仆汇报时出错: {e}")
+            logger.error(f"❌ 处理小女仆汇报时出错: {e}")
 
         finally:
             yuki_state.maid_task_queue.task_done()

@@ -1,7 +1,6 @@
-from datetime import datetime
-from config import DEBUG
+from utils.logger import get_logger
+
+logger = get_logger("vision_utils")
 
 def log(msg):
-    if DEBUG:
-        print(f"[{datetime.now().strftime('%H:%M:%S')}] [表情理解] {msg}")
-    else:return
+    logger.debug(msg)

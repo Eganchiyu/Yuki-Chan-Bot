@@ -3,6 +3,9 @@ import json
 import os
 import threading
 from config import HISTORY_FILE, LOG_FILE
+from utils.logger import get_logger
+
+logger = get_logger("history")
 
 
 class HistoryManager:
@@ -17,7 +20,7 @@ class HistoryManager:
         with self._lock:
             if self._cache is None:
                 # 第一次访问，从硬盘读入内存
-                print("[History] 正在预载历史数据到内存...")
+                logger.info("[History] 正在预载历史数据到内存...")
                 self._cache = self.read_from_disk()
             return self._cache
 
@@ -31,7 +34,7 @@ class HistoryManager:
                 # 如果读出来的是 list 或者是 None，强行转成 dict
                 return data if isinstance(data, dict) else {}
         except Exception as e:
-            print(f"[History] 加载文件失败: {e}")
+            logger.error(f"[History] 加载文件失败: {e}")
             return {}
 
     def save(self, data: dict):
@@ -52,7 +55,7 @@ class HistoryManager:
                 # 原子替换：即使程序在中途崩溃，原有的 history.json 也不会坏
                 os.replace(temp_file, self.history_file)
             except Exception as e:
-                print(f"[History] 保存失败: {e}")
+                logger.error(f"[History] 保存失败: {e}")
                 if os.path.exists(temp_file):
                     os.remove(temp_file)
 
@@ -94,8 +97,8 @@ class HistoryManager:
             }
             history[cid].append(whisper_msg)
             self.save(history)
-            print(f"悄悄话已注入到对话 {chat_id}: {message}")
+            logger.info(f"悄悄话已注入到对话 {chat_id}: {message}")
             return True
         else:
-            print(f"对话 {chat_id} 不存在")
+            logger.warning(f"对话 {chat_id} 不存在")
             return False

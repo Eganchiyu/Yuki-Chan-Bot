@@ -15,6 +15,10 @@ from network.ws_connection import BotConnector
 from network.ws_sender import MessageSender
 from network.api_request import ApiCall
 from config import *
+from utils.logger import setup_logging, get_logger
+
+setup_logging()
+logger = get_logger("main")
 # 初始化全局变量：消息缓冲和定时任务
 real_time_debounce_time = DEBOUNCE_TIME
 
@@ -26,7 +30,7 @@ def check_config():
             from setup import quick_setup
             quick_setup(0)  # 以刷新模式运行
         else:
-            print("请手动运行 python quick_setup.py 后再启动。")
+            logger.warning("请手动运行 python quick_setup.py 后再启动。")
             sys.exit(0)
 
     required_files = [".env", "blacklist.txt", "./models/text2vec-base-chinese/config.json"]
@@ -67,10 +71,10 @@ async def main_process(chat_id, mode, debounce_flag=True, force_reply=None):
     # 剩下的CQ码文本解析（@、回复等）交给 parser
     combined_text = await parser.parse_all_cq_codes(combined_text)
     combined_text = combined_text.replace("\n", "  ").strip()
-    print(f"[{chat_id}] 收到消息{combined_text}")
+    logger.info(f"[{chat_id}] 收到消息{combined_text}")
     history_manager.append_to_log(chat_id, "User/Group", combined_text)
 
-    print("[System] 加载上下文信息...")
+    logger.info("[System] 加载上下文信息...")
     # 加载上下文信息
     history_dict = history_manager.load()
     chat_id = str(chat_id)
@@ -85,31 +89,31 @@ async def main_process(chat_id, mode, debounce_flag=True, force_reply=None):
         "time": current_time_str  # 新增独立字段
     })
 
-    print("[System] 加载完成")
+    logger.info("[System] 加载完成")
 
     if (mode == "group") and (not await engine.decide_to_reply(history_dict[chat_id], message_objs, chat_id,force_reply = force_reply)):
         # 保存获取的上下文信息
         history_manager.save(history_dict)
-        print("[System] Yuki 决定继续潜水...")
+        logger.info("[System] Yuki 决定继续潜水...")
         return
 
-    print(f"[System] Yuki 正在回忆...")
+    logger.info("[System] Yuki 正在回忆...")
 
     # 检索相关记忆总用法（包含关键词提取和语义向量匹配）
     relevant_diaries = memory_rag.search_diaries(combined_text, chat_id=chat_id)
-    print(f"[System] 检索到 {len(relevant_diaries)} 条相关日记:")
+    logger.info(f"[System] 检索到 {len(relevant_diaries)} 条相关日记:")
 
-    print(f"检索完成，用时 {(time.time()-first_time):.2f}")
+    logger.info(f"检索完成，用时 {(time.time()-first_time):.2f}")
 
     Yuki_Answer = await engine.api_reply(chat_id, combined_text, history_dict, mode, relevant_diaries)
 
-    print("Yuki打字完成！")
+    logger.info("Yuki打字完成！")
     if mode == "group":
         yuki.consume_energy(chat_id)
-    print(f"[System] Yuki 正在发送消息...(剩余精力: {yuki.energy[chat_id]:.1f})")
+    logger.info(f"[System] Yuki 正在发送消息...(剩余精力: {yuki.energy[chat_id]:.1f})")
     await sender.send(chat_id, Yuki_Answer, mode=mode)
-    print(f"[System] 发送完成！内容：{Yuki_Answer}")
-    print("[System] Yuki正在保存上下文...")
+    logger.info(f"[System] 发送完成！内容：{Yuki_Answer}")
+    logger.info("[System] Yuki正在保存上下文...")
     # 保存回复到上下文
     history_manager.append_to_log(chat_id, "Yuki", Yuki_Answer)
     history_dict[chat_id].append({
@@ -118,14 +122,14 @@ async def main_process(chat_id, mode, debounce_flag=True, force_reply=None):
         "time": current_time_str  # 新增独立字段
     })
     history_manager.save(history_dict)
-    print("[System] 保存完成")
+    logger.info("[System] 保存完成")
 
     # 日记触发检查：如果历史过长，强制写日记
     if len(history_dict[chat_id]) > DIARY_MAX_LENGTH:
         summarized_list = await engine.do_summarize(chat_id, history_dict[chat_id])
         history_dict[chat_id] = summarized_list
         history_manager.save(history_dict)
-        print(f"[{chat_id}] 日记写入完成，全量历史已同步。")
+        logger.info(f"[{chat_id}] 日记写入完成，全量历史已同步。")
 
 
 async def napcat_listen(mode):
@@ -138,9 +142,9 @@ async def napcat_listen(mode):
     asyncio.create_task(maid_worker(engine, yuki, sender, history_manager))
     # for chat_id in TARGET_GROUPS:
     #     print(f"[System] 初始化{chat_id}精力为{yuki.update_energy(chat_id)}")
-    print(f"[System] 已启动后台辅助任务 (日记检查/破冰/精力衰减)")
+    logger.info("[System] 已启动后台辅助任务 (日记检查/破冰/精力衰减)")
 
-    print(f"[System] 准备连接 NapCat 服务端 | 模式: {mode}")
+    logger.info(f"[System] 准备连接 NapCat 服务端 | 模式: {mode}")
     while True:
         try:
             async for data in connector.listen():
@@ -171,8 +175,8 @@ async def napcat_listen(mode):
 
         except Exception as e:
             # 这里捕获的是 listen 循环抛出的致命异常（如代码逻辑错误或持续的连接失败）
-            print(f"[Critical] 监听主循环发生非预期崩溃: {e}")
-            print("[System] 5 秒后将尝试重启监听进程...")
+            logger.error(f"监听主循环发生非预期崩溃: {e}")
+            logger.info("[System] 5 秒后将尝试重启监听进程...")
             await asyncio.sleep(5)
 
 async def manage_buffer(chat_id, content, mode, raw_message='', sender_name = ''):
@@ -182,7 +186,7 @@ async def manage_buffer(chat_id, content, mode, raw_message='', sender_name = ''
     # --- 新增：只要收到消息，就重置该群的破冰失败计数 ---
     if cid_str in yuki.ice_break_fail_count:
         if yuki.ice_break_fail_count[cid_str] > 0:
-            print(f"[IceBreak] {cid_str} 收到新消息，重置破冰计数器。")
+            logger.info(f"[IceBreak] {cid_str} 收到新消息，重置破冰计数器。")
         yuki.ice_break_fail_count[cid_str] = 0
 
     if real_time_debounce_time <= 0:
@@ -196,7 +200,7 @@ async def manage_buffer(chat_id, content, mode, raw_message='', sender_name = ''
     # --- 拦截帮助指令并存入历史 ---
     if raw_message in ['help', '/help', 'yuki帮助', 'yuki功能', '帮助', '功能']:
         await sender.send_local_image(chat_id, "utils/yuki_help.png", mode=mode)
-        print(f"[System] 已记录并发送帮助图")
+        logger.info("[System] 已记录并发送帮助图")
         history_manager.append_chat(chat_id, "user", f"(请求帮助文档: {content})")
         history_manager.append_chat(chat_id, "assistant", "(已发送帮助文档图片)")
         return 
@@ -222,8 +226,8 @@ async def manage_buffer(chat_id, content, mode, raw_message='', sender_name = ''
 
 if __name__ == "__main__":
     try:
-        print("[System] 请确保已运行setup.py进行初始化配置！")
-        print("[System] Yuki 正在初始化...")
+        logger.info("[System] 请确保已运行setup.py进行初始化配置！")
+        logger.info("[System] Yuki 正在初始化...")
         start_time = time.time()
 
         # 加载与Napcat通信的Websocket服务
@@ -240,7 +244,7 @@ if __name__ == "__main__":
         llm = ApiCall(LLM_API_KEY, LLM_BASE_URL)
         # 实例化历史记录管理器
         history_manager = HistoryManager()
-        print("[System] 开始初始化记忆系统（RAG）...")
+        logger.info("[System] 开始初始化记忆系统（RAG）...")
         from modules.memory.rag import MemoryRAG
         # 初始化向量记忆库
         memory_rag = MemoryRAG()
@@ -250,7 +254,7 @@ if __name__ == "__main__":
         # 在 engine = YukiEngine(...) 之后
 
         end_time = time.time()
-        print(f"[System] 初始化完成，耗时 {end_time - start_time:.1f} 秒")
+        logger.info(f"[System] 初始化完成，耗时 {end_time - start_time:.1f} 秒")
         choice = input("[System] 选择模式：1. 私聊模式  2. 群聊模式（默认）\n请输入数字: ").strip()
         if choice != "2":
             # 初始化巡检名单，预载历史中的群聊ID和最后消息时间，确保后台检查能正常工作
@@ -259,23 +263,23 @@ if __name__ == "__main__":
                 yuki.last_message_time[str(cid)] = time.time()
                 current_e = yuki.update_energy(str(cid))
                 yuki.update_desire_to_reply(str(cid))
-                print(
+                logger.info(
                     f"[System] 预热群组 {str(cid)}: 精力 {current_e:.1f}, 初始欲望 {yuki.desire_to_start_topic.get(str(cid), 0)}%")
-            print(f"DEBUG: 已预载 {len(yuki.last_message_time)} 个群组到巡检名单")
+            logger.debug(f"已预载 {len(yuki.last_message_time)} 个群组到巡检名单")
         asyncio.run(napcat_listen("private" if choice == "1" else "group"))
 
     except (FileNotFoundError, ImportError, KeyError) as e:
-        print("\n" + "=" * 50)
-        print("启动失败：环境配置似乎不完整")
-        print(f"具体错误: {e}")
-        print("-" * 50)
-        print("💡 建议操作：")
-        print("   请运行 [ python quick_setup.py ] 进行一键修复/配置。")
-        print("   该脚本会自动安装依赖、生成配置文件并下载模型。")
-        print("=" * 50 + "\n")
+        logger.error("\n" + "=" * 50)
+        logger.error("启动失败：环境配置似乎不完整")
+        logger.error(f"具体错误: {e}")
+        logger.error("-" * 50)
+        logger.error("💡 建议操作：")
+        logger.error("   请运行 [ python quick_setup.py ] 进行一键修复/配置。")
+        logger.error("   该脚本会自动安装依赖、生成配置文件并下载模型。")
+        logger.error("=" * 50 + "\n")
         sys.exit(1)
 
     except Exception as e:
-        print(f"发生未知致命错误: {e}")
+        logger.critical(f"发生未知致命错误: {e}")
         # 这里可以选择记录日志
         sys.exit(1)

@@ -1,4 +1,7 @@
 from config import *
+from utils.logger import get_logger
+
+logger = get_logger("prompts")
 
 # ========== 新增：小女仆设定（放在系统提示最前面） ==========
 MAID_SETTING = """
@@ -77,7 +80,7 @@ def build_ice_break_prompt(chat_id, relevant_diaries: list, history_dict: dict):
     for diary_obj in reversed(relevant_diaries):
         content = diary_obj['content'].replace('\n', ' ')
         messages.append({"role": "system", "content": f"【回忆】{content}"})
-        print(f"【回忆】{content}")
+        logger.debug(f"【回忆】{content}")
 
     # 7. 放置触发指令 (User 角色放在最后效果最好)
     messages.append({"role": "user", "content": (
@@ -94,7 +97,7 @@ async def build_chat_context(yuki, chat_id: str, combined_text: str, history_dic
     # 这里的 diary 现在是字典，我们要取出 ['content']
     for i, diary_obj in enumerate(reversed(relevant_diaries), 1):
         preview = diary_obj['content'].replace('\n', ' ')  # 提取文本内容
-        print(f"[Diary Debug]回忆 {i}: {preview}")
+        logger.debug(f"[Diary Debug]回忆 {i}: {preview}")
 
     # 1. 基础人设
     system_prompt = history_dict[chat_id][0]["content"] if history_dict[chat_id] and history_dict[chat_id][0][
@@ -109,7 +112,7 @@ async def build_chat_context(yuki, chat_id: str, combined_text: str, history_dic
     # --- 调试输出：打印加权分和匹配到的关键词信息 ---
     for i, diary_obj in enumerate(relevant_diaries[:3], 1):
         # 打印加权分和匹配到的关键词信息
-        print(f"[RAG-Debug] 回忆 {i} | 得分: {diary_obj['score']:.2f} | 详情: {diary_obj['debug']}")
+        logger.debug(f"[RAG-Debug] 回忆 {i} | 得分: {diary_obj['score']:.2f} | 详情: {diary_obj['debug']}")
 
     # 3. 取出最近的对话（注意：这里保持原样取出，下面进行处理）
     recent_msgs_raw = [msg for msg in history_dict[chat_id][-KEEP_LAST_DIALOGUE - 1:-1] if msg["role"] != "system"]

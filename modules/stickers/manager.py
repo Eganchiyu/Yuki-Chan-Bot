@@ -13,6 +13,9 @@ from sentence_transformers import SentenceTransformer
 from config import EMBED_MODEL, VECTOR_DB_PATH, ROBOT_NAME
 from modules.vision.processor import MemeProcessor
 from network.api_request import ApiCall
+from utils.logger import get_logger
+
+logger = get_logger("stickers")
 
 
 # ================== Prompt（保持不变） ==================
@@ -51,7 +54,7 @@ class StickerManager:
         )
 
         jieba.load_userdict("blacklist.txt") if os.path.exists("blacklist.txt") else None
-        print(f"[StickerManager] 初始化完成 | 当前表情包数量: {self.collection.count()}")
+        logger.info(f"[StickerManager] 初始化完成 | 当前表情包数量: {self.collection.count()}")
 
     # ====================== 工具函数 ======================
 
@@ -89,7 +92,7 @@ class StickerManager:
             return description, final_local_path
 
         except Exception as e:
-            print(f"[StickerManager] 本地化过程发生异常: {e}")
+            logger.error(f"[StickerManager] 本地化过程发生异常: {e}")
             return "未知意图的表情包", image_ref
 
     async def _structured_analysis(self, image_ref: str) -> Dict[str, Any]:
@@ -154,7 +157,7 @@ class StickerManager:
 
         except Exception as e:
             # 这里打印出 local_path 方便你调试
-            print(f"[Sticker] Base64 结构化分析失败: {e}")
+            logger.error(f"[Sticker] Base64 结构化分析失败: {e}")
             # 如果是因为 json.loads 失败，记录一下 raw 内容
             return {"description": "识别失败", "emotion": "中性", "tags": [], "category": "日常摸鱼系"}
 
@@ -184,7 +187,7 @@ class StickerManager:
     # ====================== 主流程 ======================
     async def ingest_sticker(self, image_ref: str, chat_id: str = "global", owner: str = "admin") -> str:
         """主流程：学习一张表情包（支持网页URL 和 本地文件）"""
-        print(f"[Sticker] 开始学习 → {image_ref[:80]}...")
+        logger.info(f"[Sticker] 开始学习 → {image_ref[:80]}...")
 
         # Step 1: VL理解 + 本地化（已自动保存原图）
         vl_desc, local_file_ref = await self._vl_understand_and_localize(image_ref)
@@ -218,7 +221,7 @@ class StickerManager:
             ids=[doc_id]
         )
 
-        print(f"[Sticker] ✅ 入库完成 | 本地路径: {local_file_ref} | 情绪: {analysis['emotion']}")
+        logger.info(f"[Sticker] ✅ 入库完成 | 本地路径: {local_file_ref} | 情绪: {analysis['emotion']}")
         return doc_id
 
     # ====================== 主流程2：调取/检索（retrieve） ======================
@@ -230,7 +233,7 @@ class StickerManager:
         if not yuki_message.strip():
             return None
 
-        print(f"[Sticker] 开始为消息检索表情包: {yuki_message[:60]}...")
+        logger.info(f"[Sticker] 开始为消息检索表情包: {yuki_message[:60]}...")
 
         # Step 1: 判断情绪标签
         emotion_tag = await self._judge_emotion(yuki_message)
@@ -255,7 +258,7 @@ class StickerManager:
         # 更新使用统计
         self._increment_use_count(best["id"])
 
-        print(f"[Sticker] 选中表情 → 情绪:{best['emotion']} | 描述:{best['description'][:40]} | use_count:{best['use_count']}")
+        logger.info(f"[Sticker] 选中表情 → 情绪:{best['emotion']} | 描述:{best['description'][:40]} | use_count:{best['use_count']}")
         return best
 
     async def _dual_pool_retrieve(self, query_text: str, chat_id: str, top_k: int = 20) -> List[Dict]:
@@ -335,7 +338,7 @@ class StickerManager:
                 meta["last_used"] = time.time()
                 self.collection.update(ids=[doc_id], metadatas=[meta])
         except Exception as e:
-            print(f"[Sticker] 更新使用次数失败: {e}")
+            logger.error(f"[Sticker] 更新使用次数失败: {e}")
 
     # ====================== 实用工具方法 ======================
     def get_stats(self) -> Dict:

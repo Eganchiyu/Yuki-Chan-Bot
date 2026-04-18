@@ -5,6 +5,9 @@ import websockets
 from typing import Optional, Dict
 from config import NAPCAT_WS_URL
 from asyncio import Future
+from utils.logger import get_logger
+
+logger = get_logger("ws_connection")
 
 class BotConnector:
     def __init__(self, ws_url: str = NAPCAT_WS_URL):
@@ -38,7 +41,7 @@ class BotConnector:
 
             if not is_alive:
                 if self.websocket is not None:
-                    print("[Network] 检测到连接状态异常，正在重建...")
+                    logger.warning("[Network] 检测到连接状态异常，正在重建...")
 
                 self.websocket = await websockets.connect(
                     self.ws_url,
@@ -46,7 +49,7 @@ class BotConnector:
                     ping_timeout=60,
                     close_timeout=10
                 )
-                print(f"[Network] 全局连接已建立: {self.ws_url}")
+                logger.info(f"[Network] 全局连接已建立: {self.ws_url}")
 
             return self.websocket
 
@@ -68,7 +71,7 @@ class BotConnector:
                     # 正常的事件流抛出
                     yield data
             except Exception as e:
-                print(f"[Network] 监听异常: {e}")
+                logger.error(f"[Network] 监听异常: {e}")
                 self.websocket = None
                 await asyncio.sleep(3)
 
@@ -95,7 +98,7 @@ class BotConnector:
                 # 2. 等待结果 (这里才需要 await)
                 return await asyncio.wait_for(future, timeout=5.0)
             except asyncio.TimeoutError:
-                print(f"请求 {action} 超时 (echo: {echo})")
+                logger.warning(f"请求 {action} 超时 (echo: {echo})")
                 return None
             finally:
                 # 3. 无论成功还是超时，都要清理字典
@@ -103,7 +106,7 @@ class BotConnector:
                 self._response_futures.pop(echo, None)
 
         except Exception as e:
-            print(f"网络异常: {e}")
+            logger.error(f"网络异常: {e}")
             self._response_futures.pop(echo, None)
             return None
 

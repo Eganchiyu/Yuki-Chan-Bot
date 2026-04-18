@@ -7,6 +7,9 @@ import jieba.analyse
 from sentence_transformers import SentenceTransformer
 
 from config import EMBED_MODEL, VECTOR_DB_PATH, RETRIEVAL_TOP_K, ROBOT_NAME
+from utils.logger import get_logger
+
+logger = get_logger("rag")
 
 
 class MemoryRAG:
@@ -19,7 +22,7 @@ class MemoryRAG:
         return cls._instance
 
     def _initialize(self):
-        print("[RAG] 初始化记忆库...")
+        logger.info("[RAG] 初始化记忆库...")
         self.model = SentenceTransformer(EMBED_MODEL)
         self.client = chromadb.PersistentClient(path=VECTOR_DB_PATH)
         self.collection = self.client.get_or_create_collection(
@@ -29,8 +32,8 @@ class MemoryRAG:
         self.blacklist_path = "blacklist.txt"
         self.name_blacklist = self._load_blacklist()
 
-        print(f"[RAG] 已加载 {len(self.name_blacklist)} 个屏蔽词")
-        print("[RAG] 记忆库初始化完成")
+        logger.info(f"[RAG] 已加载 {len(self.name_blacklist)} 个屏蔽词")
+        logger.info("[RAG] 记忆库初始化完成")
 
     def _load_blacklist(self):
         """从文件加载屏蔽词，支持自动去重和过滤空行"""
@@ -50,7 +53,7 @@ class MemoryRAG:
     def reload_blacklist(self):
         """提供一个热重载接口"""
         self.name_blacklist = self._load_blacklist()
-        print("[RAG] 屏蔽词库已完成热重载")
+        logger.info("[RAG] 屏蔽词库已完成热重载")
 
     def save_diary(self, content, chat_id=None, people=None, emotion=None):
         """保存日记到向量库，包含自动去重逻辑"""
@@ -68,10 +71,10 @@ class MemoryRAG:
             existing = self.collection.get(where=where_filter)
             if existing and 'documents' in existing and existing['documents']:
                 if content in existing['documents']:
-                    print(f"[RAG] 检测到24小时内重复内容，跳过保存")
+                    logger.info("[RAG] 检测到24小时内重复内容，跳过保存")
                     return
         except Exception as e:
-            print(f"[RAG] 去重检查跳过: {e}")
+            logger.warning(f"[RAG] 去重检查跳过: {e}")
 
         # 2. 正常保存逻辑
         embedding = self.model.encode(content).tolist()
@@ -91,7 +94,7 @@ class MemoryRAG:
             metadatas=[metadata],
             ids=[doc_id]
         )
-        print(f"[RAG] 日记已存入 (chat_id={chat_id}): {content[:50]}...")
+        logger.info(f"[RAG] 日记已存入 (chat_id={chat_id}): {content[:50]}...")
 
     def search_memory(self, query, chat_id=None, top_k=RETRIEVAL_TOP_K, threshold=1.0):
         """混合检索：支持当前群聊 + 手动录入的记忆"""
@@ -128,11 +131,11 @@ class MemoryRAG:
         """
         并行双池检索：语义池与关键词池并行提取，算法全透明调试版
         """
-        print(f"\n[RAG-Debug] 🔍 开启并行检索流: '{query_text}'")
+        logger.debug(f"\n[RAG-Debug] 🔍 开启并行检索流: '{query_text}'")
 
         total_count = self.collection.count()
         if total_count == 0:
-            print("[RAG-Debug] ❌ 数据库为空，取消检索")
+            logger.debug("[RAG-Debug] ❌ 数据库为空，取消检索")
             return []
 
         # 1. 准备：类型转换与关键词提取
@@ -146,10 +149,10 @@ class MemoryRAG:
             (kw, w) for kw, w in raw_keywords
             if kw.lower() not in self.name_blacklist
         ]
-        print(f"[RAG-Debug] 🎯 核心锚点词: {keywords_with_weight}")
+        logger.debug(f"[RAG-Debug] 🎯 核心锚点词: {keywords_with_weight}")
 
         # 2. 【并行池 A】向量语义池
-        print(f"[RAG-Debug] 🌊 正在提取语义池 (Top {n_results})...")
+        logger.debug(f"[RAG-Debug] 🌊 正在提取语义池 (Top {n_results})...")
         query_embedding = self.model.encode(query_text).tolist()
         vector_results = self.collection.query(
             query_embeddings=[query_embedding],
@@ -159,7 +162,7 @@ class MemoryRAG:
 
         # 3. 【并行池 B】关键词扫描池 (覆盖更广)
         # 取较大范围以确保那些向量距离远但含关键词的日记能被“打捞”
-        print(f"[RAG-Debug] 🎣 正在提取关键词扫描池...")
+        logger.debug(f"[RAG-Debug] 🎣 正在提取关键词扫描池...")
         all_local_docs = self.collection.query(
             query_embeddings=[query_embedding],
             n_results=min(100, total_count),
@@ -203,7 +206,7 @@ class MemoryRAG:
                             "source": f"关键词池(保底:{initial_kw_score:.2f})"
                         }
                         kw_found_count += 1
-        print(f"[RAG-Debug] ⚖️ 池合并完成: 语义池注入 {len(combined_map)-kw_found_count} 条，关键词池打捞 {kw_found_count} 条")
+        logger.debug(f"[RAG-Debug] ⚖️ 池合并完成: 语义池注入 {len(combined_map)-kw_found_count} 条，关键词池打捞 {kw_found_count} 条")
 
         # 5. 二次加权计算
         final_results = []
@@ -220,9 +223,9 @@ class MemoryRAG:
         # 6. 排序与截断
         final_results.sort(key=lambda x: x['score'], reverse=True)
 
-        print(f"[RAG-Debug] 📊 排序结果 (Top 3):")
+        logger.debug(f"[RAG-Debug] 📊 排序结果 (Top 3):")
         for i, res in enumerate(final_results[:3]):
-            print(f"   #{i+1} 分数:{res['score']:.4f} | {res['debug']}")
+            logger.debug(f"   #{i+1} 分数:{res['score']:.4f} | {res['debug']}")
 
         return final_results[:12]
 
@@ -247,7 +250,7 @@ class MemoryRAG:
 
     def clean_duplicate_diaries(self, dry_run=False):
         """物理清理数据库中所有的重复项（保留最新的一条）"""
-        print("[RAG] 正在扫描全局重复记录...")
+        logger.info("[RAG] 正在扫描全局重复记录...")
         all_data = self.collection.get()
 
         if not all_data or not all_data['documents']:
@@ -271,15 +274,15 @@ class MemoryRAG:
                 seen[key] = (id, timestamp)
 
         if dry_run:
-            print(f"[RAG] 预览：发现 {len(to_delete)} 条重复记录")
+            logger.info(f"[RAG] 预览：发现 {len(to_delete)} 条重复记录")
             return to_delete
 
         if to_delete:
             # 分批删除防止内存溢出
             for i in range(0, len(to_delete), 100):
                 self.collection.delete(ids=to_delete[i:i+100])
-            print(f"[RAG] 清理完成，已删除 {len(to_delete)} 条重复记录")
+            logger.info(f"[RAG] 清理完成，已删除 {len(to_delete)} 条重复记录")
             return None
         else:
-            print("[RAG] 未发现重复记录")
+            logger.info("[RAG] 未发现重复记录")
             return None

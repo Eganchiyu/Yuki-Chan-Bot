@@ -11,6 +11,9 @@ from config import MAX_CONCURRENT_MEME, LLM_API_KEY, IMAGE_PROCESS_API_URL, REQU
 from core.prompts import VISION_PROMPT
 from modules.vision.utils import log
 from modules.vision.cache import MemeCache
+from utils.logger import get_logger
+
+logger = get_logger("vision_processor")
 
 class MemeProcessor:
     def __init__(self):
@@ -27,19 +30,19 @@ class MemeProcessor:
             encoded = np.frombuffer(image_data, np.uint8)
             img = cv2.imdecode(encoded, cv2.IMREAD_COLOR)
             if img is None:
-                log("无法读取图片")
+                logger.warning("无法读取图片")
                 return None
             h, w = img.shape[:2]
             if max(h, w) > max_size:
                 scale = max_size / max(h, w)
                 new_w, new_h = int(w * scale), int(h * scale)
                 img = cv2.resize(img, (new_w, new_h), interpolation=cv2.INTER_AREA)
-                log(f"尺寸从 {w}x{h} 压缩到 {new_w}x{new_h}")
+                logger.debug(f"尺寸从 {w}x{h} 压缩到 {new_w}x{new_h}")
             encode_param = [int(cv2.IMWRITE_JPEG_QUALITY), quality]
             _, buffer = cv2.imencode('.jpg', img, encode_param)
             return base64.b64encode(buffer).decode('utf-8')
         except Exception as e:
-            log(f"压缩失败: {e}")
+            logger.error(f"压缩失败: {e}")
             return None
 
     @staticmethod  # 加上这个装饰器 # 修改这个函数，加上 self 参数
@@ -60,7 +63,7 @@ class MemeProcessor:
         reraise=True
     )
     async def call_api(self, b64_data):
-        print(f"token:{IMAGE_PROCESS_API_KEY}, url:{IMAGE_PROCESS_API_URL}")
+        logger.debug(f"token:{IMAGE_PROCESS_API_KEY}, url:{IMAGE_PROCESS_API_URL}")
         headers = {
             "Authorization": f"Bearer {IMAGE_PROCESS_API_KEY}",
             "Content-Type": "application/json"
@@ -83,14 +86,14 @@ class MemeProcessor:
         }
         async with aiohttp.ClientSession(timeout=REQUEST_TIMEOUT) as session:
             async with session.post(IMAGE_PROCESS_API_URL, json=payload, headers=headers) as resp:
-                print(f"[DEBUG] 响应状态码: {resp.status}")
+                logger.debug(f"[DEBUG] 响应状态码: {resp.status}")
                 if resp.status == 200:
                     result = await resp.json()
                     return result["choices"][0]["message"]["content"]
                 else:
                     text = await resp.text()
-                    print(f"[DEBUG] 错误响应: {text}")  # 看看具体错误
-                    log(f"API 返回错误 {resp.status}: {text[:200]}")
+                    logger.debug(f"[DEBUG] 错误响应: {text}")  # 看看具体错误
+                    logger.error(f"API 返回错误 {resp.status}: {text[:200]}")
                     raise aiohttp.ClientResponseError(
                         request_info=resp.request_info,
                         history=resp.history,
@@ -101,7 +104,7 @@ class MemeProcessor:
     async def understand_from_url(self, img_url, llm):
 
         if not VISION_MODEL:
-            print("未设置视觉模型，跳过图像识别")
+            logger.info("未设置视觉模型，跳过图像识别")
             # 如果没有配置视觉模型，直接返回占位符，不进行下载和API调用
             return "[未知动画表情]"
 
@@ -116,15 +119,15 @@ class MemeProcessor:
 
         cached = self.cache.get(cache_key)
         if cached:
-            print(f"[MemeCache] 命中URL缓存: {cached}")
+            logger.info(f"[MemeCache] 命中URL缓存: {cached}")
             return f"[动画表情:{cached}]"
 
         try:
-            print(f"[Meme Understanding] 开始下载图片")
+            logger.info("[Meme Understanding] 开始下载图片")
             async with aiohttp.ClientSession() as session:
                 async with session.get(img_url, timeout=aiohttp.ClientTimeout(total=15)) as resp:
                     if resp.status != 200:
-                        print(f"[Meme Understanding] 下载失败，HTTP {resp.status}")
+                        logger.error(f"[Meme Understanding] 下载失败，HTTP {resp.status}")
                         return "[未知动画表情]"
                     content = await resp.read()
 
@@ -133,31 +136,31 @@ class MemeProcessor:
             # 检查哈希缓存
             cached = self.cache.get(img_hash)
             if cached:
-                print(f"[MemeCache] 命中哈希缓存: {cached}")
+                logger.info(f"[MemeCache] 命中哈希缓存: {cached}")
                 return f"[动画表情:{cached}]"
 
-            print("[MemeCache] 开始压缩...")
+            logger.info("[MemeCache] 开始压缩...")
             b64_data = self.compress_image(content)
             if not b64_data:
                 return "[未知动画表情]"
 
-            print("[Meme Understanding] 发送AI请求...")
+            logger.info("[Meme Understanding] 发送AI请求...")
             async with self.semaphore:
                 analysis = await self.call_api(b64_data)
 
-            print(f"[Meme Understanding] 识别结果: {analysis}")
+            logger.info(f"[Meme Understanding] 识别结果: {analysis}")
             clean_analysis = analysis.strip().replace('\n', ' ').replace('\r', '')
 
             # 保存到缓存
             self.cache.set(img_hash, clean_analysis)
             self.cache.set(cache_key, clean_analysis)
             self.cache.save()
-            print(f"[MemeCache] 已保存新结果: {clean_analysis}")
+            logger.info(f"[MemeCache] 已保存新结果: {clean_analysis}")
 
             return f"[动画表情:{clean_analysis}]"
 
         except Exception as e:
-            print(f"[Meme ERROR] 理解表情失败: {e}")
+            logger.error(f"[Meme ERROR] 理解表情失败: {e}")
             return "[未知动画表情]"
 
     @staticmethod

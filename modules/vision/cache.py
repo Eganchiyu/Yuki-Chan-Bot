@@ -2,6 +2,9 @@ import json
 import os
 
 from config import CACHE_DIR, CACHE_FILE
+from utils.logger import get_logger
+
+logger = get_logger("vision_cache")
 
 
 class MemeCache:
@@ -20,10 +23,10 @@ class MemeCache:
                 with open(CACHE_FILE, "r", encoding="utf-8") as f:
                     self.cache = json.load(f)
             except Exception as e:
-                print(f"[MemeCache] 加载缓存失败: {e}")
+                logger.warning(f"[MemeCache] 加载缓存失败: {e}")
                 self.cache = {}
         else:
-            print(f"[MemeCache] 缓存文件不存在")
+            logger.info("[MemeCache] 缓存文件不存在")
             self.cache = {}
 
     def _load_stats(self):
@@ -33,12 +36,12 @@ class MemeCache:
             try:
                 with open(stats_file, "r", encoding="utf-8") as f:
                     self.stats = json.load(f)
-                print(f"[MemeCache] 已加载 {len(self.stats)} 条统计信息")
+                logger.info(f"[MemeCache] 已加载 {len(self.stats)} 条统计信息")
             except Exception as e:
-                print(f"[MemeCache] 加载统计信息失败: {e}")
+                logger.warning(f"[MemeCache] 加载统计信息失败: {e}")
                 self.stats = {}
         else:
-            print(f"[MemeCache] 统计文件不存在")
+            logger.info("[MemeCache] 统计文件不存在")
             self.stats = {}
 
     def save_stats(self):
@@ -47,18 +50,18 @@ class MemeCache:
         try:
             with open(stats_file, "w", encoding="utf-8") as f:
                 json.dump(self.stats, f, ensure_ascii=False, indent=2)
-            print(f"[MemeCache] 统计信息已保存到 {stats_file}")
+            logger.info(f"[MemeCache] 统计信息已保存到 {stats_file}")
         except Exception as e:
-            print(f"[MemeCache] 保存统计信息失败: {e}")
+            logger.error(f"[MemeCache] 保存统计信息失败: {e}")
 
     def save(self):
         try:
             with open(CACHE_FILE, "w", encoding="utf-8") as f:
                 json.dump(self.cache, f, ensure_ascii=False, indent=2)
-            print(f"[MemeCache] 缓存已保存到 {CACHE_FILE}")
+            logger.info(f"[MemeCache] 缓存已保存到 {CACHE_FILE}")
             self.save_stats()  # 同时保存统计信息
         except Exception as e:
-            print(f"[MemeCache] 保存缓存失败: {e}")
+            logger.error(f"[MemeCache] 保存缓存失败: {e}")
 
     def get(self, key):
         # 每次获取前重新加载文件，确保手动修改生效
@@ -78,7 +81,7 @@ class MemeCache:
         # 新添加的缓存，初始化统计次数为0
         if key not in self.stats:
             self.stats[key] = 0
-            print(f"[MemeCache] 对当前信息初始化统计")
+            logger.info("[MemeCache] 对当前信息初始化统计")
 
     def get_stats_report(self):
         """生成统计报告，按使用次数排序"""
@@ -125,6 +128,6 @@ class MemeCache:
                 if key in self.stats:
                     del self.stats[key]
             self.save()
-            print(f"[MemeCache] 已清理 {len(to_delete)} 条使用次数低于 {threshold} 的缓存")
+            logger.info(f"[MemeCache] 已清理 {len(to_delete)} 条使用次数低于 {threshold} 的缓存")
 
         return to_delete

@@ -1,5 +1,8 @@
 import re
 from config import MAX_MESSAGE_LENGTH
+from utils.logger import get_logger
+
+logger = get_logger("cq_protocol")
 
 def smart_truncate(content, max_len = MAX_MESSAGE_LENGTH, suffix="..."):
     """
@@ -10,7 +13,7 @@ def smart_truncate(content, max_len = MAX_MESSAGE_LENGTH, suffix="..."):
         return content
 
     # --- 以下是你调试好的原始算法逻辑，完全不动 ---
-    print(f"[System] 检测到超长消息 ({len(content)} 字符)")
+    logger.info(f"[System] 检测到超长消息 ({len(content)} 字符)")
     parts = re.split(r'(\[CQ:.*?\])', content)
     result = []
 
@@ -28,7 +31,7 @@ def smart_truncate(content, max_len = MAX_MESSAGE_LENGTH, suffix="..."):
             result.append(part)
 
     content = ''.join(result)
-    print(f"[System] 压缩后长度: {len(content)} 字符")
+    logger.info(f"[System] 压缩后长度: {len(content)} 字符")
 
     return content
 
@@ -69,7 +72,7 @@ class CQProtocol:
     @staticmethod
     def replace_reply_placeholder(data) -> str:
         if not data:
-            print("[CQProtocol] 引用历史回复消息错误")
+            logger.error("[CQProtocol] 引用历史回复消息错误")
             return "【引用不明历史消息】"
         sender = data.get("sender", {}).get("nickname", "人")
         text = re.sub(r'\[CQ:.*?\]', '', data.get("raw_message", ""))

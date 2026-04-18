@@ -3,6 +3,9 @@ import os
 import asyncio
 from config import MAX_RETRIES
 from network.ws_connection import BotConnector
+from utils.logger import get_logger
+
+logger = get_logger("ws_sender")
 
 class MessageSender:
     def __init__(self, connector: BotConnector):
@@ -21,7 +24,7 @@ class MessageSender:
                 await ws.send(json.dumps({"action": action, "params": params}))
                 return # 发送成功，跳出
             except Exception as e:
-                print(f"[Sender] 发送失败 (尝试 {attempt+1}): {e}")
+                logger.error(f"[Sender] 发送失败 (尝试 {attempt+1}): {e}")
                 self.connector.websocket = None # 标记连接失效
                 if attempt == MAX_RETRIES - 1: raise e # 如果第二次还失败，抛出错误
                 await asyncio.sleep(1)
