@@ -7,7 +7,7 @@ import warnings
 with warnings.catch_warnings():
     warnings.simplefilter("ignore", UserWarning)
     import jieba.analyse
-from sentence_transformers import SentenceTransformer
+import numpy as np
 
 from config import EMBED_MODEL, VECTOR_DB_PATH, RETRIEVAL_TOP_K, ROBOT_NAME
 from utils.logger import get_logger
@@ -26,7 +26,27 @@ class MemoryRAG:
 
     def _initialize(self):
         logger.info("[RAG] 初始化记忆库...")
-        self.model = SentenceTransformer(EMBED_MODEL)
+
+        # 使用 ONNX Runtime 替代 sentence-transformers
+        try:
+            from optimum.onnxruntime import ORTModelForFeatureExtraction
+            from transformers import AutoTokenizer
+
+            # 自动转换为 ONNX 格式（首次运行会慢几秒）
+            self.model = ORTModelForFeatureExtraction.from_pretrained(
+                EMBED_MODEL,
+                export=True,
+                provider="CPUExecutionProvider"
+            )
+            self.tokenizer = AutoTokenizer.from_pretrained(EMBED_MODEL)
+            self.use_onnx = True
+            logger.info(f"[RAG] 已加载 ONNX 模型: {EMBED_MODEL}")
+        except Exception as e:
+            logger.warning(f"[RAG] ONNX 模型加载失败，降级为关键词搜索模式: {e}")
+            self.model = None
+            self.tokenizer = None
+            self.use_onnx = False
+
         self.client = chromadb.PersistentClient(path=VECTOR_DB_PATH)
         self.collection = self.client.get_or_create_collection(
             name="diaries",
@@ -37,6 +57,39 @@ class MemoryRAG:
 
         logger.info(f"[RAG] 已加载 {len(self.name_blacklist)} 个屏蔽词")
         logger.info("[RAG] 记忆库初始化完成")
+
+    def _encode(self, text: str) -> list:
+        """使用 ONNX 模型进行文本编码"""
+        if not self.use_onnx:
+            raise RuntimeError("模型未加载，无法编码")
+
+        # Tokenize
+        inputs = self.tokenizer(
+            text,
+            padding=True,
+            truncation=True,
+            max_length=512,
+            return_tensors="np"
+        )
+
+        # ONNX 推理
+        outputs = self.model.run(
+            None,
+            {
+                "input_ids": inputs["input_ids"],
+                "attention_mask": inputs["attention_mask"]
+            }
+        )
+
+        # 取 [CLS] token 的向量作为句子表示
+        # outputs[0] shape: (batch_size, seq_len, hidden_dim)
+        embeddings = outputs[0][:, 0, :]  # 取 [CLS] 位置
+
+        # L2 归一化（与原来 sentence-transformers 一致）
+        norms = np.linalg.norm(embeddings, axis=1, keepdims=True)
+        embeddings = embeddings / norms
+
+        return embeddings[0].tolist()
 
     def _load_blacklist(self):
         """从文件加载屏蔽词，支持自动去重和过滤空行"""
@@ -80,7 +133,11 @@ class MemoryRAG:
             logger.warning(f"[RAG] 去重检查跳过: {e}")
 
         # 2. 正常保存逻辑
-        embedding = self.model.encode(content).tolist()
+        if not self.use_onnx:
+            logger.warning("[RAG] 模型不可用，跳过保存日记")
+            return
+
+        embedding = self._encode(content)
         doc_id = f"diary_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}_{hash(content) % 10000:04d}"
         metadata = {"timestamp": datetime.datetime.now().timestamp()}
 
@@ -104,7 +161,11 @@ class MemoryRAG:
         if not query.strip():
             return []
 
-        query_emb = self.model.encode(query).tolist()
+        if not self.use_onnx:
+            logger.warning("[RAG] search_memory 需要模型，当前模式不支持")
+            return []
+
+        query_emb = self._encode(query)
         where_filter = {}
         if chat_id is not None:
             # 融合检索逻辑：检索当前 chat_id 或全局 manual_record
@@ -134,6 +195,9 @@ class MemoryRAG:
         """
         并行双池检索：语义池与关键词池并行提取，算法全透明调试版
         """
+        if not self.use_onnx:
+            return self._keyword_search_fallback(query_text, chat_id, n_results)
+
         logger.debug(f"\n[RAG-Debug] 🔍 开启并行检索流: '{query_text}'")
 
         total_count = self.collection.count()
@@ -156,7 +220,7 @@ class MemoryRAG:
 
         # 2. 【并行池 A】向量语义池
         logger.debug(f"[RAG-Debug] 🌊 正在提取语义池 (Top {n_results})...")
-        query_embedding = self.model.encode(query_text).tolist()
+        query_embedding = self._encode(query_text)
         vector_results = self.collection.query(
             query_embeddings=[query_embedding],
             n_results=n_results,
@@ -164,7 +228,7 @@ class MemoryRAG:
         )
 
         # 3. 【并行池 B】关键词扫描池 (覆盖更广)
-        # 取较大范围以确保那些向量距离远但含关键词的日记能被“打捞”
+        # 取较大范围以确保那些向量距离远但含关键词的日记能被"打捞"
         logger.debug(f"[RAG-Debug] 🎣 正在提取关键词扫描池...")
         all_local_docs = self.collection.query(
             query_embeddings=[query_embedding],
@@ -250,6 +314,63 @@ class MemoryRAG:
             "score": final_score,
             "debug": f"基准:{base_score:.2f} + 补偿:{keyword_boost:.2f} (匹配:{matched_words})"
         }
+
+    def _keyword_search_fallback(self, query_text, chat_id=None, n_results=12, top_k=5):
+        """
+        关键词搜索降级方案：当嵌入模型不可用时的纯关键词匹配
+        """
+        logger.debug(f"\n[RAG-Fallback] 🔍 开启关键词检索流: '{query_text}'")
+
+        total_count = self.collection.count()
+        if total_count == 0:
+            logger.debug("[RAG-Fallback] ❌ 数据库为空，取消检索")
+            return []
+
+        cid_str = str(chat_id) if chat_id else None
+        filter_cond = {"chat_id": {"$in": [cid_str, "manual_record"]}} if cid_str else None
+
+        raw_keywords = jieba.analyse.extract_tags(query_text, topK=top_k, withWeight=True)
+        keywords_with_weight = [
+            (kw, w) for kw, w in raw_keywords
+            if kw.lower() not in self.name_blacklist
+        ]
+        logger.debug(f"[RAG-Fallback] 🎯 关键词: {keywords_with_weight}")
+
+        if not keywords_with_weight:
+            logger.debug("[RAG-Fallback] 无有效关键词，返回空结果")
+            return []
+
+        try:
+            if filter_cond:
+                all_docs = self.collection.get(where=filter_cond)
+            else:
+                all_docs = self.collection.get()
+        except Exception as e:
+            logger.warning(f"[RAG-Fallback] 查询失败，尝试不带过滤条件: {e}")
+            all_docs = self.collection.get()
+
+        if not all_docs or not all_docs.get('documents'):
+            return []
+
+        scored_results = []
+        seen = set()
+        for i, doc in enumerate(all_docs['documents']):
+            if doc in seen:
+                continue
+            seen.add(doc)
+            meta = all_docs['metadatas'][i] if all_docs['metadatas'] else {}
+            matched_in_doc = [kw for kw, _ in keywords_with_weight if kw in doc]
+            if matched_in_doc:
+                total_weight = sum(w for kw, w in keywords_with_weight if kw in doc)
+                scored_results.append({
+                    "content": doc,
+                    "metadata": meta,
+                    "score": total_weight,
+                    "debug": f"关键词匹配:{matched_in_doc}, 总权重:{total_weight:.2f}"
+                })
+
+        scored_results.sort(key=lambda x: x['score'], reverse=True)
+        return scored_results[:n_results]
 
     def clean_duplicate_diaries(self, dry_run=False):
         """物理清理数据库中所有的重复项（保留最新的一条）"""
