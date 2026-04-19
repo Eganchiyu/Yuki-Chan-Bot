@@ -76,7 +76,7 @@ class ApiCall:
         except Exception as e:
             return False, str(e)
 
-    async def robust_api_call(self, messages, model="deepseek-v3.2", **kwargs):
+    async def robust_api_call(self, messages, model="deepseek-chat", **kwargs):
         """
         全异步稳健调用逻辑：
         1. 优先尝试主线 (TeaTop) -> 2. 失败立即切备用 (DeepSeek官方)

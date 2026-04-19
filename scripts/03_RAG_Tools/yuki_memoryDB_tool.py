@@ -15,7 +15,7 @@ class MemoryAuditor:
     def __init__(self):
         self.api_key = os.getenv("TEATOP_API_KEY", "").strip()
         self.api_url = "https://api.ytea.top/v1/chat/completions"
-        self.model = "deepseek-v3.2"  # 沿用你测试效果最好的模型
+        self.model = "deepseek-chat"  # 沿用你测试效果最好的模型
 
     async def ask_yuki_to_choose(self, doc_a, doc_b, retries=3):
         """让 AI 决定保留哪条记录，带重试逻辑"""
