@@ -213,7 +213,7 @@ async def manage_buffer(chat_id, content, mode, raw_message='', sender_name = ''
 
     if chat_id not in yuki.message_buffer:
         yuki.message_buffer[chat_id] = []
-    if sender_name!="BOT 奈奈川（lito）":
+    if not ("BOT" in sender_name):
         yuki.message_buffer[chat_id].append({
             "name": sender_name,
             "content": content,  # 这是带 【“姓名”】说: 的完整格式
