@@ -79,9 +79,14 @@ async def main_process(chat_id, mode, debounce_flag=True, force_reply=None):
     # 加载上下文信息
     history_dict = history_manager.load()
     chat_id = str(chat_id)
-    # 如果不存在则初始化
-    if chat_id not in history_dict:
+
+    # 【修复后】稳健的系统提示词初始化与注入
+    if chat_id not in history_dict or not history_dict[chat_id]:
+        # 情况1：完全没记录，或者列表为空，直接初始化一个包含 system prompt 的新列表
         history_dict[chat_id] = [{"role": "system", "content": yuki.get_setting(mode)}]
+    elif history_dict[chat_id][0].get("role") != "system":
+        # 情况2：有记录但第一条不是 system prompt，则在最前面插入（而不是覆盖掉用户原本的消息）
+        history_dict[chat_id].insert(0, {"role": "system", "content": yuki.get_setting(mode)})
     # 添加当前消息到上下文池
     current_time_str = datetime.datetime.now().strftime("%Y年%m月%d日%H:%M")
     history_dict[chat_id].append({

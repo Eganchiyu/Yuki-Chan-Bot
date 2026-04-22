@@ -139,3 +139,6 @@ async def build_chat_context(yuki, chat_id: str, combined_text: str, history_dic
     combined_API_message.append(
         {"role": "user", "content": f" (当前时间:{datetime.datetime.now().strftime('%Y-%m-%d %H:%M')}){combined_text}"})
     return combined_API_message
+
+if __name__ == "__main__":
+    print(YUKI_SETTING_GROUP)
