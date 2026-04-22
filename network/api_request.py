@@ -101,7 +101,7 @@ class ApiCall:
         # 策略 2: 备用线路 (官方)
         # 官方线路极稳，给 40 秒长超时确保能拿到回复
         # 修正 URL 拼接：官方 Base 一般是 https://api.deepseek.com/v1
-        official_url = cfg.BACKUP_BASE_URL.rstrip('/')
+        official_url = (cfg.BACKUP_BASE_URL or "").rstrip('/')
 
         success, result = await self._raw_post(
             official_url, cfg.BACKUP_API_KEY, cfg.BACKUP_MODEL, messages, 40, **kwargs
