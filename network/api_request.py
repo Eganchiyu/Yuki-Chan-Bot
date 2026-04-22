@@ -17,7 +17,7 @@ class ApiCall:
     def __init__(self, api_key, base_url):
         self.api_key = api_key
         # 统一处理 URL：确保没有末尾斜杠
-        self.base_url = base_url.rstrip('/')
+        self.base_url = (base_url or "").rstrip('/')
         self.is_degraded = False
         self.last_fail_time = 0
 
@@ -101,7 +101,7 @@ class ApiCall:
         # 策略 2: 备用线路 (官方)
         # 官方线路极稳，给 40 秒长超时确保能拿到回复
         # 修正 URL 拼接：官方 Base 一般是 https://api.deepseek.com/v1
-        official_url = cfg.DEEPSEEK_BASE_URL.rstrip('/')
+        official_url = cfg.BACKUP_BASE_URL.rstrip('/')
 
         success, result = await self._raw_post(
             official_url, cfg.BACKUP_API_KEY, cfg.BACKUP_MODEL, messages, 40, **kwargs
