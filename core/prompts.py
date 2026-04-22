@@ -92,29 +92,53 @@ def build_ice_break_prompt(chat_id, relevant_diaries: list, history_dict: dict):
     return messages
 
 
-async def build_chat_context(yuki, chat_id: str, combined_text: str, history_dict: dict, mode,
-                             relevant_diaries):
-    # 这里的 diary 现在是字典，我们要取出 ['content']
+async def build_chat_context(yuki, chat_id: str, combined_text: str, history_dict: dict, mode, relevant_diaries,
+                             current_energy: float = None, inject_subconscious: bool = False):
+    # 1. 基础日志输出（保持原样）
     for i, diary_obj in enumerate(reversed(relevant_diaries), 1):
-        preview = diary_obj['content'].replace('\n', ' ')  # 提取文本内容
+        preview = diary_obj['content'].replace('\n', ' ')
         logger.debug(f"[Diary Debug]回忆 {i}: {preview}")
 
-    # 1. 基础人设
+    # 2. 基础人设构建
     system_prompt = history_dict[chat_id][0]["content"] if history_dict[chat_id] and history_dict[chat_id][0][
         "role"] == "system" else yuki.get_setting(mode)
+
+    # 注入精力状态提示（Jules 提交的逻辑）
+    if current_energy is not None:
+        if current_energy > 80:
+            system_prompt += "【状态：精力充沛】"
+        elif current_energy < 30:
+            system_prompt += "【状态：有点累了】"
+
     combined_API_message = [{"role": "system", "content": system_prompt}]
+
+    # 🌟 核心修改点：跨域记忆穿透 (Cross-Context Injection)
+    # 不再在底层进行关键词匹配，直接接收由 main_process 传来的指令
+    if mode == "group" and inject_subconscious:
+        private_chat_id = str(cfg.TARGET_QQ)
+        private_history = history_dict.get(private_chat_id, [])
+
+        # 倒序查找最近的一条“视觉观察”记录
+        recent_observation = None
+        for msg in reversed(private_history):
+            if msg.get("is_visual_observation"):
+                recent_observation = msg["content"]
+                break
+
+        if recent_observation:
+            # 这里的 recent_observation 已经带有了我们在 attention.py 里注入的“妹妹口吻”
+            combined_API_message.append({
+                "role": "system",
+                "content": f"【后台潜意识同步】：你隐约记得刚才后台监控到了主人的状态：{recent_observation}。请结合这个情报，在群里自然地回答群友，可以带点爆料的语气。"
+            })
+            logger.info(f"[Engine] 触发跨域记忆穿透，潜意识已成功注入群聊提示词。")
 
     # 2. 插入检索到的日记
     for diary_obj in reversed(relevant_diaries):
         content = diary_obj['content']  # 提取文本内容
         combined_API_message.append({"role": "system", "content": f"【回忆】{content}"})
 
-    # --- 调试输出：打印加权分和匹配到的关键词信息 ---
-    for i, diary_obj in enumerate(relevant_diaries[:3], 1):
-        # 打印加权分和匹配到的关键词信息
-        logger.debug(f"[RAG-Debug] 回忆 {i} | 得分: {diary_obj['score']:.2f} | 详情: {diary_obj['debug']}")
-
-    # 3. 取出最近的对话（注意：这里保持原样取出，下面进行处理）
+    # 4. 处理最近的对话历史（保持原样，包含时间戳逻辑）
     recent_msgs_raw = [msg for msg in history_dict[chat_id][-cfg.KEEP_LAST_DIALOGUE - 1:-1] if msg["role"] != "system"]
 
     # --- 最小改动：在这里处理时间观念 ---
@@ -128,17 +152,17 @@ async def build_chat_context(yuki, chat_id: str, combined_text: str, history_dic
                 new_content = f"【时间：{msg_time}】{msg['content']}"
                 processed_recent_msgs.append({"role": msg["role"], "content": new_content})
             elif msg["role"] == "assistant":
-                new_content = f"{msg['content']}"
-                processed_recent_msgs.append({"role": msg["role"], "content": new_content})
+                processed_recent_msgs.append({"role": msg["role"], "content": msg["content"]})
         else:
             # 如果没有 time 字段，则保持原样（兼容旧数据）
             processed_recent_msgs.append({"role": msg["role"], "content": msg["content"]})
 
     # 使用处理后的消息
     combined_API_message.extend(processed_recent_msgs)
+
+    # 5. 注入当前消息
+    # 这里的 combined_text 如果是假冒者发的，已经带上了“(假)”字
     combined_API_message.append(
         {"role": "user", "content": f" (当前时间:{datetime.datetime.now().strftime('%Y-%m-%d %H:%M')}){combined_text}"})
-    return combined_API_message
 
-if __name__ == "__main__":
-    print(YUKI_SETTING_GROUP)
+    return combined_API_message

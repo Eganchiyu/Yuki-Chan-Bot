@@ -25,14 +25,19 @@ class YukiEngine:
         self.maid = None  # 后面再赋值
         self.process_callback = None  # 预留回调接口
 
-    async def api_reply(self, chat_id: str, combined_text: str, history_dict: dict, mode, relevant_diaries: list[Any]) -> str:
+        # 🌟 新增参数：inject_subconscious: bool = False
+    async def api_reply(self, chat_id: str, combined_text: str, history_dict: dict, mode,
+                        relevant_diaries: list[Any], inject_subconscious: bool = False) -> str:
         # 总构建发送Deepseek补全的信息
+        current_energy = self.yuki.energy.get(chat_id, cfg.MAX_ENERGY)
         combined_API_message = await build_chat_context(self.yuki,
                                                         chat_id,
                                                         combined_text,
                                                         history_dict,
                                                         mode,
-                                                        relevant_diaries
+                                                        relevant_diaries,
+                                                        current_energy,
+                                                        inject_subconscious=inject_subconscious
                                                         )
         await asyncio.sleep(0.2)
         # 发送对话补全到DeepSeek
@@ -41,11 +46,11 @@ class YukiEngine:
             Yuki_Answer = await self.llm.robust_api_call(
                 model=cfg.LLM_MODEL,
                 messages=combined_API_message,
-                temperature=0.7,  # 降低温度，让它说话更稳、更常用
-                top_p=0.75,  # 稍微收窄采样范围，过滤冷门词
-                frequency_penalty=0.05,  # 极低的惩罚，允许它说大白话
-                presence_penalty=0.0,  # 不强迫它聊新话题
-                max_tokens=100  # 强制短句，短句更容易显自然
+                temperature=0.7,
+                top_p=0.75,
+                frequency_penalty=0.05,
+                presence_penalty=0.0,
+                max_tokens=100
             )
             Yuki_Answer = re.sub(r'\s*FINISHED\s*$', '', Yuki_Answer, flags=re.IGNORECASE)
             delegate_match = re.search(r'\[DELEGATE_TO_MAID:(.+?)\]', Yuki_Answer, re.DOTALL)
@@ -64,7 +69,6 @@ class YukiEngine:
         except Exception as e:
             logger.error(f"调用失败: {e}")
             return f"API 接口调用失败"
-
     async def decide_to_reply(self, history, message_objs, chat_id,force_reply = False):
         """判断是否回复群聊"""
         # 1. 更新并获取当前群聊的欲望值

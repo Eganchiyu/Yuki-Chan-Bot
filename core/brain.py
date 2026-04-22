@@ -75,6 +75,23 @@ class YukiState:
     def get_setting(mode):
         return YUKI_SETTING_PRIVATE if mode == "private" else YUKI_SETTING_GROUP
 
+    def apply_emotion_feedback(self, chat_id: str, emotion_type: str):
+        """
+        基于情绪类型（正面/负面）反馈精力值。
+        正面情绪增加精力，负面情绪双倍扣除精力。
+        """
+        chat_id_str = str(chat_id)
+        if chat_id_str not in self.energy:
+            self.update_energy(chat_id_str)
+
+        if emotion_type == "positive":
+            self.energy[chat_id_str] = min(self.energy[chat_id_str] + 10, cfg.MAX_ENERGY)
+            logger.info(f"[Brain] 检测到正面情绪，{chat_id_str} 精力值上升至 {self.energy[chat_id_str]:.1f}")
+        elif emotion_type == "negative":
+            # 扣除双倍精力，假设原为 6 则扣除 12
+            self.energy[chat_id_str] = max(self.energy[chat_id_str] - 12, 0)
+            logger.info(f"[Brain] 检测到负面情绪，{chat_id_str} 精力值下降至 {self.energy[chat_id_str]:.1f}")
+
     def update_energy(self, chat_id):
         """计算并更新当前精力值"""
         now = datetime.datetime.now()

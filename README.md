@@ -47,6 +47,23 @@ Yuki 不再仅仅是一个聊天机器人。通过触发特定的委托指令 `
 - **主备 API 熔断切换**：内置 `ApiCall` 稳健调用逻辑。当主线路 (TeaTop) 失败时，瞬间无缝降级切换至官方备用线路，彻底告别"大脑宕机"。
     
 
+### 👁️ Retina 视网膜感知系统 (Desktop Perception)
+
+全新引入的主动桌面感知能力，让 Yuki 像拥有了“数字生物钟”。
+- **前额叶监控**：通过高效抓取屏幕、MSE 变化检测以及基于 RapidOCR 的本地文本检测，轻量且异步地感知屏幕画面的变动。
+- **注意力循环**：捕获到异动后，调用视觉大模型进行分析，根据画面内容决定下一次休眠时间，并通过桌面弹窗或直接向你发送消息“侵入现实”！
+
+**如何使用**：
+1. 请确保在 `configs/config.yaml` 或你的配置中启用了 `VISION_MODEL`，并配置了正确的 API Key。如果不配置，Yuki 将回退到简单的模拟随机决策逻辑。
+2. 确保在主程序 `main.py` 的初始化代码中导入并实例化 `RetinaPerceptionSystem`：
+    ```python
+    from modules.retina_perception.core import RetinaPerceptionSystem
+    # 初始化并传入 MessageSender 实例
+    retina_sys = RetinaPerceptionSystem(message_sender=your_sender_instance)
+    await retina_sys.start()
+    ```
+3. (可选) 如果你希望使用真实环境下的文字变化监控，可以调整 `prefrontal_loop` 里面的 `ocr_check_interval` 参数来控制检查频率。
+
 ### 🖼️ 蓄势待发：多模态表情包管理 (WIP)
 
 - **即将到来**：接入视觉大模型 (Vision Model) 理解群聊表情包，Yuki 将学会根据当前情绪和上下文，在庞大的表情包向量库中寻找最合适的一张并发送。目前基础模块已在开发中。
@@ -80,6 +97,7 @@ graph TD
 | **`network/api_request.py`** | 语言枢纽，基于 AsyncOpenAI 的稳健 API 封装，支持主备熔断降级 |
 | **`modules/memory/rag.py`**  | 记忆检索模块，实现并行双池匹配算法与日记的向量化存储              |
 | **`modules/stickers/`**      | 表情包管理系统（开发中），负责视觉理解、向量入库与情绪匹配           |
+| **`modules/retina_perception/`**| 视网膜感知系统，主动截取屏幕并使用视觉大模型和本地 OCR 感知桌面变动 |
 | **`scripts/03_RAG_Tools/`**  | 记忆库管理工具集，支持 AI 智能审计、3D 可视化和批量操作         |
 
 ---
@@ -136,6 +154,8 @@ python main.py
 - [x] **无缝 API 熔断降级**：TeaTop 主线路挂掉瞬间切至官方备线 。
     
 - [x] **自主小女仆系统 (Maid Agent)**：后台自主编写与执行 Python 技能完成复杂任务 。
+
+- [x] **视网膜感知模块 (Retina Perception)**：前额叶捕捉屏幕，调用视觉模型与本地 OCR 分析桌面变动，自主侵入现实！
     
 - [ ] 🚧 **重构与优化小女仆代码结构，增强安全性与容错率**。
     

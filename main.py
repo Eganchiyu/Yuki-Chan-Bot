@@ -56,8 +56,31 @@ async def main_process(chat_id, mode, debounce_flag=True, force_reply=None):
     await yuki.boost_activity(chat_id)
     # 视觉理解总处理
     # 提取所有文本用于视觉处理和后续拼合
-    all_contents = [m["content"] for m in message_objs]
+    # ========= 🌟 新增：防伪清洗与潜意识状态判定 =========
+    all_contents = []
+    inject_subconscious = False
+
+    for msg in message_objs:
+        name = msg.get("name", "")
+        is_master = msg.get("is_master", False)
+        content = msg.get("content", "")
+
+        # 1. 假主人防伪鉴别：如果名字是设定的主人名但其实不是本人
+        if name == cfg.MASTER_NAME and not is_master:
+            # 精准替换这句消息前缀中的名字，打上(假)的烙印
+            content = content.replace(f"【“{name}”】", f"【“{name}(假)”】")
+
+        all_contents.append(content)
+
+        # 2. 判断是否需要合并群聊潜意识上下文（兼容 calling_master 或 mentions_master）
+        if msg.get("calling_master", False) or msg.get("mentions_master", False):
+            inject_subconscious = True
+
     combined_text = "\n".join(all_contents)
+
+    if inject_subconscious:
+        logger.info("[System] 缓冲池内检测到群友提及主人，准备跨域注入视觉潜意识。")
+    # ==============================================================
     modified_text, image_urls = meme_processor.extract_urls_from_text(combined_text)
     if image_urls:
         understood_contents = []
@@ -112,12 +135,43 @@ async def main_process(chat_id, mode, debounce_flag=True, force_reply=None):
 
     logger.info(f"检索完成，用时 {(time.time()-first_time):.2f}")
 
-    Yuki_Answer = await engine.api_reply(chat_id, combined_text, history_dict, mode, relevant_diaries)
+    Yuki_Answer = await engine.api_reply(
+        chat_id,
+        combined_text,
+        history_dict,
+        mode,
+        relevant_diaries,
+        inject_subconscious=inject_subconscious  # <--- 🌟 新增：将刚才的判断结果传进去
+    )
 
     logger.info("Yuki打字完成！")
     if mode == "group":
-        yuki.consume_energy(chat_id)
-    logger.info(f"[System] Yuki 正在发送消息...(剩余精力: {yuki.energy[chat_id]:.1f})")
+        if "yuki" in combined_text.lower():
+            # 情绪打分与精力反馈
+            negative_words = ["笨", "傻", "滚", "烦", "闭嘴", "别吵","吵"]
+            positive_words = ["好棒", "可爱", "贴心", "喜欢", "谢谢", "乖", "棒","强","厉害","赞"]
+
+            emotion_type = "neutral"
+            for word in positive_words:
+                if word in combined_text:
+                    emotion_type = "positive"
+                    break
+
+            if emotion_type == "neutral":
+                for word in negative_words:
+                    if word in combined_text:
+                        emotion_type = "negative"
+                        break
+
+            if emotion_type != "neutral":
+                yuki.apply_emotion_feedback(chat_id, emotion_type)
+            else:
+                yuki.update_energy(chat_id)  # <--- 新增：确保私聊时也初始化并更新精力值
+                yuki.consume_energy(chat_id)
+
+                # 修改：使用 .get() 方法安全获取，防止字典中没有键时报错
+    current_e = yuki.energy.get(chat_id, 100.0)
+    logger.info(f"[System] Yuki 正在发送消息...(剩余精力: {current_e:.1f})")
     await sender.send(chat_id, Yuki_Answer, mode=mode)
     logger.info(f"[System] 发送完成！内容：{Yuki_Answer}")
     logger.info("[System] Yuki正在保存上下文...")
@@ -149,7 +203,11 @@ async def napcat_listen(mode):
     asyncio.create_task(maid_worker(engine, yuki, sender, history_manager))
     # for chat_id in TARGET_GROUPS:
     #     print(f"[System] 初始化{chat_id}精力为{yuki.update_energy(chat_id)}")
-    logger.info("[System] 已启动后台辅助任务 (日记检查/破冰/精力衰减)")
+    # 启动 Retina 系统，把大脑传给眼睛！
+    from modules.retina_perception.core import RetinaPerceptionSystem
+    retina_sys = RetinaPerceptionSystem()
+    asyncio.create_task(retina_sys.start(engine, history_manager, default_chat_id=str(cfg.TARGET_QQ)))
+    logger.info("[System] 已启动后台辅助任务 (日记检查/破冰/精力衰减/视觉能力)")
 
     logger.info(f"[System] 准备连接 NapCat 服务端 | 模式: {mode}")
     while True:
@@ -162,9 +220,18 @@ async def napcat_listen(mode):
                 raw_msg = data.get("raw_message")
                 user_id = data.get("user_id")
 
-                if mode == "private" and msg_type == "private" and user_id == cfg.TARGET_QQ:
-                    await manage_buffer(user_id, raw_msg, mode)
+                # ================= 新增/修改区域 =================
+                # 1. 最高优先级：只要是主人发来的私聊，无视全局 mode，直接按 private 模式处理
+                if msg_type == "private" and user_id == cfg.TARGET_QQ:
+                    await manage_buffer(
+                        user_id, 
+                        raw_msg, 
+                        mode="private",        # 强制按私聊模式处理
+                        raw_message=raw_msg, 
+                        sender_name="主人"      # 可选：直接标明身份
+                    )
 
+                # 2. 次优先级：处理群聊（仅在全局模式为 group 时生效）
                 elif mode == "group" and msg_type == "group":
                     group_id = data.get("group_id")
                     # 检查目标群白名单
@@ -175,10 +242,12 @@ async def napcat_listen(mode):
                         await manage_buffer(
                             group_id,
                             f"【“{name}”】说: {raw_msg}",
-                            mode,
+                            mode,  # 这里传入的 mode 就是 "group"
                             raw_message=raw_msg,
-                            sender_name=name  # 传入姓名用于标识
+                            sender_name=name,
+                            is_master = (user_id == cfg.TARGET_QQ)
                         )
+                # ===============================================
 
         except Exception as e:
             # 这里捕获的是 listen 循环抛出的致命异常（如代码逻辑错误或持续的连接失败）
@@ -186,7 +255,7 @@ async def napcat_listen(mode):
             logger.info("[System] 5 秒后将尝试重启监听进程...")
             await asyncio.sleep(5)
 
-async def manage_buffer(chat_id, content, mode, raw_message='', sender_name = ''):
+async def manage_buffer(chat_id, content, mode, raw_message='', sender_name = '', is_master = False):
     global real_time_debounce_time
     cid_str = str(chat_id)
 
@@ -215,7 +284,7 @@ async def manage_buffer(chat_id, content, mode, raw_message='', sender_name = ''
 
     # 判定是否为机器人（可以根据名称含 BOT，或者特定的 QQ 号判定）
     is_bot = "BOT" in sender_name or "机器人" in sender_name
-
+    master_keywords = [cfg.MASTER_NAME, "你主人"]
     if chat_id not in yuki.message_buffer:
         yuki.message_buffer[chat_id] = []
     if not ("BOT" in sender_name):
@@ -223,7 +292,9 @@ async def manage_buffer(chat_id, content, mode, raw_message='', sender_name = ''
             "name": sender_name,
             "content": content,  # 这是带 【“姓名”】说: 的完整格式
             "raw_text": raw_message,  # 这是原始纯文本
-            "is_bot": is_bot
+            "is_bot": is_bot,
+            "is_master": is_master,
+            "calling_master": any(kw in raw_message for kw in master_keywords) and ("yuki" in raw_message.lower())
         })
 
     if cfg.ROBOT_NAME.lower() in raw_message.lower():  # 使用原始文本判断，更准确
@@ -258,7 +329,6 @@ if __name__ == "__main__":
         # 实例化Yuki主引擎
         engine = YukiEngine(llm, memory_rag, history_manager, yuki, sender)
         engine.process_callback = main_process
-        # 在 engine = YukiEngine(...) 之后
 
         end_time = time.time()
         logger.info(f"[System] 初始化完成，耗时 {end_time - start_time:.1f} 秒")
