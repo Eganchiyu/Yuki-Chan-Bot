@@ -4,7 +4,7 @@ import math
 from collections import defaultdict
 from concurrent.futures.thread import ThreadPoolExecutor
 
-from core.prompts import YUKI_SETTING_PRIVATE, YUKI_SETTING_GROUP
+from core.prompts import get_yuki_setting_private, get_yuki_setting_group
 from config import cfg
 import asyncio
 from utils.logger import get_logger
@@ -73,7 +73,7 @@ class YukiState:
 
     @staticmethod
     def get_setting(mode):
-        return YUKI_SETTING_PRIVATE if mode == "private" else YUKI_SETTING_GROUP
+        return get_yuki_setting_private() if mode == "private" else get_yuki_setting_group()
 
     def update_energy(self, chat_id):
         """计算并更新当前精力值"""

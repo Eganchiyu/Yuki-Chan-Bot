@@ -6,7 +6,7 @@ import asyncio
 import datetime
 import time
 from typing import Any
-from core.prompts import BASE_SETTING, SUMMARY_PROMPT, build_chat_context
+from core.prompts import get_base_setting, get_summary_prompt, build_chat_context
 from config import cfg
 from core.prompts import build_ice_break_prompt
 from core.maid import maid_evolution_loop
@@ -36,7 +36,7 @@ class YukiEngine:
                                                         )
         await asyncio.sleep(0.2)
         # 发送对话补全到DeepSeek
-        logger.info("[System] Yuki 正在打字...")
+        logger.info(f"[System] {cfg.ROBOT_NAME.title()} 正在打字...")
         try:
             Yuki_Answer = await self.llm.robust_api_call(
                 model=cfg.LLM_MODEL,
@@ -88,12 +88,12 @@ class YukiEngine:
 
         # 逻辑干预：
         if human_calling:
-            logger.info("[System] 检测到人类关键召唤，Yuki 强制清醒")
+            logger.info(f"[System] 检测到人类关键召唤，{cfg.ROBOT_NAME.title()} 强制清醒")
             return True
 
         if bot_calling_only and any(any(kw in m["raw_text"].lower() for kw in cfg.keywords) for m in message_objs):
             desire *= 0.7  # 你的核心诉求：欲望乘 0.7
-            logger.info(f"[System] 检测到仅有 BOT 在召唤 Yuki，为了防止无限套娃，本次放行。欲望打折：{desire:.1}%")
+            logger.info(f"[System] 检测到仅有 BOT 在召唤 {cfg.ROBOT_NAME.title()}，为了防止无限套娃，本次放行。欲望打折：{desire:.1f}%")
 
         # --- 强干预层 ---
         if desire >= 80:
@@ -104,7 +104,7 @@ class YukiEngine:
             return False
 
         if current_e < cfg.MIN_ACTIVE_ENERGY:
-            logger.info(f"[System] Yuki 太累了... 正在潜水回复体力 (当前精力: {current_e:.1f})")
+            logger.info(f"[System] {cfg.ROBOT_NAME.title()} 太累了... 正在潜水回复体力 (当前精力: {current_e:.1f})")
             return False
 
         try:
@@ -113,13 +113,13 @@ class YukiEngine:
 
             dialogue_text = ""
             for msg in recent_dialogue:
-                role_name = "" if msg["role"] == "user" else "【Yuki】说:"
+                role_name = "" if msg["role"] == "user" else f"【{cfg.ROBOT_NAME.title()}】说:"
                 dialogue_text += f"{role_name}{msg['content']}\n\n"
 
             energy_desc = "精力充沛，很愿意找人聊天" if current_e > 90 else "精力正常，会选择性接有趣的话题" if current_e > 45 else "疲惫，只想接少数有趣的话题" if current_e > 25 else "非常疲惫，只有认为必须发言时才发言"
 
             check_prompt = (
-                f"请分析对话上下文和氛围，判断现在是否要发言。yuki对感兴趣的话题会冒泡，但是会避免过于频繁地打扰大家。对主人和yuki的直接称呼会增加发言倾向。请综合考虑对话内容、氛围和当前精力，判断yuki是否应该发言。\n\n"
+                f"请分析对话上下文和氛围，判断现在是否要发言。{cfg.ROBOT_NAME}对感兴趣的话题会冒泡，但是会避免过于频繁地打扰大家。对{cfg.MASTER_NAME}和{cfg.ROBOT_NAME}的直接称呼会增加发言倾向。请综合考虑对话内容、氛围和当前精力，判断{cfg.ROBOT_NAME}是否应该发言。\n\n"
                 f"如果要发言，请回答 'YES'。如果想继续潜水观察，请回答 'NO'。"
             )
 
@@ -155,18 +155,18 @@ class YukiEngine:
             return False
 
     async def do_summarize(self, chat_id, history):
-        logger.info(f"[System] [{chat_id}] 记忆有点长了，Yuki 正在写日记回顾...")
+        logger.info(f"[System] [{chat_id}] 记忆有点长了，{cfg.ROBOT_NAME.title()} 正在写日记回顾...")
         dialogue_msgs = [msg for msg in history if msg["role"] != "system"]
         content_to_summarize = json.dumps(dialogue_msgs, ensure_ascii=False)
         try:
             diary_content = await self.llm.robust_api_call(
                 model=cfg.LLM_MODEL,
                 messages=[
-                    {"role": "system", "content": f"{BASE_SETTING}"},
+                    {"role": "system", "content": get_base_setting()},
                     {"role": "user", "content": (
                         f"以下是需要总结的对话内容：\n{content_to_summarize}\n\n"
                         f"---任务指令---\n"
-                        f"{SUMMARY_PROMPT}"
+                        f"{get_summary_prompt()}"
                     )}
                 ],
                 temperature=0.7,
@@ -277,7 +277,7 @@ class YukiEngine:
 
         prompt = build_ice_break_prompt(chat_id, relevant_diaries, history_dict)
 
-        logger.info(f"[System] Yuki 正在破冰... (Query: {query})")
+        logger.info(f"[System] {cfg.ROBOT_NAME.title()} 正在破冰... (Query: {query})")
         try:
             # 4. API 调用
             Yuki_Answer = await self.llm.robust_api_call(
@@ -319,7 +319,7 @@ async def maid_worker(engine, yuki_state, sender, history_manager):
         chat_id = str(task["chat_id"])
         mode = task.get("mode", "group")   # 默认群聊
 
-        # 更新当前任务状态（让 Yuki 能感知到“小女仆正在干这个”）
+        # 更新当前任务状态（让 {cfg.ROBOT_NAME.title()} 能感知到“小女仆正在干这个”）
         yuki_state.maid_current_tasks[chat_id] = goal
 
         logger.info(f"🧹 小女仆开始后台工作: {goal} (chat_id: {chat_id})")
@@ -347,7 +347,7 @@ async def maid_worker(engine, yuki_state, sender, history_manager):
 
             current_time_str = datetime.datetime.now().strftime("%Y年%m月%d日%H:%M")
 
-            # 2. 把小女仆汇报作为 assistant 消息写入历史（这样 Yuki 下次看到的就是“自己”的汇报）
+            # 2. 把小女仆汇报作为 assistant 消息写入历史（这样 {cfg.ROBOT_NAME.title()} 下次看到的就是“自己”的汇报）
             history_dict[chat_id].append({
                 "role": "user",
                 "content": report,
@@ -358,7 +358,7 @@ async def maid_worker(engine, yuki_state, sender, history_manager):
             # 3. 保存到 chat_history.json
             history_manager.save(history_dict)
 
-            # 4. 强制触发 main_process，让 Yuki 自然思考并决定是否回复
+            # 4. 强制触发 main_process，让 {cfg.ROBOT_NAME.title()} 自然思考并决定是否回复
             #    （main_process 会读取最新历史、检索 RAG、决定是否发言等）
             if engine.process_callback is not None:
                 asyncio.create_task(
