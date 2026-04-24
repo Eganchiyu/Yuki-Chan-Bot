@@ -193,8 +193,7 @@ async def napcat_listen(mode):
             logger.info("[System] 5 秒后将尝试重启监听进程...")
             await asyncio.sleep(5)
 
-
-async def manage_buffer(chat_id, content, mode, raw_message='', sender_name='', user_id=None):
+async def manage_buffer(chat_id, content, mode, raw_message='', sender_name = '',user_id = None):
     global real_time_debounce_time
     cid_str = str(chat_id)
 
@@ -223,6 +222,7 @@ async def manage_buffer(chat_id, content, mode, raw_message='', sender_name='', 
 
     # 判定是否为机器人（可以根据名称含 BOT，或者特定的 QQ 号判定）
     is_bot = "BOT" in sender_name or "机器人" in sender_name
+    
 
     if chat_id not in yuki.message_buffer:
         yuki.message_buffer[chat_id] = []
