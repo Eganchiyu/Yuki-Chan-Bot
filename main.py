@@ -5,8 +5,6 @@ import time
 import datetime
 import sys
 
-from sympy import true
-
 from core.brain import YukiState
 from core.engine import YukiEngine
 from core.history_manager import HistoryManager
@@ -93,7 +91,7 @@ async def main_process(chat_id, mode, debounce_flag=True, force_reply=None):
     # 添加当前消息到上下文池
     current_time_str = datetime.datetime.now().strftime("%Y年%m月%d日%H:%M")
     history_dict[chat_id].append({
-        "role": "user", 
+        "role": "user",
         "content": combined_text,
         "time": current_time_str  # 新增独立字段
     })
@@ -174,13 +172,19 @@ async def napcat_listen(mode):
                     if not cfg.TARGET_GROUPS or group_id in cfg.TARGET_GROUPS:
                         sender_info = data.get("sender", {})
                         name = sender_info.get("card") or sender_info.get("nickname") or "路人"
+                        is_fake = name == cfg.MASTER_NAME and user_id != cfg.TARGET_QQ
+                        if is_fake:
+                            logger.warning(
+                                f"[System] 检测到疑似冒充消息，已替换发送者姓名。原始姓名: {name}, QQ: {user_id}")
+                            name = f"{name}(冒充)"
                         # 将消息存入缓冲区并触发主进程
                         await manage_buffer(
                             group_id,
                             f"【“{name}”】说: {raw_msg}",
                             mode,
                             raw_message=raw_msg,
-                            sender_name=name  # 传入姓名用于标识
+                            sender_name=name,  # 传入姓名用于标识
+                            user_id=int(user_id)
                         )
 
         except Exception as e:
@@ -189,7 +193,8 @@ async def napcat_listen(mode):
             logger.info("[System] 5 秒后将尝试重启监听进程...")
             await asyncio.sleep(5)
 
-async def manage_buffer(chat_id, content, mode, raw_message='', sender_name = ''):
+
+async def manage_buffer(chat_id, content, mode, raw_message='', sender_name='', user_id=None):
     global real_time_debounce_time
     cid_str = str(chat_id)
 
@@ -221,7 +226,7 @@ async def manage_buffer(chat_id, content, mode, raw_message='', sender_name = ''
 
     if chat_id not in yuki.message_buffer:
         yuki.message_buffer[chat_id] = []
-    if not ("BOT" in sender_name):
+    if (not ("BOT" in sender_name)) or (user_id and user_id == 1390249127):  # 允许特定机器人QQ发起对话
         yuki.message_buffer[chat_id].append({
             "name": sender_name,
             "content": content,  # 这是带 【“姓名”】说: 的完整格式
@@ -239,11 +244,6 @@ if __name__ == "__main__":
         logger.info("[System] 请确保已运行setup.py进行初始化配置！")
         logger.info(f"[System] {cfg.ROBOT_NAME.title()} 正在初始化...")
         start_time = time.time()
-        # check_config()
-        # ==========================================
-        # 2. 启动 WebUI (非阻塞模式)
-        # ==========================================
-
 
         # 加载与Napcat通信的Websocket服务
         connector = BotConnector(cfg.NAPCAT_WS_URL, cfg.NAPCAT_WS_TOKEN)
@@ -261,6 +261,7 @@ if __name__ == "__main__":
         history_manager = HistoryManager()
         logger.info("[System] 开始初始化记忆系统（RAG）...")
         from modules.memory.rag import MemoryRAG
+
         # 初始化向量记忆库
         memory_rag = MemoryRAG()
         # 实例化Yuki主引擎
