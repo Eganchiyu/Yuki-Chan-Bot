@@ -83,7 +83,7 @@ def build_ui():
         font=[gr.themes.GoogleFont("Inter"), "system-ui", "sans-serif"]
     )
 
-    with gr.Blocks(theme=theme, css=modern_css, title="Yuki Core Dashboard") as demo:
+    with gr.Blocks(title="Yuki Core Dashboard") as demo:
         gr.Markdown(
             """
             # 🌸 Yuki Core Dashboard
@@ -174,10 +174,14 @@ def build_ui():
         input_components = [components_map[k] for k in ordered_keys]
         save_btn.click(fn=save_config_handler, inputs=input_components, outputs=[status_text])
 
+    demo._ui_theme = theme
+    demo._ui_css = modern_css
     return demo
 
 
 if __name__ == "__main__":
+    import os
+    os.environ.setdefault("NO_PROXY", "127.0.0.1,localhost")
     demo = build_ui()
     # 局域网访问
-    demo.launch(server_name="127.0.0.1", server_port=1314)
+    demo.launch(server_name="127.0.0.1", server_port=1314, theme=demo._ui_theme, css=demo._ui_css)

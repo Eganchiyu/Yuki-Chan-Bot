@@ -235,6 +235,8 @@ async def manage_buffer(chat_id, content, mode, raw_message='', sender_name = ''
     yuki.buffer_tasks[chat_id] = asyncio.create_task(main_process(chat_id, mode))
 
 if __name__ == "__main__":
+    import os
+    os.environ.setdefault("NO_PROXY", "127.0.0.1,localhost")
     try:
         logger.info("[System] 请确保已运行setup.py进行初始化配置！")
         logger.info(f"[System] {cfg.ROBOT_NAME.title()} 正在初始化...")
@@ -273,7 +275,9 @@ if __name__ == "__main__":
             webui.launch(
                 server_name="127.0.0.1",
                 server_port=1314,
-                prevent_thread_lock=True
+                prevent_thread_lock=True,
+                theme=webui._ui_theme,
+                css=webui._ui_css
             )
             success = True
         except Exception as e:
