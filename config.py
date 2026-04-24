@@ -27,9 +27,9 @@ _ATTR_MAP = {
     "KEEP_LAST_DIALOGUE":  (("rag", "keep_last_dialogue"), 10, "保留的近期对话条数（短期记忆）"),
 
     # API
-    "LLM_PLATFORM":          (("api", "llm_platform"), "deepseek", "首选 LLM 平台名称，选 custom 可自定义 URL"),
-    "BACKUP_PLATFORM":       (("api", "backup_platform"), "deepseek", "备选 LLM 平台名称，选 custom 可自定义 URL"),
-    "VISION_PLATFORM":       (("api", "vision_platform"), "dashscope", "视觉模型平台名称，选 custom 可自定义 URL"),
+    "LLM_PLATFORM":          (("api", "llm_platform"), "deepseek", "首选 LLM 平台名称（deepseek/dashscope/openai）"),
+    "BACKUP_PLATFORM":       (("api", "backup_platform"), "deepseek", "备选 LLM 平台名称"),
+    "VISION_PLATFORM":       (("api", "vision_platform"), "dashscope", "视觉模型平台名称"),
     "LLM_BASE_URL":          (("api", "llm_base_url"), "", "可选：覆盖首选平台内置 API 地址"),
     "BACKUP_BASE_URL":       (("api", "backup_base_url"), "", "可选：覆盖备选平台内置 API 地址"),
     "IMAGE_PROCESS_API_URL": (("api", "image_process_url"), "", "可选：覆盖视觉平台内置 API 地址"),

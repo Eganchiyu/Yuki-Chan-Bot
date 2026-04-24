@@ -37,8 +37,12 @@ def load_config():
     return cfg._raw
 
 
+# ================= 核心：兼容深浅模式的拟物化 CSS =================
+# 不再强制写死白色/黑色，完全依赖原生主题变量，只做圆角和阴影的结构化塑形
 modern_css = """
+/* 隐藏底部不需要的 Footer */
 footer { display: none !important; }
+/* 强化折叠面板(Accordion)的卡片感 */
 .accordion {
     border-radius: 16px !important;
     box-shadow: 0 4px 6px -1px var(--shadow-color, rgba(0,0,0,0.05)) !important;
@@ -46,6 +50,7 @@ footer { display: none !important; }
     overflow: hidden;
     margin-bottom: 12px !important;
 }
+/* 输入框圆角与焦点发光 */
 input[type="text"], input[type="password"], input[type="number"], textarea {
     border-radius: 10px !important;
     transition: all 0.2s ease !important;
@@ -54,6 +59,8 @@ input[type="text"]:focus, input[type="password"]:focus, input[type="number"]:foc
     border-color: var(--color-accent) !important;
     box-shadow: 0 0 0 3px var(--color-accent-subtle) !important;
 }
+/* 主按钮动效 */
+/* 主按钮：果冻粉渐变与动效 */
 button.primary {
     border-radius: 14px !important;
     font-weight: 600 !important;
@@ -127,10 +134,11 @@ def build_ui():
     ordered_keys = []
     platform_options = _get_platform_options()
 
+    # 使用自带的柔和主题，完美支持右上角的 Dark Mode 切换
     theme = gr.themes.Soft(
-        primary_hue="pink",
-        secondary_hue="rose",
-        neutral_hue="stone",
+        primary_hue="pink",  # 主色调：粉色
+        secondary_hue="rose",  # 次要色调：玫瑰粉
+        neutral_hue="stone",  # 中性底色：偏暖的石灰色（比冷灰色更搭粉色）
         font=[gr.themes.GoogleFont("Inter"), "system-ui", "sans-serif"]
     )
 
@@ -161,6 +169,7 @@ def build_ui():
                 )
                 components_map["robot_name"] = rn
                 components_map["master_name"] = mn
+                # ================= 瀑布流配置区 =================
                 ordered_keys.extend(["robot_name", "master_name"])
 
         # ================= API 平台配置（三个独立面板） =================
@@ -192,9 +201,11 @@ def build_ui():
 
         # ================= 其余配置（自动遍历） =================
         for key, header in _SECTION_HEADERS.items():
+            # 先把属于这个 section 的配置项找出来
             current_items = [
                 (name, item) for name, item in _ATTR_MAP.items() if item[0][0] == key
             ]
+            # 【关键修复】如果列表是空的（比如 robot_name 已经被我们在顶部处理了），直接跳过，不画空壳！
             if not current_items:
                 continue
 
@@ -216,6 +227,7 @@ def build_ui():
 
                                 label = f"{name} {f'({comment})' if comment else ''}"
 
+                                # 根据键名渲染组件
                                 if "API_KEY" in name or "TOKEN" in name:
                                     comp = gr.Textbox(
                                         label=label, value=val, type="password", max_lines=1
@@ -253,8 +265,7 @@ def build_ui():
             new_config["master_name"] = input_data.get("master_name", "主人")
 
             for name, (path, default, _) in _ATTR_MAP.items():
-                if name not in input_data:
-                    continue
+                if name not in input_data: continue
                 val = input_data[name]
 
                 if isinstance(default, list) and isinstance(val, str):
@@ -292,6 +303,7 @@ if __name__ == "__main__":
 
     os.environ.setdefault("NO_PROXY", "127.0.0.1,localhost")
     demo = build_ui()
+    # 局域网访问
     demo.launch(
         server_name="127.0.0.1",
         server_port=1314,

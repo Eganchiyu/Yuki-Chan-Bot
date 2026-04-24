@@ -104,7 +104,7 @@ class MemeProcessor:
                     return result["choices"][0]["message"]["content"]
                 else:
                     text = await resp.text()
-                    logger.debug(f"[DEBUG] 错误响应: {text}")
+                    logger.debug(f"[DEBUG] 错误响应: {text}")  # 看看具体错误
                     logger.error(f"API 返回错误 {resp.status}: {text[:200]}")
                     raise aiohttp.ClientResponseError(
                         request_info=resp.request_info,
@@ -116,6 +116,7 @@ class MemeProcessor:
     async def understand_from_url(self, img_url):
         if not cfg.VISION_MODEL:
             logger.info("未设置视觉模型，跳过图像识别")
+            # 如果没有配置视觉模型，直接返回占位符，不进行下载和API调用
             return "[未知动画表情]"
 
         img_url = img_url.replace("&amp;", "&")
@@ -137,6 +138,7 @@ class MemeProcessor:
 
             img_hash = self.get_image_hash(content)
 
+            # 检查哈希缓存
             cached = self.cache.get(img_hash)
             if cached:
                 logger.info(f"[MemeCache] 命中哈希缓存: {cached}")
@@ -154,6 +156,7 @@ class MemeProcessor:
             logger.info(f"[Meme Understanding] 识别结果: {analysis}")
             clean_analysis = analysis.strip().replace('\n', ' ').replace('\r', '')
 
+            # 保存到缓存
             self.cache.set(img_hash, clean_analysis)
             self.cache.set(cache_key, clean_analysis)
             self.cache.save()
@@ -179,6 +182,7 @@ class MemeProcessor:
         urls = re.findall(pattern, text)
         return modified_text, urls
 
+    # 新增：对外暴露的统计方法
     def get_cache_stats(self):
         """获取缓存统计报告"""
         return self.cache.get_stats_report()

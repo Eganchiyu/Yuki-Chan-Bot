@@ -23,6 +23,7 @@ async def call_cloud_maid_robust(messages):
     """调用 Provider 完成小女仆任务。"""
     provider = ProviderRegistry().get("default")
 
+    # 强制要求 JSON 格式输出
     payload_kwargs = {
         "response_format": {"type": "json_object"},
         "temperature": 0.3
@@ -281,14 +282,18 @@ async def maid_evolution_loop(user_goal: str, chat_id: str = None):
 if __name__ == "__main__":
     async def main():
         try:
+            # 2. 使用 await 调用异步的进化循环
             target_task = "请写一个明显阻塞程序运行的代码并运行，比如打开任务管理器，我要测试agent的阻塞保护功能。"
             result = await maid_evolution_loop(target_task)
 
+            # 3. 此时 result 才是真正的字典结果
             if result:
                 logger.info(f"\n✅ 任务完成！结果: {result.get('result', '无返回信息')}")
         finally:
+            # 4. 无论成功失败，关闭 ProviderRegistry 释放资源
             await ProviderRegistry().close_all()
 
+    # 5. 启动 asyncio 事件循环
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
