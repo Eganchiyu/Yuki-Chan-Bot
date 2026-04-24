@@ -240,7 +240,7 @@ async def maid_evolution_loop(user_goal: str, chat_id: str = None):
         # 调用稳健 API
         content = await call_cloud_maid_robust(messages)
 
-        if "Yuki 好像有点不舒服" in content:
+        if f"{cfg.ROBOT_NAME.title()} 好像有点不舒服" in content:
             logger.error("[Maid] ❌ 线路全线崩溃，停止尝试。")
             break
 

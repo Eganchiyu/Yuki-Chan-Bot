@@ -112,7 +112,7 @@ class ApiCall:
         else:
             # 官方也报错，返回兜底话术
             logger.error(f"[Critical] 全线不可用: {result}")
-            return "（Yuki 好像有点不舒服，暂时连接不上大脑...哥哥等会再找我好吗？）"
+            return f"（{cfg.ROBOT_NAME.title()} 好像有点不舒服，暂时连接不上大脑...{cfg.MASTER_NAME}等会再找我好吗？）"
 
     @classmethod
     async def close(cls):
