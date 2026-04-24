@@ -27,9 +27,9 @@ _ATTR_MAP = {
     "KEEP_LAST_DIALOGUE":  (("rag", "keep_last_dialogue"), 10, "保留的近期对话条数（短期记忆）"),
 
     # API
-    "LLM_PLATFORM":          (("api", "llm_platform"), "deepseek", "首选 LLM 平台名称（deepseek/dashscope/openai）"),
-    "BACKUP_PLATFORM":       (("api", "backup_platform"), "deepseek", "备选 LLM 平台名称"),
-    "VISION_PLATFORM":       (("api", "vision_platform"), "dashscope", "视觉模型平台名称"),
+    "LLM_PLATFORM":          (("api", "llm_platform"), "deepseek", "首选 LLM 平台名称，选 custom 可自定义 URL"),
+    "BACKUP_PLATFORM":       (("api", "backup_platform"), "deepseek", "备选 LLM 平台名称，选 custom 可自定义 URL"),
+    "VISION_PLATFORM":       (("api", "vision_platform"), "dashscope", "视觉模型平台名称，选 custom 可自定义 URL"),
     "LLM_BASE_URL":          (("api", "llm_base_url"), "", "可选：覆盖首选平台内置 API 地址"),
     "BACKUP_BASE_URL":       (("api", "backup_base_url"), "", "可选：覆盖备选平台内置 API 地址"),
     "IMAGE_PROCESS_API_URL": (("api", "image_process_url"), "", "可选：覆盖视觉平台内置 API 地址"),
@@ -68,6 +68,17 @@ _ATTR_MAP = {
     "SIGMOID_CENTRE":   (("attention", "sigmoid_centre"), 50.0, "Sigmoid 中心点"),
     "SIGMOID_ALPHA":    (("attention", "sigmoid_alpha"), 0.08, "Sigmoid 陡峭度"),
 
+    # 本地文件路径
+    "VECTOR_DB_PATH":  (("paths", "vector_db"), "./yuki_memory", "向量数据库路径"),
+    "EMBED_MODEL":     (("paths", "embed_model"), "./models/text2vec-base-chinese", "嵌入模型路径"),
+    "HISTORY_FILE":    (("paths", "history_file"), "./data/chat_history.json", "历史记录文件路径"),
+    "LOG_FILE":        (("paths", "log_file"), "./data/yuki_log.txt", "日志文件路径"),
+    "CACHE_DIR":       (("paths", "cache_dir"), "./data", "缓存目录路径"),
+    "CACHE_FILE":      (("paths", "cache_file"), "./data/meme_cache.json", "缓存文件路径"),
+
+    # 注意力关键词
+    "ATTENTION_KEYWORDS": (("attention", "keywords"), ["主人", "哥哥"], "注意力关键词列表（逗号分隔）"),
+
     # 并发 / 调试
     "MAX_CONCURRENT_MEME": (("max_concurrent_meme",), 3, "最大并发处理表情包数量"),
     "DEBUG":               (("debug",), True, "调试模式开关"),
@@ -88,6 +99,7 @@ _SECTION_HEADERS = {
     "energy": "# ================= 精力值系统配置 =================",
     "attention": "# ================= 注意力/响应配置 =================",
     "max_concurrent_meme": "# ================= 并发与调试配置 =================",
+    "debug": "# ================= 调试配置 =================",
 }
 
 
