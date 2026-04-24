@@ -235,7 +235,29 @@ async def manage_buffer(chat_id, content, mode, raw_message='', sender_name = ''
 
 if __name__ == "__main__":
     import os
+    import atexit
     os.environ.setdefault("NO_PROXY", "127.0.0.1,localhost")
+
+    _cleanup_done = False
+
+    def _do_cleanup():
+        """同步清理资源：关闭 ProviderRegistry 释放 aiohttp Session"""
+        global _cleanup_done
+        if _cleanup_done:
+            return
+        _cleanup_done = True
+        logger.info("[System] 正在清理资源...")
+        try:
+            from providers.registry import ProviderRegistry
+            loop = asyncio.new_event_loop()
+            loop.run_until_complete(ProviderRegistry().close_all())
+            loop.close()
+            logger.info("[System] 资源清理完成")
+        except Exception as e:
+            logger.error(f"[System] 清理资源时出错: {e}")
+
+    atexit.register(_do_cleanup)
+
     try:
         logger.info("[System] 请确保已运行setup.py进行初始化配置！")
         logger.info(f"[System] {cfg.ROBOT_NAME.title()} 正在初始化...")
@@ -298,6 +320,10 @@ if __name__ == "__main__":
             logger.debug(f"已预载 {len(yuki.last_message_time)} 个群组到巡检名单")
         asyncio.run(napcat_listen("private" if choice == "1" else "group"))
 
+    except KeyboardInterrupt:
+        logger.info("\n[System] 收到中断信号，正在优雅退出...")
+        sys.exit(0)
+
     except (FileNotFoundError, ImportError, KeyError) as e:
         logger.error("=" * 50)
         logger.error("启动失败：环境配置似乎不完整")
@@ -313,3 +339,6 @@ if __name__ == "__main__":
         logger.critical(f"发生未知致命错误: {e}")
         # 这里可以选择记录日志
         sys.exit(1)
+
+    finally:
+        _do_cleanup()
