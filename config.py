@@ -41,6 +41,7 @@ _ATTR_MAP = {
     "LLM_MODEL":    (("model", "llm"), "deepseek-chat", "主对话模型"),
     "BACKUP_MODEL": (("model", "backup"), "deepseek-chat", "备用对话模型"),
     "VISION_MODEL": (("model", "vision"), "qwen3-vl-flash", "视觉/多模态模型；如不需要可留空"),
+    "DISABLE_THINKING": (("model", "disable_thinking"), True, "默认关闭模型的 thinking/reasoning 输出"),
 
     # 连接
     "NAPCAT_WS_URL":  (("connection", "napcat_ws_url"), "ws://localhost:3001", "NapCat WebSocket 地址"),

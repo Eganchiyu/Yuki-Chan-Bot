@@ -321,7 +321,7 @@ if __name__ == "__main__":
         asyncio.run(napcat_listen("private" if choice == "1" else "group"))
 
     except KeyboardInterrupt:
-        logger.info("\n[System] 收到中断信号，正在优雅退出...")
+        logger.info("[System] 收到中断信号，正在退出...")
         sys.exit(0)
 
     except (FileNotFoundError, ImportError, KeyError) as e:

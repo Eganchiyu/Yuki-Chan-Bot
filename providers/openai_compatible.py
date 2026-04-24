@@ -88,11 +88,24 @@ class OpenAICompatibleProvider(BaseProvider):
             logger.error(f"[{self.name}] API 调用失败: {e}")
             raise
 
+    def _apply_disable_thinking(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        默认减少模型的 thinking/reasoning 输出。
+        对 OpenAI o1/o3 系列生效（reasoning_effort: low）。
+        其他平台若忽略未知参数则无害；若报错可在 config 关闭 disable_thinking。
+        """
+        if "reasoning_effort" not in payload:
+            payload["reasoning_effort"] = "low"
+        return payload
+
     def sanitize_payload(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         """
         平台参数适配钩子。
         子类可覆盖此方法以针对特定平台过滤/转换不兼容参数。
         """
+        from config import cfg
+        if cfg.DISABLE_THINKING:
+            payload = self._apply_disable_thinking(payload)
         return payload
 
     async def close(self) -> None:
