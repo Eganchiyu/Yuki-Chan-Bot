@@ -160,6 +160,15 @@ class ProviderRegistry:
         """检查是否已注册指定 Provider。"""
         return name in self._providers
 
+    def reload(self):
+        """
+        根据当前 config 重新构建默认 Provider。
+        在配置热重载后调用，使平台/API Key/模型变更立即生效。
+        """
+        logger.info("[ProviderRegistry] 配置变更，正在重新构建 Provider...")
+        self._providers.clear()
+        self._build_defaults()
+
     async def close_all(self) -> None:
         """关闭所有 Provider 并清理全局 Session。"""
         for name, provider in list(self._providers.items()):

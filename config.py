@@ -230,6 +230,20 @@ class Config:
                     for name, old_val, new_val in changed:
                         logger.info(f"  {name}: {old_val!r} → {new_val!r}")
 
+                    # 若平台/API/模型配置发生变更，通知 ProviderRegistry 重新构建
+                    platform_related = {
+                        "LLM_PLATFORM", "BACKUP_PLATFORM", "VISION_PLATFORM",
+                        "LLM_API_KEY", "BACKUP_API_KEY", "IMAGE_PROCESS_API_KEY",
+                        "LLM_BASE_URL", "BACKUP_BASE_URL", "IMAGE_PROCESS_API_URL",
+                        "LLM_MODEL", "BACKUP_MODEL", "VISION_MODEL",
+                    }
+                    if any(n in platform_related for n, _, _ in changed):
+                        try:
+                            from providers.registry import ProviderRegistry
+                            ProviderRegistry().reload()
+                        except Exception as e:
+                            logger.error(f"[Config] ProviderRegistry 重载失败: {e}")
+
     # ---------------- 通用属性访问 ----------------
     def __getattr__(self, name):
         if name.startswith("_"):
