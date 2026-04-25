@@ -248,6 +248,11 @@ if __name__ == "__main__":
         _cleanup_done = True
         logger.info("[System] 正在清理资源...")
         try:
+            cfg._save_raw()
+            logger.info("[System] 配置已自动对齐保存")
+        except Exception as e:
+            logger.error(f"[System] 保存配置时出错: {e}")
+        try:
             from providers.registry import ProviderRegistry
             loop = asyncio.new_event_loop()
             loop.run_until_complete(ProviderRegistry().close_all())
