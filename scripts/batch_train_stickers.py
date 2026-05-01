@@ -8,7 +8,6 @@ import asyncio
 import os
 from pathlib import Path
 
-from network.api_request import ApiCall
 from modules.stickers.manager import StickerManager
 from config import cfg
 
@@ -16,9 +15,8 @@ from config import cfg
 async def batch_train_stickers():
     print("=== Yuki 表情包批量训练开始 ===\n")
 
-    # 1. 初始化 LLM 和 StickerManager
-    llm = ApiCall(cfg.LLM_API_KEY, cfg.LLM_BASE_URL)
-    sticker_manager = StickerManager(llm)
+    # 1. 初始化 StickerManager（内部自动从 ProviderRegistry 获取 provider）
+    sticker_manager = StickerManager()
 
     # 2. 指定表情包文件夹（你当前存放的位置）
     sticker_folder = Path("../data/stickers")

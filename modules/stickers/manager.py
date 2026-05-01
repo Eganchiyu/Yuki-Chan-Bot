@@ -18,7 +18,6 @@ from sentence_transformers import SentenceTransformer
 
 from config import cfg
 from modules.vision.processor import MemeProcessor
-from network.api_request import ApiCall
 from utils.logger import get_logger
 
 logger = get_logger("stickers")
@@ -46,9 +45,10 @@ Yuki的回复内容：{yuki_message}
 
 
 class StickerManager:
-    def __init__(self, llm: ApiCall):
-        self.llm = llm
-        self.vl_processor = MemeProcessor()  # 视觉处理基础设施
+    def __init__(self):
+        from providers.registry import ProviderRegistry
+        self.registry = ProviderRegistry()
+        self.vl_processor = MemeProcessor()
         self.model = SentenceTransformer(cfg.EMBED_MODEL)
 
         self.client = chromadb.PersistentClient(path=cfg.VECTOR_DB_PATH)
@@ -188,12 +188,15 @@ class StickerManager:
 
     async def _judge_emotion(self, yuki_message: str) -> str:
         prompt = EMOTION_JUDGE_PROMPT.format(yuki_message=yuki_message)
-        raw = await self.llm.robust_api_call(
-            model=cfg.LLM_MODEL,
+
+        provider = self.registry.get("default")
+        raw = await provider.chat(
             messages=[{"role": "user", "content": prompt}],
+            model=cfg.LLM_MODEL,
             temperature=0.0,
             max_tokens=20
         )
+
         return raw.strip() or "中性"
 
         # ====================== 核心算法：重排与状态管理 ======================

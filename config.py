@@ -27,9 +27,12 @@ _ATTR_MAP = {
     "KEEP_LAST_DIALOGUE":  (("rag", "keep_last_dialogue"), 10, "保留的近期对话条数（短期记忆）"),
 
     # API
-    "LLM_BASE_URL":          (("api", "llm_base_url"), "https://api.deepseek.com/v1", "首选 LLM API 地址"),
-    "BACKUP_BASE_URL":   (("api", "backup_base_url"), "https://api.deepseek.com/v1", "备选 API 地址"),
-    "IMAGE_PROCESS_API_URL": (("api", "image_process_url"), "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions", "图像处理 API 地址"),
+    "LLM_PLATFORM":          (("api", "llm_platform"), "deepseek", "首选 LLM 平台名称（deepseek/dashscope/openai）"),
+    "BACKUP_PLATFORM":       (("api", "backup_platform"), "deepseek", "备选 LLM 平台名称"),
+    "VISION_PLATFORM":       (("api", "vision_platform"), "dashscope", "视觉模型平台名称"),
+    "LLM_BASE_URL":          (("api", "llm_base_url"), "", "可选：覆盖首选平台内置 API 地址"),
+    "BACKUP_BASE_URL":       (("api", "backup_base_url"), "", "可选：覆盖备选平台内置 API 地址"),
+    "IMAGE_PROCESS_API_URL": (("api", "image_process_url"), "", "可选：覆盖视觉平台内置 API 地址"),
     "LLM_API_KEY":           (("api", "llm_api_key"), "", "首选 LLM API Key"),
     "BACKUP_API_KEY":        (("api", "backup_api_key"), "", "备选 API Key（留空则使用 llm_api_key）"),
     "IMAGE_PROCESS_API_KEY": (("api", "image_process_api_key"), "", "图像处理 API Key"),
@@ -38,6 +41,7 @@ _ATTR_MAP = {
     "LLM_MODEL":    (("model", "llm"), "deepseek-chat", "主对话模型"),
     "BACKUP_MODEL": (("model", "backup"), "deepseek-chat", "备用对话模型"),
     "VISION_MODEL": (("model", "vision"), "qwen3-vl-flash", "视觉/多模态模型；如不需要可留空"),
+    "DISABLE_THINKING": (("model", "disable_thinking"), True, "默认关闭模型的 thinking/reasoning 输出"),
 
     # 连接
     "NAPCAT_WS_URL":  (("connection", "napcat_ws_url"), "ws://localhost:3001", "NapCat WebSocket 地址"),
@@ -64,6 +68,17 @@ _ATTR_MAP = {
     "SIGMOID_CENTRE":   (("attention", "sigmoid_centre"), 50.0, "Sigmoid 中心点"),
     "SIGMOID_ALPHA":    (("attention", "sigmoid_alpha"), 0.08, "Sigmoid 陡峭度"),
 
+    # 本地文件路径
+    "VECTOR_DB_PATH":  (("paths", "vector_db"), "./yuki_memory", "向量数据库路径"),
+    "EMBED_MODEL":     (("paths", "embed_model"), "./models/text2vec-base-chinese", "嵌入模型路径"),
+    "HISTORY_FILE":    (("paths", "history_file"), "./data/chat_history.json", "历史记录文件路径"),
+    "LOG_FILE":        (("paths", "log_file"), "./data/yuki_log.txt", "日志文件路径"),
+    "CACHE_DIR":       (("paths", "cache_dir"), "./data", "缓存目录路径"),
+    "CACHE_FILE":      (("paths", "cache_file"), "./data/meme_cache.json", "缓存文件路径"),
+
+    # 注意力关键词
+    "ATTENTION_KEYWORDS": (("attention", "keywords"), ["主人", "哥哥"], "注意力关键词列表（逗号分隔）"),
+
     # 并发 / 调试
     "MAX_CONCURRENT_MEME": (("max_concurrent_meme",), 3, "最大并发处理表情包数量"),
     "DEBUG":               (("debug",), True, "调试模式开关"),
@@ -84,6 +99,7 @@ _SECTION_HEADERS = {
     "energy": "# ================= 精力值系统配置 =================",
     "attention": "# ================= 注意力/响应配置 =================",
     "max_concurrent_meme": "# ================= 并发与调试配置 =================",
+    "debug": "# ================= 调试配置 =================",
 }
 
 
@@ -211,8 +227,28 @@ class Config:
                         changed.append((name, old_val, new_val))
                 if changed:
                     logger.info("[Config] 检测到配置变更，已自动重载：")
+                    _SENSITIVE_KEYS = {"LLM_API_KEY", "BACKUP_API_KEY", "IMAGE_PROCESS_API_KEY", "NAPCAT_WS_TOKEN"}
                     for name, old_val, new_val in changed:
-                        logger.info(f"  {name}: {old_val!r} → {new_val!r}")
+                        if name in _SENSITIVE_KEYS:
+                            old_disp = "***" if old_val else "(空)"
+                            new_disp = "***" if new_val else "(空)"
+                            logger.info(f"  {name}: {old_disp} → {new_disp}")
+                        else:
+                            logger.info(f"  {name}: {old_val!r} → {new_val!r}")
+
+                    # 若平台/API/模型配置发生变更，通知 ProviderRegistry 重新构建
+                    platform_related = {
+                        "LLM_PLATFORM", "BACKUP_PLATFORM", "VISION_PLATFORM",
+                        "LLM_API_KEY", "BACKUP_API_KEY", "IMAGE_PROCESS_API_KEY",
+                        "LLM_BASE_URL", "BACKUP_BASE_URL", "IMAGE_PROCESS_API_URL",
+                        "LLM_MODEL", "BACKUP_MODEL", "VISION_MODEL",
+                    }
+                    if any(n in platform_related for n, _, _ in changed):
+                        try:
+                            from providers.registry import ProviderRegistry
+                            ProviderRegistry().reload()
+                        except Exception as e:
+                            logger.error(f"[Config] ProviderRegistry 重载失败: {e}")
 
     # ---------------- 通用属性访问 ----------------
     def __getattr__(self, name):

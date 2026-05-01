@@ -18,8 +18,10 @@ logger = get_logger("vision_processor")
 
 class MemeProcessor:
     def __init__(self):
+        from providers.registry import ProviderRegistry
         self.cache = MemeCache()
         self.semaphore = asyncio.Semaphore(cfg.MAX_CONCURRENT_MEME)
+        self._registry = ProviderRegistry()
 
     @staticmethod
     def get_image_hash(image_data):
@@ -63,7 +65,28 @@ class MemeProcessor:
         reraise=True
     )
     async def call_api(self, b64_data):
-        logger.debug(f"token:{cfg.IMAGE_PROCESS_API_KEY}, url:{cfg.IMAGE_PROCESS_API_URL}")
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64_data}"}},
+                    {"type": "text", "text": VISION_PROMPT}
+                ]
+            }
+        ]
+
+        # 优先使用注册中心的 vision provider（更具扩展性）
+        if self._registry and self._registry.has("vision"):
+            provider = self._registry.get("vision")
+            return await provider.chat(
+                messages=messages,
+                model=cfg.VISION_MODEL,
+                max_tokens=50,
+                temperature=0.75
+            )
+
+        # 兼容降级：直接走原始 HTTP 请求
+        logger.debug(f"url:{cfg.IMAGE_PROCESS_API_URL}")
         headers = {
             "Authorization": f"Bearer {cfg.IMAGE_PROCESS_API_KEY}",
             "Content-Type": "application/json"
@@ -99,19 +122,12 @@ class MemeProcessor:
                         message=text
                     )
 
-    async def understand_from_url(self, img_url, llm):
-
+    async def understand_from_url(self, img_url):
         if not cfg.VISION_MODEL:
             logger.info("未设置视觉模型，跳过图像识别")
             # 如果没有配置视觉模型，直接返回占位符，不进行下载和API调用
             return "[未知动画表情]"
 
-        # 1. 熔断拦截
-        llm.check_auto_recovery()
-        if llm.is_degraded:
-            return "[未知动画表情]"
-
-        # 2. 缓存处理
         img_url = img_url.replace("&amp;", "&")
         cache_key = f"url:{img_url}"
 

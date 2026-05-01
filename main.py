@@ -16,7 +16,6 @@ from modules.message.CQParser import CQCodeParser
 from modules.vision.processor import MemeProcessor
 from network.ws_connection import BotConnector
 from network.ws_sender import MessageSender
-from network.api_request import ApiCall
 from config import cfg
 from webui import build_ui
 import os
@@ -285,6 +284,35 @@ async def manage_buffer(chat_id, content, mode, raw_message='', sender_name = ''
     yuki.buffer_tasks[chat_id] = asyncio.create_task(main_process(chat_id, mode))
 
 if __name__ == "__main__":
+    import os
+    import atexit
+    os.environ.setdefault("NO_PROXY", "127.0.0.1,localhost")
+
+    _cleanup_done = False
+
+    def _do_cleanup():
+        """同步清理资源：关闭 ProviderRegistry 释放 aiohttp Session"""
+        global _cleanup_done
+        if _cleanup_done:
+            return
+        _cleanup_done = True
+        logger.info("[System] 正在清理资源...")
+        try:
+            cfg._save_raw()
+            logger.info("[System] 配置已自动对齐保存")
+        except Exception as e:
+            logger.error(f"[System] 保存配置时出错: {e}")
+        try:
+            from providers.registry import ProviderRegistry
+            loop = asyncio.new_event_loop()
+            loop.run_until_complete(ProviderRegistry().close_all())
+            loop.close()
+            logger.info("[System] 资源清理完成")
+        except Exception as e:
+            logger.error(f"[System] 清理资源时出错: {e}")
+
+    atexit.register(_do_cleanup)
+
     try:
         logger.info("[System] 请确保已运行setup.py进行初始化配置！")
         logger.info(f"[System] {cfg.ROBOT_NAME.title()} 正在初始化...")
@@ -296,6 +324,7 @@ if __name__ == "__main__":
         sender = MessageSender(connector)
         # 实例化CQ码处理器
         parser = CQCodeParser(connector)
+        
         # 实例化表情处理器
         meme_processor = MemeProcessor()
         # 实例化Yuki状态
@@ -311,8 +340,8 @@ if __name__ == "__main__":
         from modules.memory.rag import MemoryRAG
         # 初始化向量记忆库
         memory_rag = MemoryRAG()
-        # 实例化Yuki主引擎
-        engine = YukiEngine(llm, memory_rag, history_manager, yuki, sender)
+        # 实例化Yuki主引擎（内部自动从 ProviderRegistry 获取 default provider）
+        engine = YukiEngine(memory_rag, history_manager, yuki, sender)
         engine.process_callback = main_process
         engine.sticker_manager = sticker_manager
         # 在 engine = YukiEngine(...) 之后
@@ -322,7 +351,10 @@ if __name__ == "__main__":
             webui.launch(
                 server_name="127.0.0.1",
                 server_port=1314,
-                prevent_thread_lock=True
+                prevent_thread_lock=True,
+                quiet=True,
+                theme=webui._ui_theme,
+                css=webui._ui_css
             )
             success = True
         except Exception as e:
@@ -344,6 +376,10 @@ if __name__ == "__main__":
             logger.debug(f"已预载 {len(yuki.last_message_time)} 个群组到巡检名单")
         asyncio.run(napcat_listen("private" if choice == "1" else "group"))
 
+    except KeyboardInterrupt:
+        logger.info("[System] 收到中断信号，正在退出...")
+        sys.exit(0)
+
     except (FileNotFoundError, ImportError, KeyError) as e:
         logger.error("=" * 50)
         logger.error("启动失败：环境配置似乎不完整")
@@ -359,3 +395,6 @@ if __name__ == "__main__":
         logger.critical(f"发生未知致命错误: {e}")
         # 这里可以选择记录日志
         sys.exit(1)
+
+    finally:
+        _do_cleanup()

@@ -14,6 +14,65 @@ if shutil.which("uv") and sys.prefix == sys.base_prefix:
         print(f"   uv run python setup.py")
         print("   或先激活虚拟环境后再运行。\n")
 
+def _get_nested(data, path):
+    """按路径从嵌套字典取值"""
+    d = data
+    for k in path:
+        if isinstance(d, dict) and k in d:
+            d = d[k]
+        else:
+            return None
+    return d
+
+
+def _detect_platform_from_url(url: str) -> str:
+    """根据 URL 自动识别平台名称"""
+    url_lower = (url or "").lower()
+    if "ytea" in url_lower:
+        return "ytea"
+    if "deepseek" in url_lower:
+        return "deepseek"
+    if "dashscope" in url_lower or "aliyun" in url_lower:
+        return "dashscope"
+    if "openai" in url_lower and "dashscope" not in url_lower:
+        return "openai"
+    return ""
+
+
+def _migrate_urls_to_platforms():
+    """把旧版 URL 配置自动迁移为平台名称"""
+    cfg = _load_yaml()
+    changed = False
+
+    # (旧URL路径, 新平台路径)
+    mappings = [
+        (("api", "llm_base_url"), ("api", "llm_platform")),
+        (("api", "backup_base_url"), ("api", "backup_platform")),
+        (("api", "image_process_url"), ("api", "vision_platform")),
+    ]
+
+    def set_nested(data, path, value):
+        curr = data
+        for key in path[:-1]:
+            curr = curr.setdefault(key, {})
+        curr[path[-1]] = value
+
+    for url_path, plat_path in mappings:
+        url = _get_nested(cfg, url_path)
+        existing_platform = _get_nested(cfg, plat_path)
+        if url and not existing_platform:
+            platform = _detect_platform_from_url(url)
+            if platform:
+                set_nested(cfg, plat_path, platform)
+                print(f"  - [已迁移] {'.'.join(url_path)} -> {'.'.join(plat_path)} = {platform}")
+                changed = True
+
+    if changed:
+        _save_yaml(cfg)
+        print("✅ 旧版 URL 配置已自动迁移为平台名称")
+    return changed
+
+
 def ensure_dirs():
     """确保必要的文件夹存在"""
     dirs = ["./models", "./data", "./yuki_memory", "./logs"]
@@ -87,6 +146,11 @@ configs/config.yaml
                 print("[Config] 已将旧版配置升级为带注释的新格式，旧文件已备份为 .old")
             else:
                 print("[Config] 已存在 configs/config.yaml，跳过")
+
+        # 自动迁移旧版 URL 配置到平台名称
+        print("[Config] 检查是否需要迁移旧版 URL 配置...")
+        _migrate_urls_to_platforms()
+
 def install_requirements():
     """自动安装依赖（优先使用 uv，回退到 pip）"""
     if input("\n是否现在安装/更新依赖插件? (y/n): ").lower() != 'y':
@@ -237,26 +301,49 @@ def config_yaml(mode):
         changed = True
         print(f"  ✓ master_name 已设置为 {master_name}")
 
-    print("\n--- 配置 API 密钥 ---")
-    # 定义需要交互配置的项 (提示语, path)
-    prompts = [
-        ("请输入首选 LLM API Key: ", ("api", "llm_api_key")),
-        ("请输入备选 LLM API Key（留空跳过）: ", ("api", "backup_api_key")),
-        ("请输入图像处理 API Key: ", ("api", "image_process_api_key")),
-    ]
-
     def set_nested(data, path, value):
         curr = data
         for key in path[:-1]:
             curr = curr.setdefault(key, {})
         curr[path[-1]] = value
 
-    for msg, path in prompts:
-        val = input(msg).strip()
-        if val:
-            set_nested(cfg, path, val)
+    print("\n--- 配置 API 平台、密钥与模型 ---")
+
+    # 平台配置项: (显示名称, 平台路径, Key路径, 模型路径, 模型默认值, Key提示语, URL覆盖路径)
+    platform_configs = [
+        ("首选 LLM", ("api", "llm_platform"), ("api", "llm_api_key"), ("model", "llm"), "deepseek-chat", "请输入首选 LLM API Key: ", ("api", "llm_base_url")),
+        ("备选 LLM", ("api", "backup_platform"), ("api", "backup_api_key"), ("model", "backup"), "deepseek-chat", "请输入备选 LLM API Key（留空跳过）: ", ("api", "backup_base_url")),
+        ("视觉模型", ("api", "vision_platform"), ("api", "image_process_api_key"), ("model", "vision"), "qwen3-vl-flash", "请输入图像处理 API Key: ", ("api", "image_process_url")),
+    ]
+
+    for label, plat_path, key_path, model_path, model_default, key_prompt, url_path in platform_configs:
+        current_plat = _get_nested(cfg, plat_path) or ""
+        print(f"\n当前{label}平台: {current_plat or '未设置'}")
+        plat_input = input(f"请选择{label}平台 [deepseek/dashscope/openai/ytea/自定义URL] (回车保持当前): ").strip()
+        if plat_input:
+            if plat_input.startswith("http"):
+                # 用户输入了完整 URL，作为自定义平台
+                set_nested(cfg, url_path, plat_input)
+                set_nested(cfg, plat_path, "openai")
+                print(f"  ✓ {'.'.join(plat_path)} 已设置为 openai (自定义URL)")
+            else:
+                set_nested(cfg, plat_path, plat_input)
+                set_nested(cfg, url_path, "")
+                print(f"  ✓ {'.'.join(plat_path)} 已设置为 {plat_input}")
             changed = True
-            print(f"  ✓ {'.'.join(path)} 已设置")
+
+        val = input(key_prompt).strip()
+        if val:
+            set_nested(cfg, key_path, val)
+            changed = True
+            print(f"  ✓ {'.'.join(key_path)} 已设置")
+
+        current_model = _get_nested(cfg, model_path) or model_default
+        model_val = input(f"请输入{label}模型 [默认 {current_model}]: ").strip()
+        if model_val:
+            set_nested(cfg, model_path, model_val)
+            changed = True
+            print(f"  ✓ {'.'.join(model_path)} 已设置为 {model_val}")
 
     print("\n--- 配置 NapCat 连接 ---")
     ws_url_val = input("请输入 NapCat WebSocket 地址 [默认 ws://localhost:3001]: ").strip()

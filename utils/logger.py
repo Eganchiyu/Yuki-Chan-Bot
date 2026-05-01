@@ -13,6 +13,10 @@ os.makedirs(LOGS_DIR, exist_ok=True)
 
 LOG_FILE = os.path.join(LOGS_DIR, "yuki.log")
 
+# 自定义 TRACE 级别（比 DEBUG 更低），用于收纳第三方库的冗长日志
+TRACE_LEVEL = 5
+logging.addLevelName(TRACE_LEVEL, "TRACE")
+
 # ---------- 启动时日志归档 ----------
 
 def _archive_existing_log(keep: int = 30):
@@ -50,6 +54,19 @@ def _archive_existing_log(keep: int = 30):
         os.remove(os.path.join(LOGS_DIR, old))
 
 # ---------- 公用方法 ----------
+
+# 第三方库命名空间：这些库的 INFO/DEBUG 日志过于冗长，直接提升为 WARNING
+NOISY_NAMESPACES = (
+    "gradio", "httpx", "httpcore", "uvicorn", "fastapi",
+    "watchfiles", "PIL", "markdown_it", "starlette", "asyncio",
+)
+
+
+def _silence_noisy_loggers():
+    """将指定第三方库的日志级别提升为 WARNING，避免污染主日志。"""
+    for prefix in NOISY_NAMESPACES:
+        logging.getLogger(prefix).setLevel(logging.WARNING)
+
 
 def _format_time(record):
     ct = logging.Formatter.converter(record.created)
@@ -182,6 +199,9 @@ def setup_logging(level: int = None, debug: bool = False):
     file_handler.setLevel(logging.DEBUG)
     file_handler.setFormatter(PrettyFormatter())
     root.addHandler(file_handler)
+
+    # 抑制第三方库的冗长日志
+    _silence_noisy_loggers()
 
 
 def get_logger(name: str) -> logging.Logger:

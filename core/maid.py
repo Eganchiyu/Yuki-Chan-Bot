@@ -6,14 +6,10 @@ import asyncio
 import re
 import aiohttp
 from config import cfg
-from network.api_request import ApiCall
+from providers.registry import ProviderRegistry
 from utils.logger import get_logger
 
 logger = get_logger("maid")
-
-# 初始化全局稳健客户端
-# 它内部已经处理了主线与备线的切换逻辑
-api_client = ApiCall(cfg.LLM_API_KEY, cfg.LLM_BASE_URL)
 
 
 def clean_json_output(text):
@@ -24,19 +20,16 @@ def clean_json_output(text):
 
 
 async def call_cloud_maid_robust(messages):
-    """
-    使用 ApiCall 的稳健逻辑：
-    1. 尝试 TeaTop (低价)
-    2. 失败则熔断并尝试 DeepSeek 官方 (稳健)
-    """
+    """调用 Provider 完成小女仆任务。"""
+    provider = ProviderRegistry().get("default")
+
     # 强制要求 JSON 格式输出
     payload_kwargs = {
         "response_format": {"type": "json_object"},
         "temperature": 0.3
     }
 
-    # 直接调用你 api_request.py 里的核心函数
-    result = await api_client.robust_api_call(
+    result = await provider.chat(
         messages=messages,
         model=cfg.LLM_MODEL,
         **payload_kwargs
@@ -312,7 +305,6 @@ async def maid_evolution_loop(user_goal: str, chat_id: str = None):
 
 
 if __name__ == "__main__":
-    # 1. 确保在程序结束时关闭 api_request 里的 Session
     async def main():
         try:
             # 2. 使用 await 调用异步的进化循环
@@ -323,9 +315,8 @@ if __name__ == "__main__":
             if result:
                 logger.info(f"\n✅ 任务完成！结果: {result.get('result', '无返回信息')}")
         finally:
-            # 4. 无论成功失败，关闭连接池释放资源
-            await ApiCall.close()
-
+            # 4. 无论成功失败，关闭 ProviderRegistry 释放资源
+            await ProviderRegistry().close_all()
 
     # 5. 启动 asyncio 事件循环
     try:
