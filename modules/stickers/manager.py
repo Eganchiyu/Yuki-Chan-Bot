@@ -1,12 +1,15 @@
-# modules/sticker/manager.py
+# modules/stickers/manager.py
 import asyncio
 import base64
 import json
 import time
 import os
+import math
+import random
 from typing import List, Dict, Optional, Any
 import chromadb
 import warnings
+
 with warnings.catch_warnings():
     warnings.simplefilter("ignore", UserWarning)
     import jieba
@@ -20,15 +23,13 @@ from utils.logger import get_logger
 
 logger = get_logger("stickers")
 
-
-# ================== Prompt（保持不变） ==================
+# ================== Prompt ==================
 STICKER_ANALYSIS_PROMPT = """
 你是一个专业的QQ表情包语义专家。请严格按照JSON格式分析下面这张表情包，只输出合法JSON，不要任何额外文字。
 
 {
   "description": "一句话核心描述（15-25字，包含动作、表情、意图）",
   "emotion": "主要情绪（必须从以下选择一个）：撒娇、吐槽、无语、生气、开心、委屈、调情、震惊、摸鱼、高冷、抽象、群内梗、中性",
-  "category": "大类（必须从以下选择一个）：撒娇可爱系、抽象吐槽系、震惊无语系、愤怒生气系、开心庆祝系、委屈哭哭系、调情绿茶系、高冷装逼系、日常摸鱼系、群内梗专用",
   "usage_scenarios": ["适合场景1", "适合场景2"],
   "tags": ["标签1", "标签2", "标签3"]
 }
@@ -47,7 +48,7 @@ Yuki的回复内容：{yuki_message}
 class StickerManager:
     def __init__(self, llm: ApiCall):
         self.llm = llm
-        self.vl_processor = MemeProcessor()                    # 已支持本地文件
+        self.vl_processor = MemeProcessor()  # 视觉处理基础设施
         self.model = SentenceTransformer(cfg.EMBED_MODEL)
 
         self.client = chromadb.PersistentClient(path=cfg.VECTOR_DB_PATH)
@@ -55,114 +56,123 @@ class StickerManager:
             name="stickers",
             metadata={"hnsw:space": "cosine"}
         )
-
+        # === 👇 新增：并发防重锁与状态集合 ===
+        self._db_lock = asyncio.Lock()
+        self.processing_files = set()
         jieba.load_userdict("blacklist.txt") if os.path.exists("blacklist.txt") else None
         logger.info(f"[StickerManager] 初始化完成 | 当前表情包数量: {self.collection.count()}")
 
     # ====================== 工具函数 ======================
 
-
-    async def _vl_understand_and_localize(self, image_ref: str) -> tuple[str, str]:
-        """工具：视觉理解并本地化"""
+    async def _localize_image(self, image_ref: str) -> str:
+        """
+        纯粹的本地化工具：将网络或本地图片转为本地军火库标准路径。
+        绝不调用大模型，极致榨取 IO 性能。
+        """
         try:
-            # --- 就是这里：在读取文件内容之前进行路径清洗 ---
-            if image_ref.startswith("file:///"):
-                path = image_ref[8:]
-            elif image_ref.startswith("file://"):
-                path = image_ref[7:]
+            if image_ref.startswith("http://") or image_ref.startswith("https://"):
+                # 网络图片：异步下载到内存
+                import aiohttp
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(image_ref, timeout=15) as resp:
+                        if resp.status != 200:
+                            raise Exception(f"HTTP {resp.status}")
+                        content = await resp.read()
+                path = image_ref  # 仅作变量占位提取后缀用
             else:
-                path = image_ref
+                # 本地图片：处理 file:/// 等前缀并读取
+                if image_ref.startswith("file:///"):
+                    path = image_ref[8:]
+                elif image_ref.startswith("file://"):
+                    path = image_ref[7:]
+                else:
+                    path = image_ref
 
-            # Windows 路径修正（解决类似 /D:/... 的问题）
-            if os.name == 'nt' and path.startswith('/') and len(path) > 2 and path[2] == ':':
-                path = path[1:]
+                if os.name == 'nt' and path.startswith('/') and len(path) > 2 and path[2] == ':':
+                    path = path[1:]
+                path = os.path.abspath(path)
 
-            # 转换为绝对路径
-            path = os.path.abspath(path)
+                with open(path, "rb") as f:
+                    content = f.read()
 
-            # 读取二进制内容
-            with open(path, "rb") as f:
-                content = f.read()
-
-            # --- 路径处理完毕，后续逻辑 ---
-            # 1. 调用 processor 获取描述 (保持原签名返回 str)
-            description = await self.vl_processor.understand_from_url(image_ref, self.llm)
-
-            # 2. 调用修改后的 processor 保存逻辑获取唯一本地路径
-            # 因为 _save_to_local_sticker_library 现在有了 exists 判断，这里不会重复写文件
-            final_local_path = self.vl_processor._save_to_local_sticker_library(content, path)
-
-            return description, final_local_path
+            # 只负责将其保存为 MD5 唯一名字
+            return self.vl_processor.save_to_local_sticker_library(content, path)
 
         except Exception as e:
-            logger.error(f"[StickerManager] 本地化过程发生异常: {e}")
-            return "未知意图的表情包", image_ref
+            logger.error(f"[StickerManager] 图片获取与本地化异常: {e}")
+            return ""
 
-    async def _structured_analysis(self, image_ref: str) -> Dict[str, Any]:
-        """使用 Base64 进行结构化分析，修复 Windows 路径截取问题"""
+    async def structured_analysis(self, image_ref: str) -> Dict[str, Any]:
+        """使用 Base64 进行结构化分析（修正：调用独立的视觉 API 通道）"""
         prompt_text = STICKER_ANALYSIS_PROMPT
 
         try:
-            # --- 1. 更加鲁棒的路径转换 ---
             if image_ref.startswith("file:///"):
-                # 处理 file:///D:/... 这种情况
                 local_path = image_ref[8:]
             elif image_ref.startswith("file://"):
-                # 处理 file://D:/... 这种情况
                 local_path = image_ref[7:]
             else:
                 local_path = image_ref
 
-            # 针对 Windows 的特殊处理：如果路径类似 /D:/... 则去掉开头的斜杠
             if os.name == 'nt' and local_path.startswith('/') and local_path[2] == ':':
                 local_path = local_path[1:]
 
-            # 转换为绝对路径确保万无一失
             local_path = os.path.abspath(local_path)
 
             if not os.path.exists(local_path):
                 raise FileNotFoundError(f"无法读取文件进行分析，路径不存在: {local_path}")
 
-            # --- 2. 读取并转 Base64 ---
             with open(local_path, "rb") as f:
                 img_data = f.read()
                 b64_str = base64.b64encode(img_data).decode('utf-8')
 
-            # --- 3. 构造消息请求 ---
-            messages = [
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "image_url",
-                            "image_url": {"url": f"data:image/jpeg;base64,{b64_str}"}
-                        },
-                        {"type": "text", "text": prompt_text}
-                    ]
-                }
-            ]
+            payload = {
+                "model": cfg.VISION_MODEL,
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "image_url",
+                                "image_url": {"url": f"data:image/jpeg;base64,{b64_str}"}
+                            },
+                            {"type": "text", "text": prompt_text}
+                        ]
+                    }
+                ],
+                "max_tokens": 400,
+                "temperature": 0.3
+            }
 
-            raw = await self.llm.robust_api_call(
-                model="qwen3-vl-flash",
-                messages=messages,
-                temperature=0.3,
-                max_tokens=400
-            )
+            headers = {
+                "Authorization": f"Bearer {cfg.IMAGE_PROCESS_API_KEY}",
+                "Content-Type": "application/json"
+            }
 
-            # 清洗并解析 JSON
+            import aiohttp
+            # 这里直接走专门的图像处理通道，不走文本 LLM 的通道
+            async with aiohttp.ClientSession(timeout=cfg.REQUEST_TIMEOUT) as session:
+                async with session.post(cfg.IMAGE_PROCESS_API_URL, json=payload, headers=headers) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        raw = data["choices"][0]["message"]["content"]
+                    else:
+                        error_text = await resp.text()
+                        raise Exception(f"Vision API HTTP {resp.status}: {error_text}")
+
+            # 清洗结果
             cleaned = raw.strip()
             if "```json" in cleaned:
                 cleaned = cleaned.split("```json")[1].split("```")[0].strip()
             elif "```" in cleaned:
                 cleaned = cleaned.split("```")[1].split("```")[0].strip()
 
+                # 修复 NoneType Bug：确保无论如何都有一个 return 兜底
             return json.loads(cleaned)
 
         except Exception as e:
-            # 这里打印出 local_path 方便你调试
-            logger.error(f"[Sticker] Base64 结构化分析失败: {e}")
-            # 如果是因为 json.loads 失败，记录一下 raw 内容
-            return {"description": "识别失败", "emotion": "中性", "tags": [], "category": "日常摸鱼系"}
+            logger.error(f"[Sticker] 结构化分析失败: {e}")
+            return {"description": "识别失败", "emotion": "中性", "tags": [], "usage_scenarios": []}
 
     def _build_embed_text(self, analysis: Dict) -> str:
         parts = [
@@ -177,98 +187,241 @@ class StickerManager:
         return self.model.encode(text).tolist()
 
     async def _judge_emotion(self, yuki_message: str) -> str:
-        # （保持不变）
         prompt = EMOTION_JUDGE_PROMPT.format(yuki_message=yuki_message)
         raw = await self.llm.robust_api_call(
-            model="deepseek-v3.2",
+            model=cfg.LLM_MODEL,
             messages=[{"role": "user", "content": prompt}],
             temperature=0.0,
             max_tokens=20
         )
         return raw.strip() or "中性"
 
-    # ====================== 主流程 ======================
+        # ====================== 核心算法：重排与状态管理 ======================
+
+    def _rank_and_explore(self, candidates: List[Dict]) -> List[Dict]:
+        """融合排名 + 积热冷却算法（V2终极版）"""
+        if not candidates:
+            return []
+
+        current_time = time.time()
+
+        for cand in candidates:
+            # 1. 语义基础分 (来自 RAG 的余弦相似度，权重最高)
+            semantic_score = cand.get("score_vector", 0.0) * 5.0
+
+            # 2. 新鲜度奖励 (指数衰减)
+            create_time = cand.get("create_time", current_time)
+            days_since_creation = (current_time - create_time) / (24 * 3600)
+            freshness_bonus = math.exp(-0.1 * days_since_creation)
+
+            # 3. 积热冷却惩罚 (防发散与真正遗忘机制)
+            last_heat = cand.get("heat", 0.0)
+            last_used_time = cand.get("last_used_time", current_time)
+            days_since_last_used = (current_time - last_used_time) / (24 * 3600)
+
+            # 冷却因子：三天不用，热度衰减显著
+            current_heat = last_heat * math.exp(-0.3 * days_since_last_used)
+            penalty = 1.2 * current_heat
+
+            # 暂存当前残余热度，供后续选中时升温使用
+            cand["current_heat"] = current_heat
+
+            # 4. 正反馈偏好加成 (群友越爱看，发得越多)
+            pref_bonus = 0.8 * cand.get("preference", 0)
+
+            # 5. 随机游走噪声 (人类灵魂)
+            noise = random.uniform(0, 0.2)
+
+            # 综合打分
+            cand["final_score"] = semantic_score + freshness_bonus - penalty + pref_bonus + noise
+
+        # 降序排列，取 Top 8
+        candidates.sort(key=lambda x: x["final_score"], reverse=True)
+        return candidates[:8]
+
+    def _update_meme_status(self, doc_id: str, current_heat: float):
+        """发送表情包后，执行积热升温与时间刷新"""
+        try:
+            res = self.collection.get(ids=[doc_id], include=["metadatas"])
+            if res["metadatas"] and len(res["metadatas"]) > 0:
+                meta = res["metadatas"][0]
+                meta["heat"] = current_heat + 1.0  # 核心：残余热度 + 1
+                meta["last_used_time"] = time.time()  # 刷新 CD 时间
+                meta["use_count"] = meta.get("use_count", 0) + 1  # 仅作数据统计用
+                self.collection.update(ids=[doc_id], metadatas=[meta])
+        except Exception as e:
+            logger.error(f"[Sticker] 更新表情积热状态失败: {e}")
+
+    def add_preference(self, doc_id: str):
+        """群友产生正反馈时调用：好感度 +1"""
+        try:
+            res = self.collection.get(ids=[doc_id], include=["metadatas"])
+            if res["metadatas"] and len(res["metadatas"]) > 0:
+                meta = res["metadatas"][0]
+                meta["preference"] = meta.get("preference", 0) + 1
+                self.collection.update(ids=[doc_id], metadatas=[meta])
+                logger.info(f"[Sticker] 收到正反馈！表情包 {doc_id} 偏好度升至 {meta['preference']}")
+        except Exception as e:
+            logger.error(f"[Sticker] 增加偏好度失败: {e}")
+
+        # ====================== 主流程：入库与检索 ======================
+
     async def ingest_sticker(self, image_ref: str, chat_id: str = "global", owner: str = "admin") -> str:
-        """主流程：学习一张表情包（支持网页URL 和 本地文件）"""
-        logger.info(f"[Sticker] 开始学习 → {image_ref[:80]}...")
+        """主流程：自动学习一张表情包，存入向量库"""
+        logger.info(f"[Sticker] 尝试学习表情包 → {image_ref[:80]}...")
 
-        # Step 1: VL理解 + 本地化（已自动保存原图）
-        vl_desc, local_file_ref = await self._vl_understand_and_localize(image_ref)
+        # Step 1: 极速本地化下载与哈希命名
+        local_file_ref = await self._localize_image(image_ref)
 
-        # Step 2: 结构化分析（看图）
-        analysis = await self._structured_analysis(local_file_ref)   # 传本地图像
+        if not local_file_ref or not os.path.exists(local_file_ref):
+            logger.warning(f"[Sticker] 获取本地文件失败，放弃入库。")
+            return "failed"
 
-        # Step 3~5: 构建嵌入 + 存入
-        embed_text = self._build_embed_text(analysis)
-        embedding = self._embed_text(embed_text)
+        async with self._db_lock:
+            if local_file_ref in self.processing_files:
+                logger.info(f"[Sticker] 🛑 并发拦截：该表情包正在被其他协程分析中，跳过重复消耗。")
+                return "processing"
 
-        doc_id = f"sticker_{int(time.time())}_{hash(image_ref) % 100000:05d}"
-        metadata = {
-            "chat_id": str(chat_id),
-            "owner": owner,
-            "emotion": analysis["emotion"],
-            "category": analysis["category"],
-            "description": analysis["description"],
-            "tags": json.dumps(analysis.get("tags", []), ensure_ascii=False),
-            "usage_scenarios": json.dumps(analysis.get("usage_scenarios", []), ensure_ascii=False),
-            "use_count": 0,
-            "approval_score": 1.0,
-            "image_ref": local_file_ref,      # ← 关键：永远是 file:// 本地路径，可直接发送
-            "last_used": 0
-        }
+            existing = self.collection.get(where={"image_ref": local_file_ref})
+            if existing and existing['ids']:
+                logger.info(f"[Sticker] 🛑 查重拦截：该表情包已在军火库中，跳过打标与入库消耗。")
+                return existing['ids'][0]
 
-        self.collection.add(
-            documents=[embed_text],
-            embeddings=[embedding],
-            metadatas=[metadata],
-            ids=[doc_id]
-        )
+            self.processing_files.add(local_file_ref)
 
-        logger.info(f"[Sticker] ✅ 入库完成 | 本地路径: {local_file_ref} | 情绪: {analysis['emotion']}")
-        return doc_id
+        try:
+            # Step 2: 调用大模型进行结构化分析
+            analysis = await self.structured_analysis(local_file_ref)
+            embed_text = self._build_embed_text(analysis)
+            embedding = self._embed_text(embed_text)
 
-    # ====================== 主流程2：调取/检索（retrieve） ======================
-    async def get_suitable_sticker(self, yuki_message: str, chat_id: str, top_k: int = 10, explore_rate: float = 0.18) -> Optional[Dict]:
-        """
-        主流程：根据Yuki当前要说的话，返回最合适的一张表情包（含发送所需信息）
-        返回 None 表示“不适合发表情包”
-        """
+            doc_id = f"sticker_{int(time.time())}_{hash(image_ref) % 100000:05d}"
+            current_time = time.time()
+            metadata = {
+                "chat_id": str(chat_id),
+                "owner": owner,
+                "emotion": analysis["emotion"],
+                "description": analysis["description"],
+                "tags": json.dumps(analysis.get("tags", []), ensure_ascii=False),
+                "usage_scenarios": json.dumps(analysis.get("usage_scenarios", []), ensure_ascii=False),
+                "image_ref": local_file_ref,
+                "create_time": current_time,
+                "last_used_time": current_time,
+                "heat": 0.0,
+                "preference": 0,
+                "use_count": 0
+            }
+
+            self.collection.add(
+                documents=[embed_text],
+                embeddings=[embedding],
+                metadatas=[metadata],
+                ids=[doc_id]
+            )
+
+            logger.info(f"[Sticker] ✅ 成功学会新表情 | 本地路径: {local_file_ref} | 情绪: {analysis['emotion']}")
+            return doc_id
+
+        finally:
+            async with self._db_lock:
+                if local_file_ref in self.processing_files:
+                    self.processing_files.remove(local_file_ref)
+
+    async def manual_batch_ingest_from_json(self, json_path: str, chat_id: str = "global", owner: str = "admin"):
+        """从本地 JSON 文件手动批量打标并入库，彻底绕过大模型识别"""
+        if not os.path.exists(json_path):
+            logger.error(f"[Sticker] 找不到打标文件 {json_path}")
+            return
+
+        with open(json_path, "r", encoding="utf-8") as f:
+            try:
+                stickers_data = json.load(f)
+            except Exception as e:
+                logger.error(f"[Sticker] JSON 解析失败: {e}")
+                return
+
+        for item in stickers_data:
+            image_path = item.get("image_path")
+            if not image_path:
+                continue
+
+            logger.info(f"[Sticker] 正在手动录入: {image_path}")
+
+            # 本地化
+            local_file_ref = await self._localize_image(image_path)
+            if not local_file_ref or not os.path.exists(local_file_ref):
+                logger.warning(f"[Sticker] 获取本地文件失败，跳过: {image_path}")
+                continue
+
+            async with self._db_lock:
+                # 查重
+                existing = self.collection.get(where={"image_ref": local_file_ref})
+                if existing and existing['ids']:
+                    logger.info(f"[Sticker] 🛑 查重拦截：该表情包已在军火库中，跳过 {image_path}")
+                    continue
+
+                # 提取手动数据并直接向量化
+                embed_text = self._build_embed_text(item)
+                embedding = self._embed_text(embed_text)
+
+                doc_id = f"sticker_{int(time.time())}_{hash(image_path) % 100000:05d}"
+                current_time = time.time()
+
+                metadata = {
+                    "chat_id": str(chat_id),
+                    "owner": owner,
+                    "emotion": item.get("emotion", "中性"),
+                    "description": item.get("description", "无描述"),
+                    "tags": json.dumps(item.get("tags", []), ensure_ascii=False),
+                    "usage_scenarios": json.dumps(item.get("usage_scenarios", []), ensure_ascii=False),
+                    "image_ref": local_file_ref,
+                    "create_time": current_time,
+                    "last_used_time": current_time,
+                    "heat": 0.0,
+                    "preference": 0,
+                    "use_count": 0
+                }
+
+                self.collection.add(
+                    documents=[embed_text],
+                    embeddings=[embedding],
+                    metadatas=[metadata],
+                    ids=[doc_id]
+                )
+                logger.info(f"[Sticker] ✅ 成功手动录入表情包: {item.get('description')}")
+
+    async def get_suitable_sticker(self, yuki_message: str, chat_id: str, top_k: int = 10) -> Optional[Dict]:
+        """主流程：检索、重排并决定发送的表情包"""
         if not yuki_message.strip():
             return None
 
         logger.info(f"[Sticker] 开始为消息检索表情包: {yuki_message[:60]}...")
 
-        # Step 1: 判断情绪标签
         emotion_tag = await self._judge_emotion(yuki_message)
-
-        # Step 2: 构造查询文本（你的核心设计）
         query_text = f"{yuki_message} | 情绪：{emotion_tag}"
 
-        # Step 3: 双池检索（向量语义 + jieba全局打捞）
+        # 1. 召回层 (Recall)：双池检索提取 Top 20 候选
         candidates = await self._dual_pool_retrieve(query_text, chat_id, top_k=top_k * 2)
-
         if not candidates:
             return None
 
-        # Step 4: 融合排名 + 探索机制
-        ranked = self._rank_and_explore(candidates, explore_rate=explore_rate)
-
-        # Step 5: 取Top1（你也可以在这里再加一次LLM终审）
+        # 2. 排序层 (Rank)：积热重排算法
+        ranked = self._rank_and_explore(candidates)
         if not ranked:
             return None
 
+        # 3. 决断与状态刷新
         best = ranked[0]
-        # 更新使用统计
-        self._increment_use_count(best["id"])
+        self._update_meme_status(best["id"], best.get("current_heat", 0.0))
 
-        logger.info(f"[Sticker] 选中表情 → 情绪:{best['emotion']} | 描述:{best['description'][:40]} | use_count:{best['use_count']}")
+        logger.info(
+            f"[Sticker] 选中表情 → 情绪:{best['emotion']} | 描述:{best['description'][:40]} | 偏好度:{best.get('preference', 0)}")
         return best
 
     async def _dual_pool_retrieve(self, query_text: str, chat_id: str, top_k: int = 20) -> List[Dict]:
-        """工具6：双池检索（完全复用你RAG的双池思想）"""
+        """双池召回：向量语义池 + 关键词补漏池"""
         query_emb = self._embed_text(query_text)
 
-        # 向量池
         vector_results = self.collection.query(
             query_embeddings=[query_emb],
             n_results=top_k,
@@ -290,67 +443,136 @@ class StickerManager:
                     **meta
                 })
 
-        # 关键词池（jieba全局打捞）
         keywords = jieba.analyse.extract_tags(query_text, topK=12)
-        # 简单关键词匹配加分
         for cand in candidates:
             matched = sum(1 for kw in keywords if kw in (cand.get("embed_text", "") + " " + str(cand.get("tags", ""))))
             cand["score_keyword"] = matched * 0.3
 
         return candidates
 
-    def _rank_and_explore(self, candidates: List[Dict], explore_rate: float = 0.18) -> List[Dict]:
-        """工具7：融合排名 + 探索低频包"""
-        if not candidates:
-            return []
+        # ====================== 实用工具方法 ======================
 
-        # 融合得分
-        for cand in candidates:
-            vector_w = cand.get("score_vector", 0.0)
-            keyword_w = cand.get("score_keyword", 0.0)
-            use_bonus = min(cand.get("use_count", 0) / 20.0, 1.0) * 0.4   # 高频有奖励
-            approval = cand.get("approval_score", 1.0)
-
-            cand["final_score"] = (vector_w * 0.55) + (keyword_w * 0.25) + (use_bonus * 0.15) + (approval * 0.05)
-
-        # 排序
-        candidates.sort(key=lambda x: x["final_score"], reverse=True)
-
-        # 探索机制：有一定概率把低频包提到前面
-        if len(candidates) > 3 and explore_rate > 0:
-            low_freq = [c for c in candidates if c.get("use_count", 0) < 5]
-            if low_freq and len(low_freq) > 0:
-                import random
-                if random.random() < explore_rate:
-                    # 把一个低频包随机提到前3位
-                    explore_item = random.choice(low_freq)
-                    candidates.remove(explore_item)
-                    insert_pos = random.randint(0, min(2, len(candidates) - 1))
-                    candidates.insert(insert_pos, explore_item)
-
-        return candidates[:8]   # 返回Top8供最终决策
-
-    def _increment_use_count(self, doc_id: str):
-        """工具8：更新使用次数（原子化）"""
-        try:
-            # Chroma目前不支持直接原子更新，这里用get + update
-            res = self.collection.get(ids=[doc_id], include=["metadatas"])
-            if res["metadatas"] and len(res["metadatas"]) > 0:
-                meta = res["metadatas"][0]
-                meta["use_count"] = meta.get("use_count", 0) + 1
-                meta["last_used"] = time.time()
-                self.collection.update(ids=[doc_id], metadatas=[meta])
-        except Exception as e:
-            logger.error(f"[Sticker] 更新使用次数失败: {e}")
-
-    # ====================== 实用工具方法 ======================
     def get_stats(self) -> Dict:
         """查看当前表情包统计"""
         total = self.collection.count()
         return {"total_stickers": total}
 
     async def batch_ingest_from_list(self, image_refs: List[str], chat_id: str = "global", owner: str = "admin"):
-        """批量导入（慢慢打样时使用）"""
+        """批量导入（自动模式）"""
         for ref in image_refs:
             await self.ingest_sticker(ref, chat_id, owner)
-            await asyncio.sleep(0.5)  # 避免API限流
+            await asyncio.sleep(0.5)
+
+
+# ====================== 数据库管理终端 ======================
+
+if __name__ == "__main__":
+    import sys
+    from pathlib import Path
+
+
+    async def view_sticker_database():
+        # 1. 初始化（自动读取 cfg 路径）
+        dummy_llm = ApiCall(cfg.LLM_API_KEY, cfg.LLM_BASE_URL)
+        manager = StickerManager(dummy_llm)
+
+        while True:  # 增加循环，删完图后自动刷新列表
+            print(f"\n{'=' * 20} 📦 Yuki 表情包军火库全量审计 {'=' * 20}")
+            print(f"数据库路径: {os.path.abspath(cfg.VECTOR_DB_PATH)}")
+
+            # 2. 提取全量数据
+            data = manager.collection.get(include=["metadatas", "documents"])
+
+            if not data or not data['ids']:
+                print("目前库里空空如也，快去水群存点图或手动导入吧！")
+                count = 0
+                items = []
+            else:
+                count = len(data['ids'])
+                print(f"当前存库总量: {count} 张")
+                print("-" * 120)
+
+                # 3. 结构化处理以便排序预览
+                items = []
+                for i in range(count):
+                    meta = data['metadatas'][i]
+                    items.append({
+                        "id": data['ids'][i],
+                        "emotion": meta.get("emotion", "未知"),
+                        "pref": meta.get("preference", 0),
+                        "heat": round(meta.get("heat", 0.0), 2),
+                        "used": meta.get("use_count", 0),
+                        "desc": meta.get("description", "无描述"),
+                        "path": meta.get("image_ref", "路径丢失")
+                    })
+
+                # 排序：好感度优先，热度次之
+                items.sort(key=lambda x: (x['pref'], x['heat']), reverse=True)
+
+                # 4. 打印表头
+                head = f"{'索引':<4} | {'情绪':<6} | {'好感度':<6} | {'当前积热':<6} | {'使用次数':<6} | {'完整描述'}"
+                print(head)
+                print("-" * 120)
+
+                for idx, item in enumerate(items, 1):
+                    # 取消截断，直接展示全量文本
+                    full_desc = item['desc']
+
+                    # 使用 Emoji 增加可读性
+                    print(
+                        f"{idx:<4} | {item['emotion']:<6} | ❤️  {item['pref']:<4} | 🔥 {item['heat']:<6} | 🔁 {item['used']:<6} | {full_desc}")
+
+                print("-" * 120)
+
+            print(f"{'=' * 25} 审计结束 | 输入 'i' 导入手动打标JSON | 输入 'q' 退出 {'=' * 25}")
+
+            cmd = input("\n输入命令 (数字查看详情/删除, 'i' 导入JSON, 'q' 退出): ").strip().lower()
+
+            if cmd == 'q' or cmd == 'exit':
+                break
+            elif cmd == 'i':
+                json_path = input("请输入要导入的 JSON 文件路径 (默认 manual_stickers.json): ").strip()
+                if not json_path:
+                    json_path = "manual_stickers.json"
+                print(f"开始从 {json_path} 批量导入...")
+                await manager.manual_batch_ingest_from_json(json_path)
+                print("\n⏳ 正在刷新列表...")
+                await asyncio.sleep(1.5)
+            elif cmd.isdigit() and items:
+                i = int(cmd) - 1
+                if 0 <= i < len(items):
+                    target = items[i]
+                    print(f"\n📂 详细信息:")
+                    print(f"  - 内部 ID: {target['id']}")
+                    print(f"  - 本地路径: {target['path']}")
+                    print(f"  - 完整描述: {target['desc']}")
+
+                    del_cmd = input(f"\n⚠️ 是否要将该表情包从 Yuki 的记忆和硬盘中彻底删除？(y/N): ").strip().lower()
+                    if del_cmd == 'y':
+                        try:
+                            # 1. 从 ChromaDB 中删除记录
+                            manager.collection.delete(ids=[target['id']])
+                            print(f"✅ 数据库记录已清除。")
+
+                            # 2. 同步销毁本地物理文件
+                            if os.path.exists(target['path']):
+                                os.remove(target['path'])
+                                print(f"✅ 本地图片文件已同步销毁。")
+                            else:
+                                print(f"⚠️ 找不到本地图片，可能此前已被手动删除。")
+
+                            print("\n⏳ 正在刷新列表...")
+                            await asyncio.sleep(1.5)
+                        except Exception as e:
+                            print(f"❌ 删除失败: {e}")
+                else:
+                    print("❌ 索引超出范围。")
+            else:
+                print("❌ 无效的输入。")
+
+
+    # 运行
+    try:
+        asyncio.run(view_sticker_database())
+    except KeyboardInterrupt:
+        print("\n已退出管理器。")

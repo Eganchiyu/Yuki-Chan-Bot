@@ -9,7 +9,7 @@ from sklearn.metrics.pairwise import cosine_similarity
 import aiohttp
 import asyncio
 import os
-
+import config as cfg
 
 class MemoryAuditor:
     def __init__(self):
@@ -50,15 +50,53 @@ class MemoryAuditor:
 
         return "ERROR - 无法连接 AI"
 
+    async def ask_yuki_to_melt(self, doc_a, doc_b, retries=3):
+        """让 AI 将两条相似记忆熔炼为一条，保留所有细节"""
+        prompt = f"""你是一个记忆熔炼专家。请将下面两条相似的电子妹妹 Yuki 的日记合并。
+准则：
+1. **完整性**：必须保留所有的重要信息，这些是Yuki记忆的重要组成。
+2. **逻辑性优化**：消除内容中的矛盾，使叙述连贯。保留具体内容、任务、名词、时间、日期等，去掉模糊表述。
+3. **语气**：保持 Yuki 活泼可爱的原有性格，不要变成死板的总结。
+4. **输出限制**：直接输出熔炼后的日记正文，不要包含“好的”、“好的，这是合并结果”等废话。字数和单篇保持一致，不超过200字，不要使用换行。
 
-async def smart_semantic_deduplication(rag, chat_id, threshold=0.92):
+日记 A: {doc_a}
+日记 B: {doc_b}
+
+熔炼后的新日记内容："""
+
+        payload = {
+            "model": self.model,
+            "messages": [{"role": "user", "content": prompt}],
+            "temperature": 0.4
+        }
+        headers = {"Authorization": f"Bearer {self.api_key}"}
+
+        for attempt in range(retries):
+            try:
+                async with aiohttp.ClientSession() as session:
+                    async with session.post(self.api_url, json=payload, headers=headers, timeout=30) as resp:
+                        if resp.status == 200:
+                            data = await resp.json()
+                            return data["choices"][0]["message"]["content"].strip()
+            except Exception as e:
+                print(f"  ⚠️ 熔炼请求失败 ({e})，正在重试...")
+            await asyncio.sleep(2)
+
+        return "ERROR"
+
+async def smart_semantic_deduplication(rag, chat_id, threshold=0.88):
     auditor = MemoryAuditor()
-    print(f"🔍 正在对群聊 {chat_id} 进行【AI 智能审计】...")
+    print(f"\n{' AI 智能审计开始 ':=^40}")
+    print(f"🔍 目标群聊: {chat_id}")
+    print("💡 提示: 随时按 Ctrl+C 可停止审计并保留当前进度\n")
 
+    # 1. 获取最新数据
     res = rag.collection.get(where={"chat_id": chat_id}, include=["embeddings", "documents"])
     vectors, docs, ids = np.array(res.get('embeddings')), res.get('documents'), res.get('ids')
 
-    if vectors is None or len(vectors) < 2: return
+    if vectors is None or len(vectors) < 2:
+        print("❌ 记录太少，无需去重。")
+        return
 
     sim_matrix = cosine_similarity(vectors)
     to_delete_ids = []
@@ -68,25 +106,119 @@ async def smart_semantic_deduplication(rag, chat_id, threshold=0.92):
         for j in range(i + 1, len(docs)):
             if ids[j] in to_delete_ids: continue
 
-            if sim_matrix[i][j] > threshold:
-                print(f"\n🤖 发现疑似冗余 (相似度: {sim_matrix[i][j]:.4f})")
-                # 调用 AI 决策
-                decision = await auditor.ask_yuki_to_choose(docs[i], docs[j])
-                print(f"   AI 决策: {decision}")
+                # 只有相似度达标才打扰 AI
+                if sim_matrix[i][j] > threshold:
+                    print(f"\n🤖 发现疑似冗余 (相似度: {sim_matrix[i][j]:.4f})")
 
-                if "选择: A" in decision or "选择 A" in decision:
-                    to_delete_ids.append(ids[j])  # 保留 A，删 B
-                elif "选择: B" in decision or "选择 B" in decision:
-                    to_delete_ids.append(ids[i])  # 保留 B，删 A
-                else:
-                    # 如果 AI 没给明确结论，默认保留老的（索引小的）
-                    to_delete_ids.append(ids[j])
+                    # 调用 AI 决策
+                    decision = await auditor.ask_yuki_to_choose(docs[i], docs[j])
+                    print(f"   AI 决策: {decision}")
 
-    if to_delete_ids:
-        confirm = input(f"\n📊 AI 建议清理 {len(to_delete_ids)} 条记录。执行？(y/n): ")
-        if confirm.lower() == 'y':
-            rag.collection.delete(ids=to_delete_ids)
-            print(f"✨ 已根据 AI 建议完成精炼。")
+                    target_del_id = None
+                    if "选择: A" in decision or "选择 A" in decision:
+                        target_del_id = ids[j]
+                    elif "选择: B" in decision or "选择 B" in decision:
+                        target_del_id = ids[i]
+                    else:
+                        # 默认逻辑：如果 AI 没选，保留旧的删新的
+                        target_del_id = ids[j]
+
+                    if target_del_id:
+                        try:
+                            # 立即从数据库删除
+                            rag.collection.delete(ids=[target_del_id])
+                            active_ids.remove(target_del_id)
+                            deleted_count += 1
+                            print(f"   ✅ [同步成功] 已清理并保存。累计清理: {deleted_count}")
+                        except Exception as e:
+                            print(f"   ⚠️ 保存失败: {e}")
+
+                # 如果外层循环的 i 被删了，直接跳出内层循环
+                if ids[i] not in active_ids:
+                    break
+
+    except KeyboardInterrupt:
+        print(f"\n\n🛑 用户手动停止。")
+    except Exception as e:
+        print(f"\n❌ 运行出错: {e}")
+    finally:
+        print(f"\n{' 审计结束 ':=^40}")
+        print(f"✨ 本次共精炼记忆: {deleted_count} 条")
+        print(f"📂 剩余有效记忆: {len(active_ids)} 条")
+
+
+async def smart_memory_melting(rag, chat_id, threshold=0.88):
+    auditor = MemoryAuditor()
+    print(f"\n{' 🔥 记忆熔炼炉启动 🔥 ':=^40}")
+    print(f"🔍 目标群聊: {chat_id} | 相似度阈值: {threshold}")
+    print("💡 提示: 每一组熔炼都会实时存入数据库。按 Ctrl+C 可安全停止。\n")
+
+    # 获取数据
+    res = rag.collection.get(where={"chat_id": chat_id}, include=["embeddings", "documents", "metadatas"])
+    vectors, docs, ids = np.array(res.get('embeddings')), res.get('documents'), res.get('ids')
+    metas = res.get('metadatas')
+
+    if vectors is None or len(vectors) < 2:
+        print("❌ 记录不足，无法熔炼。")
+        return
+
+    sim_matrix = cosine_similarity(vectors)
+    melt_count = 0
+    active_ids = set(ids)
+
+    try:
+        for i in range(len(docs)):
+            if ids[i] not in active_ids: continue
+
+            for j in range(i + 1, len(docs)):
+                if ids[j] not in active_ids: continue
+
+                if sim_matrix[i][j] > threshold:
+                    print(f"\n🔮 发现可熔炼记忆 (相似度: {sim_matrix[i][j]:.4f})")
+                    print(f"   [A]: {docs[i]}")
+                    print(f"   [B]: {docs[j]}")
+
+                    # 1. 调用 AI 进行熔炼
+                    new_content = await auditor.ask_yuki_to_melt(docs[i], docs[j])
+
+                    if new_content == "ERROR":
+                        print("   ❌ AI 熔炼失败，跳过。")
+                        continue
+
+                    # 2. 执行原子化替换
+                    try:
+                        new_content = "[熔炼记忆]"+new_content
+                        # 存入新记忆 (保留原始 chat_id，时间戳取两者中最新的)
+                        new_ts = max(metas[i].get('timestamp', 0), metas[j].get('timestamp', 0))
+
+                        # 写入新数据
+                        rag.save_diary(content=new_content, chat_id=chat_id)
+
+                        # 删除旧的两条数据
+                        rag.collection.delete(ids=[ids[i], ids[j]])
+
+                        # 更新当前存活集合
+                        active_ids.remove(ids[i])
+                        active_ids.remove(ids[j])
+
+                        melt_count += 1
+                        print(f"   ✨ 熔炼成功！已生成新记忆并替换旧记录。")
+                        print(f"   [新内容预览]: {new_content}")
+
+                        # 一旦 i 被熔炼掉了，就不能再用它跟后面的比了，直接跳出内层
+                        break
+
+                    except Exception as e:
+                        print(f"   ⚠️ 数据库保存/删除失败: {e}")
+
+    except KeyboardInterrupt:
+        print(f"\n\n🛑 用户手动熄火。")
+    except Exception as e:
+        print(f"\n❌ 运行异常: {e}")
+    finally:
+        print(f"\n{' 熔炼任务结束 ':=^40}")
+        print(f"♻️ 本次共完成熔炼: {melt_count} 组")
+        print(f"📂 剩余独立记忆: {len(active_ids)} 条")
 
 def semantic_deduplication(rag, chat_id, threshold=0.92):
     print(f"🔍 正在对群聊 {chat_id} 进行语义审计...")
@@ -355,8 +487,13 @@ def chat_group_manager(rag):
                 if action == 'viz':
                     visualize_interactive_memory(rag, target_cid)
                 elif action == 'dedup':
-                    # --- 调用新功能 ---
-                    semantic_deduplication(rag, target_cid)
+                    mode = input("模式选择: [1] 普通去重 (二选一) [2] AI 记忆熔炼 (合成新记忆): ")
+                    if mode == '2':
+                        # 熔炼模式
+                        asyncio.run(smart_memory_melting(rag, target_cid))
+                    else:
+                        # 原有的快速去重
+                        semantic_deduplication(rag, target_cid)
                 elif action == 'clear':
                     confirm = input(f"⚠️ 确定要清空群聊 '{target_cid}'？(y/n): ")
                     if confirm.lower() == 'y':

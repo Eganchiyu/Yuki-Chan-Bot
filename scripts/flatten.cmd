@@ -1,0 +1,1 @@
+python flatten_project_codes.py
