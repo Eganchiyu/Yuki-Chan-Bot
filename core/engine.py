@@ -11,6 +11,9 @@ from config import cfg
 from core.prompts import build_ice_break_prompt
 from core.maid import maid_evolution_loop
 from utils.logger import get_logger
+import os
+import urllib.parse
+import requests
 
 logger = get_logger("engine")
 
@@ -24,8 +27,10 @@ class YukiEngine:
         self.sender = sender
         self.maid = None  # 后面再赋值
         self.process_callback = None  # 预留回调接口
+        self.sticker_manager = None
 
-    async def api_reply(self, chat_id: str, combined_text: str, history_dict: dict, mode, relevant_diaries: list[Any]) -> str:
+    async def api_reply(self, chat_id: str, combined_text: str, history_dict: dict, mode,
+                        relevant_diaries: list[Any]) -> str:
         # 总构建发送Deepseek补全的信息
         combined_API_message = await build_chat_context(self.yuki,
                                                         chat_id,
@@ -34,6 +39,7 @@ class YukiEngine:
                                                         mode,
                                                         relevant_diaries
                                                         )
+
         await asyncio.sleep(0.2)
         # 发送对话补全到DeepSeek
         logger.info(f"[System] {cfg.ROBOT_NAME.title()} 正在打字...")
@@ -47,7 +53,7 @@ class YukiEngine:
                 presence_penalty=0.0,  # 不强迫它聊新话题
                 max_tokens=100  # 强制短句，短句更容易显自然
             )
-            Yuki_Answer = re.sub(r'\s*FINISHED\s*$', '', Yuki_Answer, flags=re.IGNORECASE)
+            Yuki_Answer_raw = Yuki_Answer = re.sub(r'\s*FINISHED\s*$', '', Yuki_Answer, flags=re.IGNORECASE)
             delegate_match = re.search(r'\[DELEGATE_TO_MAID:(.+?)\]', Yuki_Answer, re.DOTALL)
             if delegate_match:
                 task_desc = delegate_match.group(1).strip()
@@ -60,10 +66,129 @@ class YukiEngine:
                     "chat_id": chat_id
                 })
                 logger.info(f"📤 已委托小女仆：{task_desc}")
-            return Yuki_Answer
+            # === 新增：拦截表情包搜索请求 ===
+            meme_match = re.search(r'\[MEME_SEARCH:(.+?)\]', Yuki_Answer, re.DOTALL)
+            if meme_match and getattr(self, 'sticker_manager', None):
+                search_query = meme_match.group(1).strip()
+                # 擦除文字中的标签
+                Yuki_Answer = re.sub(r'\[MEME_SEARCH:.+?\]', '', Yuki_Answer, flags=re.DOTALL).strip()
+
+                # 呼叫大管家：进行 RAG 检索 + 积热重排
+                best_meme_data = await self.sticker_manager.get_suitable_sticker(search_query, chat_id)
+
+                if best_meme_data:
+                    import os
+                    image_path = os.path.abspath(best_meme_data['image_ref'])
+                    # 记录这次发了啥，为后续捕捉正反馈做准备
+                    self.yuki.last_sent_meme[chat_id] = best_meme_data['id']
+
+                    # 追加 CQ 码，subType=1 伪装成真实表情包
+                    Yuki_Answer += f"\n[CQ:image,file=file:///{image_path},sub_type=1]"
+            # ==============================
+            # # ==========================================
+            # # 新增：截获文本并请求本地 GPT-SoVITS API
+            # # ==========================================
+
+            # # 1. 清洗文本（过滤动作描写和换行）
+            # clean_text = re.sub(r'\[.*?\]|【.*?】|\(.*?\)|（.*?）|\*.*?\*', '', Yuki_Answer)
+            # clean_text = clean_text.strip().replace('\n', '，')
+            # if not clean_text:
+            #     clean_text = "um..."
+
+            # # ==========================================
+            # # [外挂] 翻译模块：将中文转换为日语
+            # # ==========================================
+            # logger.info(f"[System] 正在调用翻译 API 将文本转为日文...")
+            # try:
+            #     # # 复用现有的 LLM 接口，要求其直接输出日文，免去注册其他 API 的麻烦
+            #     # translate_msgs = [
+            #     #     {"role": "system",
+            #     #      "content": "你是一个翻译API。请保持输入的风格，将输入翻译为口语化的日文（日本語）。请直接输出日文翻译结果，绝对不要输出任何解释、引号或拼音。"},
+            #     #     {"role": "user", "content": clean_text}
+            #     # ]
+            #     #
+            #     # # 调用 LLM 进行翻译（使用较低的 temperature 保证翻译准确性）
+            #     # translated_text = await self.llm.robust_api_call(
+            #     #     model=cfg.LLM_MODEL,
+            #     #     messages=translate_msgs,
+            #     #     temperature=0.2,
+            #     #     max_tokens=100
+            #     # )
+
+            #     # translated_text = translated_text.strip()
+            #     translated_text = clean_text
+            #     if translated_text:
+            #         clean_text = translated_text
+            #         logger.info(f"[System] 翻译完成: {clean_text}")
+            # except Exception as e:
+            #     logger.error(f"[System] 翻译 API 调用失败，将降级使用原文本: {e}")
+
+            # # ==========================================
+
+            # def fetch_voice(text):
+            #     # ==================================================
+            #     # 1. 首次呼叫时，分别挂载 GPT 和 SoVITS 模型
+            #     # ==================================================
+            #     if not getattr(self, 'is_sovits_loaded', False):
+            #         logger.info("[System] 首次激活语音，正在将 Neuro 模型挂载至显存...")
+
+            #         # 新版 API_V2 必须分别调用这两个接口挂载模型
+            #         url_gpt = "http://127.0.0.1:9880/set_gpt_weights?weights_path=GPT_weights/keli_ZH-e10.ckpt"
+            #         url_sovits = "http://127.0.0.1:9880/set_sovits_weights?weights_path=SoVITS_weights/keli_ZH_e10_s530_l32.pth"
+
+            #         try:
+            #             requests.get(url_gpt, timeout=60)
+            #             requests.get(url_sovits, timeout=60)
+            #             self.is_sovits_loaded = True
+            #             logger.info("[System] Neuro 灵魂挂载成功！")
+            #         except Exception as e:
+            #             logger.error(f"[SoVITS] 模型挂载失败: {e}")
+            #             return None
+
+            #     # ==================================================
+            #     # 2. 正式请求语音合成 (注意路由改为了 /tts)
+            #     # ==================================================
+            #     encoded_text = urllib.parse.quote(text)
+
+            #     # 你的参考音频绝对路径 (确保用正斜杠)
+            #     ref_audio_abs_path = "D:/Projects/GPT-SoVITS-v2pro-20250604/assets/ref.wav"
+            #     # 你的神仙空耳台词
+            #     prompt_text = urllib.parse.quote(
+            #         "玩得太开心，忘、忘在脑后了…")
+
+            #     # 新版请求地址：带有 /tts 前缀
+            #     # ⚠️ 修正：日文的语言代码在 SoVITS 中通常是 'ja' 而不是 'jp'
+            #     url = f"http://127.0.0.1:9880/tts?text={encoded_text}&text_lang=zh&ref_audio_path={ref_audio_abs_path}&prompt_text={prompt_text}&prompt_lang=en"
+
+            #     try:
+            #         res = requests.get(url, timeout=75)
+            #         if res.status_code == 200:
+            #             os.makedirs("data/voices", exist_ok=True)
+            #             save_path = os.path.abspath(f"data/voices/{chat_id}_reply.wav")
+            #             with open(save_path, "wb") as f:
+            #                 f.write(res.content)
+            #             return save_path
+            #         else:
+            #             logger.error(f"[SoVITS] 生成失败，服务器返回状态码: {res.status_code}")
+            #     except Exception as e:
+            #         logger.error(f"[SoVITS] 请求异常: {e}")
+            #     return None
+
+            # logger.info(f"[System] 正在呼叫 GPT-SoVITS 生成声音...")
+
+            # # 使用 asyncio.to_thread 防止 requests 阻塞主协程
+            # voice_local_path = await asyncio.to_thread(fetch_voice, clean_text)
+
+            # if voice_local_path:
+            #     # 偷天换日：把返回的文字变成 QQ 的语音 CQ 码！
+            #     # 这样外层的 sender.send() 就会把它当成本地语音发送啦
+            #     return Yuki_Answer, f"[CQ:record,file=file:///{voice_local_path}]"
+
+            # # 如果语音生成失败了（比如超时或报错），降级返回文字，保证不冷场
+            return Yuki_Answer_raw, Yuki_Answer, ""
         except Exception as e:
             logger.error(f"调用失败: {e}")
-            return f"API 接口调用失败"
+            return f"API 接口调用失败", ""
 
     async def decide_to_reply(self, history, message_objs, chat_id,force_reply = False):
         """判断是否回复群聊"""

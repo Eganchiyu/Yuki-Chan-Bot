@@ -114,7 +114,7 @@ async def call_cloud_maid_robust(messages):
     # 直接调用你 api_request.py 里的核心函数
     result = await api_client.robust_api_call(
         messages=messages,
-        model=LLM_MODEL,
+        model=cfg.LLM_MODEL,
         **payload_kwargs
     )
 
@@ -276,8 +276,9 @@ async def maid_evolution_loop(user_goal: str, chat_id: str = None):
                 # --- [新改动] 自动清理逻辑 ---
                 for path in created_skill_files:
                     if os.path.exists(path):
-                        os.remove(path)
-                logger.info(f"[Maid] 🧹 已清理 {len(created_skill_files)} 个临时技能文件。")
+                        pass
+                #         os.remove(path)
+                # logger.info(f"[Maid] 🧹 已清理 {len(created_skill_files)} 个临时技能文件。")
                 # -------------------------
 
                 with open(log_file, "a", encoding="utf-8") as f:

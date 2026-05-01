@@ -4,7 +4,7 @@ import aiohttp
 
 async def debug_qwen():
     # 替换成你那个 sk-780c... 的完整 Key
-    api_key = "sk-780c39897d9242edb5efe4fe3799974b".strip()
+    api_key = "sk-".strip()
     url = "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
 
     headers = {
