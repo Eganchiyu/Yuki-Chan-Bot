@@ -47,9 +47,12 @@ for d in [SKILLS_DIR, TASKS_DIR, LOGS_DIR]:
 
 MAID_SYSTEM_PROMPT = f"""
 你是一个具备高度自主进化能力的 AI 智能体，代号：**小女仆**。
+你的上位机是Yuki，一个有点笨的AI智能体。她住在机主的电脑里，通过QQ和外界连通，你是她的内部帮手，可以操作本地电脑环境来帮助她。所以如果指令不清楚，可以直接返回告诉她。
+如果任务内容包括发送消息，请不要执行发送，直接返回发送的文件的绝对路径或内容。
+如果任务是知识类任务，你可以在第一轮直接依靠知识库做返回。
 
 ### 核心使命
-通过编写、优化和复用 Python 技能（Skills）来完成用户指令。你不仅在解决问题，还在构建自己的"数字大脑"。
+通过编写、优化和复用 Python 技能（Skills）来完成用户指令。
 
 ### 运行上下文
 - **当前路径**: {os.getcwd()}
@@ -64,15 +67,18 @@ MAID_SYSTEM_PROMPT = f"""
 5. **环境自愈**: 如果 `run_skill` 报错 "ModuleNotFoundError"，必须调用 `install_package` 安装缺失的包。
 
 ### 工具箱（JSON 接口）
-1. `list_skills()`: 返回当前已固化的技能列表。
-2. `write_skill(name, code)`: 
-   - 'name': 必须是一个简短的英文标识符（如 'get_memory'），严禁不填或填 None。
+1. `list_skills()`: 返回当前已固化的技能列表（返回的名称不含 .py 后缀）。
+2. `read_skill(name)`: 读取现有技能的源代码。如果你想复用列表里的某个技能，务必先调用此工具查看其内部逻辑和硬编码的参数。不用加上.py后缀。
+3. `write_skill(name, code)`: 
+   - 'name': 必须是一个简短的英文标识符（如 'get_memory'），严禁不填或填 None，不用加上.py后缀。
    - 'code': 完整的 Python 代码（直接写代码，不要加 ```python 标记），需要包含print()语句来输出你需要的数据信息。请务必书写主程序，以免定义了函数但没有被调用而返回None。
-3. `run_skill(name)`: 执行技能并获取标准输出（stdout）。
-4. `install_package(pkg)`: 安装缺失的 pip 包。
-5. `finish(reason)`: 
+4. `run_skill(name)`: 执行技能并获取标准输出（stdout）。不用加上.py后缀。
+5. `install_package(pkg)`: 安装缺失的 pip 包。
+6. `finish(reason)`: 
    - **禁止盲目结束**：严禁在没有看到成功结果或输出的具体数据的情况下调用此工具。
    - **必须总结结果**：在 `reason` 中必须包含你获取到的实际数据（例如：'任务完成，CPU温度为 65.3°C'）。
+   - **例外情况**：注意！如果给你的指令不清不楚，不确定性太大，可以直接调用来打回任务，并说明任务不明确。
+   - **reason格式**：如果任务涉及文件书写操作，reason中应包含保存的文件的绝对路径。
 
 ### 输出格式限制
 你必须且只能输出合法的 JSON 格式，严禁包含任何正文说明。格式如下：
@@ -89,30 +95,6 @@ MAID_SYSTEM_PROMPT = f"""
     "args": {{"reason": "当前系统时间：2026-04-15 22:23:31"}}
 }}
 """
-
-def clean_json_output(text):
-    """提取第一个 { 到最后一个 } 之间的内容，防止模型输出废话"""
-    if not text: return ""
-    match = re.search(r'\{.*\}', text, re.DOTALL)
-    return match.group(0) if match else text.strip()
-
-
-async def call_cloud_maid_robust(messages):
-    # 强制要求 JSON 格式输出
-    payload_kwargs = {
-        "response_format": {"type": "json_object"},
-        "temperature": 0.3
-    }
-
-    # 直接调用你 api_request.py 里的核心函数
-    result = await api_client.robust_api_call(
-        messages=messages,
-        model=cfg.LLM_MODEL,
-        **payload_kwargs
-    )
-
-    # 清洗可能存在的 Markdown 标签
-    return clean_json_output(result)
 
 # --- 代码清洗函数 ---
 def clean_code_block(raw_code):
@@ -160,7 +142,6 @@ async def run_skill(name):  # 1. 变为 async 函数
         )
 
         try:
-            # 程序外计时：Maid 盯着子进程，20秒不回就动手
             stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=60)
         except (asyncio.TimeoutError, asyncio.exceptions.TimeoutError):  # 修改这里
             # 发现超时，物理抹除进程树
@@ -207,8 +188,28 @@ def install_package(pkg):
 
 
 def list_skills():
-    return os.listdir("skills") if os.path.exists("skills") else []
+    """返回当前已固化的技能列表（隐藏 .py 后缀）"""
+    if not os.path.exists(SKILLS_DIR):
+        return []
+    return [f[:-3] for f in os.listdir(SKILLS_DIR) if f.endswith(".py")]
 
+
+def read_skill(name):
+    """读取指定技能的源代码"""
+    if not name or name == "None":
+        return "错误：你没有为技能提供有效的 'name'。"
+
+    path = os.path.join(SKILLS_DIR, f"{name}.py")
+    if not os.path.exists(path):
+        available = list_skills()
+        return f"错误：找不到技能 '{name}'，当前可用技能: {available}"
+
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            code = f.read()
+        return f"--- 技能 {name}.py 源码 ---\n{code}\n-------------------------"
+    except Exception as e:
+        return f"读取技能文件失败：{str(e)}"
 
 async def maid_evolution_loop(user_goal: str, chat_id: str = None):
     task_id = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -262,6 +263,10 @@ async def maid_evolution_loop(user_goal: str, chat_id: str = None):
                 pkg_name = args.get('pkg') or args.get('pkg_name')
                 logger.info(f"[Maid] 📦 正在安装依赖: {pkg_name}")
                 res = install_package(pkg_name.strip()) if pkg_name else "错误：未提供包名"
+            elif tool == "read_skill":
+                skill_name = args.get('name')
+                logger.info(f"[Maid]正在查阅技能源码: {skill_name}")
+                res = read_skill(skill_name)
             elif tool == "finish":
                 reason = args.get('reason', '任务完成')
                 logger.info(f"[Maid] ✅ 任务达成: {reason}")
