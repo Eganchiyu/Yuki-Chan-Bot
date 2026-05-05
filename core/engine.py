@@ -58,7 +58,11 @@ class YukiEngine:
                 presence_penalty=0.0,  # 不强迫它聊新话题
                 max_tokens=100  # 强制短句，短句更容易显自然
             )
+            # 清除补全文本
             Yuki_Answer_raw = Yuki_Answer = re.sub(r'\s*FINISHED\s*$', '', Yuki_Answer, flags=re.IGNORECASE)
+            Yuki_Answer = re.sub(r'<布局>.*?</布局>', '', Yuki_Answer, flags=re.DOTALL).strip()
+            Yuki_Answer = re.sub(r'\n+', ' ', Yuki_Answer).strip()
+
             delegate_match = re.search(r'\[DELEGATE_TO_MAID:(.+?)\]', Yuki_Answer, re.DOTALL)
             if delegate_match:
                 task_desc = delegate_match.group(1).strip()
@@ -419,9 +423,10 @@ class YukiEngine:
                 max_tokens=60
             )
 
-            # 清理与记录
+            # 清理与记录(隐藏布局内容和可能存在的结尾语句)
             Yuki_Answer = re.sub(r'\s*FINISHED\s*$', '', Yuki_Answer, flags=re.IGNORECASE)
-
+            Yuki_Answer = re.sub(r'<布局>.*?</布局>', '', Yuki_Answer, flags=re.DOTALL).strip()
+            Yuki_Answer = re.sub(r'\n+', ' ', Yuki_Answer).strip()
             # 5. 持久化数据 (注意：在异步中尽量减少频繁 save)
             self.history.append_to_log(chat_id, "Yuki", Yuki_Answer)
             history_dict[chat_id].append({"role": "assistant", "content": Yuki_Answer})
@@ -431,6 +436,8 @@ class YukiEngine:
             async with self.yuki.lock:
                 self.yuki.consume_energy(chat_id)
                 current_energy = self.yuki.energy[chat_id]
+                # 破冰失败计数
+                self.yuki.ice_break_fail_count[chat_id] = self.yuki.ice_break_fail_count.get(chat_id, 0) + 1
 
             logger.info(f"[System] 破冰成功！发送给 {chat_id} (剩余精力: {current_energy:.1f})")
             await self.sender.send(chat_id, Yuki_Answer, mode="group")

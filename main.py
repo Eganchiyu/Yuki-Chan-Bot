@@ -5,6 +5,7 @@ import re
 import time
 import datetime
 import sys
+import json
 
 from core.brain import YukiState
 from core.engine import YukiEngine
@@ -21,8 +22,31 @@ from utils.logger import setup_logging, get_logger
 
 setup_logging(debug=cfg.DEBUG)
 logger = get_logger("main")
+
+# === 新增：群聊动态开关状态管理 ===
+GROUP_STATE_FILE = "data/group_state.json"
+
+def load_group_state():
+    if os.path.exists(GROUP_STATE_FILE):
+        try:
+            with open(GROUP_STATE_FILE, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except Exception as e:
+            logger.warning(f"[System] 读取群聊状态失败: {e}")
+    return {}
+
+def save_group_state(state):
+    try:
+        os.makedirs("data", exist_ok=True)
+        with open(GROUP_STATE_FILE, 'w', encoding='utf-8') as f:
+            json.dump(state, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        logger.error(f"[System] 保存群聊状态失败: {e}")
+
 # 初始化全局变量：消息缓冲和定时任务
 real_time_debounce_time = cfg.DEBOUNCE_TIME
+
+group_active_state = load_group_state()
 
 def check_config():
     """在启动前进行最后的物理检查"""
@@ -48,6 +72,14 @@ async def main_process(chat_id, mode, debounce_flag=True, force_reply=None):
         await asyncio.sleep(real_time_debounce_time)  # 防抖等待，合并短时间内的多条消息
     else:
         await asyncio.sleep(0.5)
+
+    # ================= 新增：醒来后的终极拦截 =================
+    if mode == "group" and not group_active_state.get(str(chat_id), True):
+        logger.info(f"[System] [{chat_id}] 协程醒来，但群已被静音，丢弃遗留消息并退出。")
+        yuki.pop_buffer(chat_id)  # 把缓存清空以绝后患
+        return
+    # ==========================================================
+
     real_time_debounce_time = cfg.DEBOUNCE_TIME  # 重置防抖时间，准备处理下一轮消息
     message_objs = yuki.pop_buffer(chat_id)  # 此时拿到的是 list[dict]
     if not message_objs and not force_reply:
@@ -181,8 +213,6 @@ async def napcat_listen(mode):
     asyncio.create_task(engine.ice_break_monitor())
     from core.engine import maid_worker
     asyncio.create_task(maid_worker(engine, yuki, sender, history_manager))
-    # for chat_id in TARGET_GROUPS:
-    #     print(f"[System] 初始化{chat_id}精力为{yuki.update_energy(chat_id)}")
     logger.info("[System] 已启动后台辅助任务 (日记检查/破冰/精力衰减)")
 
     logger.info(f"[System] 准备连接 NapCat 服务端 | 模式: {mode}")
@@ -201,8 +231,48 @@ async def napcat_listen(mode):
 
                 elif mode == "group" and msg_type == "group":
                     group_id = data.get("group_id")
-                    # 检查目标群白名单
+                    gid_str = str(group_id)
+
+                    # 检查目标群白名单 (config.yaml 中的硬性规定)
                     if not cfg.TARGET_GROUPS or group_id in cfg.TARGET_GROUPS:
+
+                        # ================= 新增：开关拦截逻辑 =================
+                        msg_clean = raw_msg.strip()
+                        if msg_clean == '/关闭':
+                            # 权限校验：只允许主人(TARGET_QQ)操作，防止群友捣乱
+                            if user_id == cfg.TARGET_QQ:
+                                group_active_state[gid_str] = False
+                                save_group_state(group_active_state)
+                                # ================= 新增：物理切断遗留任务 =================
+                                # 1. 清空当前群的消息缓冲池
+                                if group_id in yuki.message_buffer:
+                                    yuki.message_buffer[group_id] = []
+                                # 2. 如果防抖协程正在倒计时，直接抛出 CancelledError 强制中断
+                                if group_id in yuki.buffer_tasks:
+                                    yuki.buffer_tasks[group_id].cancel()
+                                # ========================================================
+
+                                await sender.send(group_id, f"{cfg.ROBOT_NAME.title()} 已进入休眠模式，不打扰大家啦~",
+                                                  mode="group")
+                            else:
+                                await sender.send(group_id, "只有哥哥大人才能关掉我哦！", mode="group")
+                            continue  # 拦截完成，跳过后续所有处理
+
+                        elif msg_clean == '/开启':
+                            if user_id == cfg.TARGET_QQ:
+                                group_active_state[gid_str] = True
+                                save_group_state(group_active_state)
+                                await sender.send(group_id, f"{cfg.ROBOT_NAME.title()} 重新上线", mode="group")
+                            else:
+                                await sender.send(group_id, "只有哥哥大人才能唤醒我哦！", mode="group")
+                            continue  # 拦截完成，跳过后续所有处理
+
+                        # 状态检查：如果该群被主人标记为 False，则直接无视所有消息（不进缓冲，不消耗精力）
+                        # 默认获取不到值时为 True，代表默认是开启的
+                        if not group_active_state.get(gid_str, True):
+                            continue
+                        # ====================================================
+
                         sender_info = data.get("sender", {})
                         name = sender_info.get("card") or sender_info.get("nickname") or "路人"
                         is_fake = name == cfg.MASTER_NAME and user_id != cfg.TARGET_QQ
@@ -216,12 +286,11 @@ async def napcat_listen(mode):
                             f"【“{name}”】说: {raw_msg}",
                             mode,
                             raw_message=raw_msg,
-                            sender_name=name,  # 传入姓名用于标识
+                            sender_name=name,
                             user_id=int(user_id)
                         )
 
         except Exception as e:
-            # 这里捕获的是 listen 循环抛出的致命异常（如代码逻辑错误或持续的连接失败）
             logger.error(f"监听主循环发生非预期崩溃: {e}")
             logger.info("[System] 5 秒后将尝试重启监听进程...")
             await asyncio.sleep(5)
@@ -237,13 +306,12 @@ async def manage_buffer(chat_id, content, mode, raw_message='', sender_name = ''
         # 定义正反馈触发词
         feedback_words = ["哈", "草", "233", "笑", "蚌埠", "确实", "典", "好图", "偷了"]
         # 如果消息包含触发词，或者群友紧接着也发了一张图（斗图）
-        if any(fw in raw_message for fw in feedback_words) or "[CQ:image" in raw_message:
+        if any(fw in raw_message for fw in feedback_words):
             meme_id = yuki.last_sent_meme.pop(cid_str)  # 弹出记录，防止一张图被无限加分
             if hasattr(engine, 'sticker_manager'):
                 engine.sticker_manager.add_preference(meme_id)
-    # ==================================
-    # --- 新增：只要收到消息，就重置该群的破冰失败计数 ---
-    if cid_str in yuki.ice_break_fail_count:
+    # 清空破冰失败计数器：只要群友发了消息（不论内容），就认为是积极互动，重置计数器
+    if (cid_str in yuki.ice_break_fail_count) and not is_bot:
         if yuki.ice_break_fail_count[cid_str] > 0:
             logger.info(f"[IceBreak] {cid_str} 收到新消息，重置破冰计数器。")
         yuki.ice_break_fail_count[cid_str] = 0
@@ -264,11 +332,6 @@ async def manage_buffer(chat_id, content, mode, raw_message='', sender_name = ''
         history_manager.append_chat(chat_id, "assistant", "(已发送帮助文档图片)")
         return 
     # 入队
-
-    # 判定是否为机器人（可以根据名称含 BOT，或者特定的 QQ 号判定）
-    is_bot = "BOT" in sender_name or "机器人" in sender_name
-    
-
     if chat_id not in yuki.message_buffer:
         yuki.message_buffer[chat_id] = []
     if (not ("BOT" in sender_name)) or (user_id and user_id == 1390249127):  # 允许特定机器人QQ发起对话
