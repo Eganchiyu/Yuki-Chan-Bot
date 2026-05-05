@@ -1,6 +1,5 @@
 from config import cfg
 from utils.logger import get_logger
-
 logger = get_logger("prompts")
 
 # # ========== 新增：小女仆设定（放在系统提示最前面） ==========
@@ -116,6 +115,47 @@ VISION_PROMPT = """
 ## 【格式规范】
 - 字数限制：不超过15个字。
 """
+
+def sync_system_prompts(history_mgr, yuki_state):
+    """
+    在启动前同步最新的 System Prompt 到历史记录上下文中。
+    防止修改了代码中的 Prompt 但被旧的 chat_history.json 缓存覆盖。
+    """
+    logger.info("[System] 正在同步最新的 System Prompt 到历史记录...")
+    try:
+        history_dict = history_mgr.load()
+        # 将配置中的群组 ID 统一转为字符串，方便与 json 的 key 比对
+        target_groups_str = [str(gid) for gid in cfg.TARGET_GROUPS]
+
+        # 逻辑 1 & 2: 针对 config.yaml 中的群组，进行群组 Prompt 注入或覆写
+        for gid in target_groups_str:
+            group_prompt = yuki_state.get_setting("group")
+            if gid not in history_dict or not history_dict[gid]:
+                # 如果这个群没有记录，新建并添加
+                history_dict[gid] = [{"role": "system", "content": group_prompt}]
+            elif history_dict[gid][0].get("role") == "system":
+                # 如果有记录且第一条是 system，直接覆写
+                history_dict[gid][0]["content"] = group_prompt
+            else:
+                # 如果有记录但第一条不是 system，在头部插入
+                history_dict[gid].insert(0, {"role": "system", "content": group_prompt})
+
+        # 逻辑 3: 对 json 内有的记录，但不在 target_groups 里的，认定为私聊注入私聊 Prompt
+        for cid in list(history_dict.keys()): 
+            if cid not in target_groups_str:
+                private_prompt = yuki_state.get_setting("private")
+                if not history_dict[cid]:
+                    history_dict[cid] = [{"role": "system", "content": private_prompt}]
+                elif history_dict[cid][0].get("role") == "system":
+                    history_dict[cid][0]["content"] = private_prompt
+                else:
+                    history_dict[cid].insert(0, {"role": "system", "content": private_prompt})
+
+        # 保存更新后的记录
+        history_mgr.save(history_dict)
+        logger.info("[System] System Prompt 同步完成！")
+    except Exception as e:
+        logger.error(f"[System] System Prompt 同步发生异常: {e}")
 
 import datetime
 

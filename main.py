@@ -400,6 +400,8 @@ if __name__ == "__main__":
         sticker_manager = StickerManager()
         # 实例化历史记录管理器
         history_manager = HistoryManager()
+        # 更新系统提示词到历史记录中，确保最新的设定被加载（防止被旧记录覆盖）
+        sync_system_prompts(history_manager, yuki)
         logger.info("[System] 开始初始化记忆系统（RAG）...")
         from modules.memory.rag import MemoryRAG
 
@@ -429,7 +431,7 @@ if __name__ == "__main__":
         logger.info(f"[System] 初始化完成，耗时 {end_time - start_time:.1f} 秒")
         if success: logger.info("[WebUI] 控制面板已在后台线程启动: http://127.0.0.1:1314")
         choice = input("[System] 选择模式：1. 私聊模式  2. 群聊模式（默认）\n请输入数字: ").strip()
-        if choice != "2":
+        if choice != "1":
             # 初始化巡检名单，预载历史中的群聊ID和最后消息时间，确保后台检查能正常工作
             h_dict = history_manager.load()
             for cid in cfg.TARGET_GROUPS:
