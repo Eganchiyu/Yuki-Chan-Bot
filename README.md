@@ -162,6 +162,37 @@ python setup.py
 python main.py
 ```
 
+### 4. 表情包系统初始化（可选）
+
+默认情况下表情包功能代码已就绪，但 `data/stickers/` 和 `data/meme_cache.json` 不随仓库分发（已在 `.gitignore` 中）。如需启用表情包功能，需要自行准备素材并导入：
+
+**Step 1：准备原始表情包图片**
+
+收集你喜欢的表情包，放到一个文件夹里（例如 `C:\memes\raw`）。
+
+**Step 2：启动打标工具**
+
+```bash
+python modules/label.py
+```
+
+浏览器会自动打开一个 Gradio 界面（"Yuki 表情包可视化打标工厂"）。操作流程：
+
+1. 输入图片文件夹路径，点击「重命名并加载」— 工具会将图片统一 MD5 重命名
+2. 每张图会自动调用大模型生成描述、情绪、场景、标签
+3. 你可以手动修正不满意的内容，然后点「保存修改，并进入下一张」
+4. 全部完成后点击「导出所有数据为 manual_stickers.json」
+
+**Step 3：导入到向量库**
+
+将导出的 `manual_stickers.json` 放到项目根目录，然后执行导入脚本：
+
+```bash
+python scripts/04_meme_cache_tools/reset_and_import_meme.py
+```
+
+脚本会清空旧的 stickers 集合（不影响日记记忆），然后将打标数据批量导入 ChromaDB 向量库。完成后 Yuki 就能根据上下文自动搜索并发送合适的表情包了。
+
 ---
 
 ## 📅 开发计划
