@@ -1,150 +1,185 @@
 # 🌸 Yuki-Chan-Chat (Project Yuki)
 
-# Yuki-V8.0 (Maid-Evolution)
+# Yuki V8.0 — Maid-Evolution
 
-[![Python Version](https://img.shields.io/badge/python-3.9+-blue.svg)](https://www.python.org/downloads/)
+[![Python Version](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![DeepSeek](https://img.shields.io/badge/LLM-DeepSeek--V3-green.svg)](https://www.deepseek.com/)
 [![License](https://img.shields.io/badge/license-MIT-important.svg)](LICENSE)
 
 > **"虽然现在还很笨拙，但 Yuki 会和学长一起慢慢成长的。所以...不许丢下我不管哦！"**
 
-`Yuki-Chan-Chat` 是一款基于 Python 异步架构开发的个人智能助手系统。它不仅接入了最新的 LLM 进行对话，拥有真正的动态长效记忆管理和生物感精力值模拟系统，在最新的版本中，我们还为 Yuki 引入了高度自主的 **"小女仆（Maid Agent）系统"**，让 Yuki 真正具备了操作本地环境和扩展自我技能的能力。
+`Yuki-Chan-Chat` 是一款基于 Python 异步架构开发的个人智能助手系统。接入 LLM 进行对话，拥有动态长效记忆管理和生物感精力值模拟系统，并引入了高度自主的 **"小女仆（Maid Agent）系统"**，让 Yuki 真正具备了操作本地环境和扩展自我技能的能力。
 
 ---
 
-## ✨ 核心特性 (Core Features)
+## ✨ 核心特性
 
-### 🧹 全新：自主小女仆系统 (Maid Agent) - _[Beta 阶段]_
+### 🧹 自主小女仆系统 (Maid Agent)
 
-Yuki 不再仅仅是一个聊天机器人。通过触发特定的委托指令 `[DELEGATE_TO_MAID:...]`，Yuki 可以将复杂的任务交由后台的"小女仆"处理。
+Yuki 不再仅仅是一个聊天机器人。通过触发特定的委托指令 `[DELEGATE_TO_MAID:...]`，Yuki 可以将复杂的任务交由后台的"小女仆"处理。
 
-- **自主编程与进化**：小女仆能够针对任务自主编写、调试和固化 Python 技能脚本（`/skills` 目录）。
-    
-- **非阻塞汇报**：小女仆在后台执行任务（如查询系统时间、爬取数据等），完成后会将结果直接写入 Yuki 的记忆流，触发 Yuki 自然的语音汇报。  
-    _(注：该功能逻辑已打通并较为完善，代码重构与深度优化将在后续版本进行)_
-    
+- **自主编程与进化**：小女仆能够针对任务自主编写、调试和固化 Python 技能脚本（`/skills` 目录）。
+- **非阻塞汇报**：小女仆在后台执行任务（如查询系统时间、爬取数据等），完成后将结果写入 Yuki 的记忆流，触发 Yuki 自然的回复。
+- **技能热复用**：已固化的技能可被后续任务直接调用，无需重复编写。
 
 ### 🧠 记忆与日记系统 (Memory & RAG)
 
-不同于普通的上下文清理，Yuki 拥有真正的**动态长效记忆**：
+Yuki 拥有真正的**动态长效记忆**：
 
-- **自动总结**：当对话轮次达到阈值时，Yuki 会以第一人称撰写日记，将冗长的上下文浓缩为记忆节点。
-    
-- **并行双池检索 (Parallel Hybrid Search)**：结合语义向量与硬核关键词补偿，确保记忆召回的"神似"与"形似"。
-    
-- **记忆库智能审计与 3D 可视化**：提供独立工具对 ChromaDB 记忆进行 AI 辅助去重，并通过 t-SNE 降维生成交互式 3D 记忆星空图。
-    
+- **自动日记总结**：当对话轮次达到阈值或空闲超时，Yuki 以第一人称撰写日记，将上下文浓缩为记忆节点。
+- **并行双池检索 (Parallel Hybrid Search)**：结合语义向量与关键词补偿，确保记忆召回的"神似"与"形似"。
+- **记忆库工具**：提供 AI 辅助去重、导入导出等独立工具脚本。
 
 ### 🎭 生物感精力系统 (Energy Dynamics)
 
-- **动态社交欲望**：利用 Sigmoid 非线性映射计算破冰意愿。
-    
-- **高斯拟合生物钟**：融合了基础睡眠模型与晨间、午间、晚间三个高斯活跃峰，完美模拟人类的作息节律。
-    
+- **动态社交欲望**：利用 Sigmoid 非线性映射计算破冰意愿，综合活跃度、精力值与时间权重。
+- **高斯拟合生物钟**：融合基础睡眠模型与晨间、午间、晚间三个高斯活跃峰，模拟真实作息节律。
+- **消息缓冲防抖**：群聊消息自动聚合，避免频繁触发 API。
 
-### ⚡ 极致稳健的异步架构
+### 🖼️ 多模态表情包管理 (Sticker System)
 
-- **主备 API 熔断切换**：内置 `ApiCall` 稳健调用逻辑。当主线路 (TeaTop) 失败时，瞬间无缝降级切换至官方备用线路，彻底告别"大脑宕机"。
-    
+- **视觉理解**：接入视觉大模型 (Vision Model) 理解群聊表情包的含义与情感。
+- **向量检索 + 积热重排**：根据当前情绪和上下文，在表情包向量库中寻找最合适的一张并发送。
+- **正反馈捕捉**：记录发送的表情包，支持后续捕捉群友的正反馈。
 
-### 🖼️ 蓄势待发：多模态表情包管理 (WIP)
+### ⚡ 稳健的异步架构
 
-- **即将到来**：接入视觉大模型 (Vision Model) 理解群聊表情包，Yuki 将学会根据当前情绪和上下文，在庞大的表情包向量库中寻找最合适的一张并发送。目前基础模块已在开发中。
-    
----
-
-## 🏗️ 处理流程 (System Workflow)
-
-```mermaid
-graph TD
-    A[接收原始消息] --> B{manage_buffer 防抖}
-    B --> C[上下文加载 & RAG 记忆唤醒]
-    C --> D[活跃度与 Break-Ice 欲望决策]
-    D --> E[DeepSeek 思考与生成]
-    E --> F{是否触发小女仆委托?}
-    F -->|否| G[发送消息 & 异步扣除精力]
-    F -->|是| H[小女仆后台编写/执行代码]
-    H --> I[完成任务并写入记忆流]
-    I --> J[Yuki 感知到结果并再次生成回复]
-````
+- **主备 API 熔断切换**：主线路失败时无缝降级至备用线路。
+- **Provider 抽象层**：支持 DeepSeek、DashScope、OpenAI 等多平台，热重载无需重启。
+- **YAML 热重载配置**：所有运行时参数统一从 `configs/config.yaml` 读取，修改即生效。
 
 ---
 
-## 📂 核心模块分布 (Module Architecture)
-
-| 文件/目录                        | 职责说明                                    |
-| ---------------------------- | --------------------------------------- |
-| **`main.py`**                | 程序入口，负责异步初始化、WebSocket 监听调度及消息缓冲处理      |
-| **`core/engine.py`**         | 决策大脑，封装了回复判定、破冰唤醒、日记总结等核心逻辑             |
-| **`core/maid.py`**           | 小女仆系统核心，实现自主编程循环、技能编写与执行调度              |
-| **`network/api_request.py`** | 语言枢纽，基于 AsyncOpenAI 的稳健 API 封装，支持主备熔断降级 |
-| **`modules/memory/rag.py`**  | 记忆检索模块，实现并行双池匹配算法与日记的向量化存储              |
-| **`modules/stickers/`**      | 表情包管理系统（开发中），负责视觉理解、向量入库与情绪匹配           |
-| **`scripts/03_RAG_Tools/`**  | 记忆库管理工具集，支持 AI 智能审计、3D 可视化和批量操作         |
-
----
-
-## 🚀 快速开始 (Quick Start)
-
-### 1. 环境准备 (Prerequisites)
-
-- **Python 版本**：建议 $\ge$ 3.10，确保异步特性完全稳定。
-    
-- **协议端**：你需要部署 [NapCatQQ](https://github.com/NapCat-Team/NapCatQQ) 并在配置中启用 **正向 WebSocket** 服务（默认端口 `3001`） 。
-    
-
-### 2. 获取源码与依赖
-
-Bash
+## 🏗️ 系统流程
 
 ```
+接收消息 (NapCat WebSocket)
+    │
+    ▼
+消息缓冲 & 防抖聚合
+    │
+    ▼
+群聊开关状态检查
+    │
+    ▼
+精力值更新 & 社交欲望计算
+    │
+    ▼
+是否回复？── 否 ──→ 潜水观察
+    │
+    是
+    ▼
+RAG 记忆检索 + 上下文构建
+    │
+    ▼
+LLM 思考与生成
+    │
+    ├─ [DELEGATE_TO_MAID:...] ──→ 小女仆后台执行任务
+    │                                  │
+    │                                  ▼
+    │                            任务完成，写入记忆流
+    │                                  │
+    │                                  ▼
+    │                            Yuki 感知结果并回复
+    │
+    ├─ [MEME_SEARCH:...] ──→ 表情包向量检索 + 发送
+    │
+    └─ 普通回复 ──→ 发送消息 & 扣除精力
+    │
+    ▼
+空闲检测 ──→ 触发日记总结 ──→ 存入记忆库
+```
+
+---
+
+## 📂 项目结构
+
+```
+YukiV6/
+├── main.py                      # 程序入口，异步初始化与消息调度
+├── config.py                    # 热重载配置中心 (YAML 单例)
+├── configs/
+│   ├── config.yaml              # 运行时配置（含 API Key，不提交 Git）
+│   └── README.md                # 配置系统说明文档
+├── core/
+│   ├── engine.py                # 决策引擎：回复判定、破冰唤醒、日记总结
+│   ├── brain.py                 # 状态管理：精力值、活跃度、欲望计算、生物钟
+│   ├── maid.py                  # 小女仆系统：自主编程循环、技能调度
+│   ├── prompts.py               # 系统提示词构建
+│   └── history_manager.py       # 对话历史管理（原子化读写）
+├── modules/                     # 功能模块
+│   ├── message/                 # 消息解析 (CQ码)
+│   ├── memory/                  # RAG 记忆检索
+│   └── vision/                  # 视觉/表情包处理
+├── network/                     # 网络层
+│   ├── ws_connection.py         # NapCat WebSocket 连接
+│   ├── ws_sender.py             # 消息发送
+│   └── api_request.py           # LLM API 调用 (主备熔断)
+├── providers/                   # LLM 平台抽象层
+│   └── registry.py              # Provider 注册与热重载
+├── utils/                       # 工具函数
+│   └── logger.py                # 日志系统
+├── models/                      # 本地嵌入模型 (text2vec-base-chinese)
+├── yuki_memory/                 # ChromaDB 向量数据库
+├── skills/                      # 小女仆技能存储
+├── data/                        # 运行时数据
+│   ├── chat_history.json        # 对话历史
+│   ├── yuki_log.txt             # 运行日志
+│   ├── meme_cache.json          # 表情包缓存
+│   └── stickers/                # 本地表情包文件
+├── scripts/                     # 独立工具脚本
+│   └── 03_RAG_Tools/            # 记忆库管理工具
+├── setup.py                     # 一键配置向导
+└── pyproject.toml               # 项目依赖 (uv/pip)
+```
+
+---
+
+## 🚀 快速开始
+
+### 1. 环境准备
+
+- **Python 版本**：≥ 3.10
+- **协议端**：部署 [NapCatQQ](https://github.com/NapCat-Team/NapCatQQ) 并启用 **正向 WebSocket** 服务（默认端口 `3001`）
+
+### 2. 安装与配置
+
+```bash
 git clone https://github.com/Eganchiyu/Yuki-Chan-Bot.git
 cd Yuki-Chan-Bot
 
-# 创建并激活虚拟环境 (推荐)
+# 创建虚拟环境
 python -m venv venv
 source venv/bin/activate  # Windows: venv\Scripts\activate
 
-# 运行一键配置向导
+# 一键配置（安装依赖 + 交互式填写 API Key + 下载嵌入模型）
 python setup.py
 ```
 
-(注：`setup.py` 会自动安装依赖、生成 `.env` 配置文件并下载 RAG 所需的本地嵌入模型 )。
+### 3. 启动
 
-### 3. 运行启动
-
-Bash
-
-```
+```bash
 python main.py
 ```
 
-启动后，按提示选择私聊模式或群聊模式，即可看到 Yuki 成功苏醒 。
-
 ---
 
-## 📅 开发计划 (Roadmap)
+## 📅 开发计划
 
-- [x] **全链路异步化重构**：解决 API 阻塞导致的网络重连崩溃问题 。
-    
-- [x] **冷场主动唤醒与破冰**：基于权威名单的 Sigmoid 欲望决策 。
-    
-- [x] **并行双池检索**：综合关键词 (jieba) 与向量相似度 (ChromaDB) 。
-    
-- [x] **24 小时动态生物钟**：引入高斯、余弦核模拟真实作息 。
-    
-- [x] **无缝 API 熔断降级**：TeaTop 主线路挂掉瞬间切至官方备线 。
-    
-- [x] **自主小女仆系统 (Maid Agent)**：后台自主编写与执行 Python 技能完成复杂任务 。
-    
-- [ ] 🚧 **重构与优化小女仆代码结构，增强安全性与容错率**。
-    
-- [ ] 🚧 **多模态表情包 (Stickers) 系统开发**：实现表情包的入库、理解与动态打分发送 。
-    
-- [ ] 引入生物遗忘曲线：基于活跃时间戳的记忆唤醒与沉底机制。
-    
-- [ ] 接入外部文档知识库查询。
-    
+- [x] 全链路异步化重构
+- [x] 冷场主动唤醒与破冰（Sigmoid 欲望决策）
+- [x] 并行双池检索（关键词 + 向量相似度）
+- [x] 24 小时动态生物钟（高斯活跃峰）
+- [x] 无缝 API 熔断降级
+- [x] 自主小女仆系统（Maid Agent）
+- [x] YAML 热重载配置系统
+- [x] Provider 多平台抽象层
+- [x] 群聊动态开关（静音/唤醒）
+- [x] 系统提示词热同步
+- [ ] 🚧 小女仆代码结构重构，增强安全性与容错率
+- [ ] 🚧 多模态表情包系统完善：入库、理解与动态打分
+- [ ] 引入生物遗忘曲线：基于活跃时间戳的记忆唤醒与沉底
+- [ ] 接入外部文档知识库查询
 
 ---
 
@@ -154,4 +189,4 @@ python main.py
 
 ---
 
-_Last Update: 2026/04 - Eganchiyu (V8.0 Update)_
+_Last Update: 2026/05 - Eganchiyu (V8.0 Update)_
