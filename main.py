@@ -5,6 +5,7 @@ import re
 import time
 import datetime
 import sys
+import json
 
 from core.brain import YukiState
 from core.engine import YukiEngine
@@ -18,11 +19,35 @@ from config import cfg
 from webui import build_ui
 import os
 from utils.logger import setup_logging, get_logger
+from core.prompts import sync_system_prompts
 
 setup_logging(debug=cfg.DEBUG)
 logger = get_logger("main")
+
+# === 群聊动态开关状态管理 ===
+GROUP_STATE_FILE = "data/group_state.json"
+
+def load_group_state():
+    if os.path.exists(GROUP_STATE_FILE):
+        try:
+            with open(GROUP_STATE_FILE, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except Exception as e:
+            logger.warning(f"[System] 读取群聊状态失败: {e}")
+    return {}
+
+def save_group_state(state):
+    try:
+        os.makedirs("data", exist_ok=True)
+        with open(GROUP_STATE_FILE, 'w', encoding='utf-8') as f:
+            json.dump(state, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        logger.error(f"[System] 保存群聊状态失败: {e}")
+
 # 初始化全局变量：消息缓冲和定时任务
 real_time_debounce_time = cfg.DEBOUNCE_TIME
+
+group_active_state = load_group_state()
 
 def check_config():
     """在启动前进行最后的物理检查"""
@@ -48,7 +73,14 @@ async def main_process(chat_id, mode, debounce_flag=True, force_reply=None):
         await asyncio.sleep(real_time_debounce_time)  # 防抖等待，合并短时间内的多条消息
     else:
         await asyncio.sleep(0.5)
-    real_time_debounce_time = cfg.DEBOUNCE_TIME  # 重置防抖时间，准备处理下一轮消息
+
+    # 群已被静音则丢弃遗留消息
+    if mode == "group" and not group_active_state.get(str(chat_id), True):
+        logger.info(f"[System] [{chat_id}] 协程醒来，但群已被静音，丢弃遗留消息并退出。")
+        yuki.pop_buffer(chat_id)
+        return
+
+    real_time_debounce_time = cfg.DEBOUNCE_TIME  # 重置防抖时间
     message_objs = yuki.pop_buffer(chat_id)  # 此时拿到的是 list[dict]
     if not message_objs and not force_reply:
         return
@@ -203,6 +235,32 @@ async def napcat_listen(mode):
                     group_id = data.get("group_id")
                     # 检查目标群白名单
                     if not cfg.TARGET_GROUPS or group_id in cfg.TARGET_GROUPS:
+                        gid_str = str(group_id)
+                        # 开关拦截逻辑
+                        msg_clean = raw_msg.strip()
+                        if msg_clean == '/关闭':
+                            if user_id == cfg.TARGET_QQ:
+                                group_active_state[gid_str] = False
+                                save_group_state(group_active_state)
+                                if group_id in yuki.message_buffer:
+                                    yuki.message_buffer[group_id] = []
+                                if group_id in yuki.buffer_tasks:
+                                    yuki.buffer_tasks[group_id].cancel()
+                                await sender.send(group_id, f"{cfg.ROBOT_NAME.title()} 已进入休眠模式", mode="group")
+                            else:
+                                await sender.send(group_id, "只有主人才能操作哦！", mode="group")
+                            continue
+                        elif msg_clean == '/开启':
+                            if user_id == cfg.TARGET_QQ:
+                                group_active_state[gid_str] = True
+                                save_group_state(group_active_state)
+                                await sender.send(group_id, f"{cfg.ROBOT_NAME.title()} 重新上线", mode="group")
+                            else:
+                                await sender.send(group_id, "只有主人才能操作哦！", mode="group")
+                            continue
+                        if not group_active_state.get(gid_str, True):
+                            continue
+
                         sender_info = data.get("sender", {})
                         name = sender_info.get("card") or sender_info.get("nickname") or "路人"
                         is_fake = name == cfg.MASTER_NAME and user_id != cfg.TARGET_QQ
@@ -237,13 +295,12 @@ async def manage_buffer(chat_id, content, mode, raw_message='', sender_name = ''
         # 定义正反馈触发词
         feedback_words = ["哈", "草", "233", "笑", "蚌埠", "确实", "典", "好图", "偷了"]
         # 如果消息包含触发词，或者群友紧接着也发了一张图（斗图）
-        if any(fw in raw_message for fw in feedback_words) or "[CQ:image" in raw_message:
+        if any(fw in raw_message for fw in feedback_words):
             meme_id = yuki.last_sent_meme.pop(cid_str)  # 弹出记录，防止一张图被无限加分
             if hasattr(engine, 'sticker_manager'):
                 engine.sticker_manager.add_preference(meme_id)
-    # ==================================
-    # --- 新增：只要收到消息，就重置该群的破冰失败计数 ---
-    if cid_str in yuki.ice_break_fail_count:
+    # 清空破冰失败计数器：只要群友发了消息，就认为是积极互动
+    if (cid_str in yuki.ice_break_fail_count) and not is_bot:
         if yuki.ice_break_fail_count[cid_str] > 0:
             logger.info(f"[IceBreak] {cid_str} 收到新消息，重置破冰计数器。")
         yuki.ice_break_fail_count[cid_str] = 0
@@ -264,11 +321,6 @@ async def manage_buffer(chat_id, content, mode, raw_message='', sender_name = ''
         history_manager.append_chat(chat_id, "assistant", "(已发送帮助文档图片)")
         return 
     # 入队
-
-    # 判定是否为机器人（可以根据名称含 BOT，或者特定的 QQ 号判定）
-    is_bot = "BOT" in sender_name or "机器人" in sender_name
-    
-
     if chat_id not in yuki.message_buffer:
         yuki.message_buffer[chat_id] = []
     if (not ("BOT" in sender_name)) or (user_id and user_id == 1390249127):  # 允许特定机器人QQ发起对话
@@ -337,6 +389,7 @@ if __name__ == "__main__":
         sticker_manager = StickerManager()
         # 实例化历史记录管理器
         history_manager = HistoryManager()
+        sync_system_prompts(history_manager, yuki)
         logger.info("[System] 开始初始化记忆系统（RAG）...")
         from modules.memory.rag import MemoryRAG
 
@@ -366,7 +419,7 @@ if __name__ == "__main__":
         logger.info(f"[System] 初始化完成，耗时 {end_time - start_time:.1f} 秒")
         if success: logger.info("[WebUI] 控制面板已在后台线程启动: http://127.0.0.1:1314")
         choice = input("[System] 选择模式：1. 私聊模式  2. 群聊模式（默认）\n请输入数字: ").strip()
-        if choice != "2":
+        if choice != "1":
             # 初始化巡检名单，预载历史中的群聊ID和最后消息时间，确保后台检查能正常工作
             h_dict = history_manager.load()
             for cid in cfg.TARGET_GROUPS:
