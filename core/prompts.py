@@ -34,9 +34,44 @@ def get_summary_prompt():
         f"日记格式要求：\n 不用加标题、天气、颜文字和时间戳，直接正文开头，不要换行。"
     )
 
-VISION_PROMPT = (
-    f"用词或短句描述这个群友发的表情包的描述或表达的情感，不超过15个字。带文字图片输出文字。长段文字直接输出“长段文字”"
-)
+VISION_PROMPT = "用词或短句描述这个群友发的表情包的描述或表达的情感，不超过15个字。带文字图片输出文字。长段文字直接输出“长段文字”"
+
+def sync_system_prompts(history_mgr, yuki_state):
+    """
+    在启动前同步最新的 System Prompt 到历史记录上下文中。
+    防止修改了代码中的 Prompt 但被旧的 chat_history.json 缓存覆盖。
+    """
+    logger.info("[System] 正在同步最新的 System Prompt 到历史记录...")
+    try:
+        history_dict = history_mgr.load()
+        # 将配置中的群组 ID 统一转为字符串，方便与 json 的 key 比对
+        target_groups_str = [str(gid) for gid in cfg.TARGET_GROUPS]
+
+        # 逻辑 1 & 2: 针对 config.yaml 中的群组，进行群组 Prompt 注入或覆写
+        for gid in target_groups_str:
+            group_prompt = yuki_state.get_setting("group")
+            if gid not in history_dict or not history_dict[gid]:
+                history_dict[gid] = [{"role": "system", "content": group_prompt}]
+            elif history_dict[gid][0].get("role") == "system":
+                history_dict[gid][0]["content"] = group_prompt
+            else:
+                history_dict[gid].insert(0, {"role": "system", "content": group_prompt})
+
+        # 逻辑 3: 对 json 内有的记录，但不在 target_groups 里的，认定为私聊注入私聊 Prompt
+        for cid in list(history_dict.keys()):
+            if cid not in target_groups_str:
+                private_prompt = yuki_state.get_setting("private")
+                if not history_dict[cid]:
+                    history_dict[cid] = [{"role": "system", "content": private_prompt}]
+                elif history_dict[cid][0].get("role") == "system":
+                    history_dict[cid][0]["content"] = private_prompt
+                else:
+                    history_dict[cid].insert(0, {"role": "system", "content": private_prompt})
+
+        history_mgr.save(history_dict)
+        logger.info("[System] System Prompt 同步完成！")
+    except Exception as e:
+        logger.error(f"[System] System Prompt 同步发生异常: {e}")
 
 import datetime
 
