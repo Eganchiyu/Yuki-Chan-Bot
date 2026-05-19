@@ -10,6 +10,7 @@ import json
 from core.brain import YukiState
 from core.engine import YukiEngine
 from core.history_manager import HistoryManager
+from core.prompts import sync_system_prompts
 from modules.message.CQProtocol import smart_truncate
 from modules.message.CQParser import CQCodeParser
 from modules.vision.processor import MemeProcessor
@@ -334,7 +335,7 @@ async def manage_buffer(chat_id, content, mode, raw_message='', sender_name = ''
     # 入队
     if chat_id not in yuki.message_buffer:
         yuki.message_buffer[chat_id] = []
-    if (not ("BOT" in sender_name)) or (user_id and user_id == 1390249127):  # 允许特定机器人QQ发起对话
+    if (not ("BOT" in sender_name)) or (user_id and user_id == 1390249127) or (user_id and user_id == 3385516316):  # 允许特定机器人QQ发起对话
         yuki.message_buffer[chat_id].append({
             "name": sender_name,
             "content": content,  # 这是带 【“姓名”】说: 的完整格式
@@ -343,7 +344,7 @@ async def manage_buffer(chat_id, content, mode, raw_message='', sender_name = ''
         })
 
     if cfg.ROBOT_NAME.lower() in raw_message.lower():  # 使用原始文本判断，更准确
-        real_time_debounce_time = 5
+        real_time_debounce_time = 3
     if chat_id in yuki.buffer_tasks: yuki.buffer_tasks[chat_id].cancel()
     yuki.buffer_tasks[chat_id] = asyncio.create_task(main_process(chat_id, mode))
 
