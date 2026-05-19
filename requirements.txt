@@ -17,3 +17,6 @@ opencv-python>=4.8.0
 pyyaml>=6.0
 
 ollama>=0.4.0
+
+pathlib
+pathspec
