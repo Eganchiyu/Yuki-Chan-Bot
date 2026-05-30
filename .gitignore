@@ -1,19 +1,31 @@
-# 忽略整个文件夹
+# IDE 和编辑器配置
 .idea/
-.env
 .vscode/
+
+# 环境变量和虚拟环境
+.env
+.venv/
+
+# Python 缓存
 __pycache__/
-yuki_memory/
+
+# 模型和数据文件
 models/
-data/
-project_for_ai.txt
 models.zip
+data/
+
+# 项目运行时目录
+yuki_memory/
 skills/
 core/skills
 logs/
 core/tasks
-# configs 目录：只保留 README.md，其他全部忽略
+
+# 配置文件目录：只保留 README.md，其他全部忽略
 configs/*
 !configs/README.md
 
-.venv/
+# 项目文档和脚本
+project_for_ai.txt
+start.cmd
+loadNapCat.js
