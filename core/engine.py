@@ -52,11 +52,11 @@ class YukiEngine:
             Yuki_Answer = await self.provider.chat(
                 messages=combined_API_message,
                 model=cfg.LLM_MODEL,
-                temperature=0.7,  # 降低温度，让它说话更稳、更常用
-                top_p=0.75,  # 稍微收窄采样范围，过滤冷门词
+                temperature=0.8,  # 降低温度，让它说话更稳、更常用
+                top_p=0.8,  # 稍微收窄采样范围，过滤冷门词
                 frequency_penalty=0.05,  # 极低的惩罚，允许它说大白话
-                presence_penalty=0.0,  # 不强迫它聊新话题
-                max_tokens=100  # 强制短句，短句更容易显自然
+                presence_penalty=0.2,  # 不强迫它聊新话题
+                max_tokens=220  # 强制短句，短句更容易显自然
             )
             # 清除补全文本
             Yuki_Answer_raw = Yuki_Answer = re.sub(r'\s*FINISHED\s*$', '', Yuki_Answer, flags=re.IGNORECASE)
@@ -233,7 +233,7 @@ class YukiEngine:
         if desire >= 80:
             logger.info(f"[Decision] {chat_id} 欲望爆表({desire}%)，强制回复！")
             return True
-        if desire <= 30:
+        if desire <= 20:
             logger.info(f"[Decision] {chat_id} 欲望低迷({desire}%)，拒绝营业。")
             return False
 
