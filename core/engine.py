@@ -1,19 +1,19 @@
 # core/engine.py
-import json
-import random
-import re
 import asyncio
 import datetime
+import json
+import os
+import random
+import re
+import requests
 import time
 from typing import Any
-from core.prompts import get_base_setting, get_summary_prompt, build_chat_context
+
 from config import cfg
-from core.prompts import build_ice_break_prompt
 from core.maid import maid_evolution_loop
+from core.prompts import build_ice_break_prompt
+from core.prompts import get_base_setting, get_summary_prompt, build_chat_context
 from utils.logger import get_logger
-import os
-import urllib.parse
-import requests
 
 logger = get_logger("engine")
 
