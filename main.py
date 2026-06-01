@@ -5,20 +5,19 @@ import re
 import time
 import datetime
 import sys
-import json
 
 from core.brain import YukiState
 from core.engine import YukiEngine
 from core.history_manager import HistoryManager
 from core.prompts import sync_system_prompts
-from modules.message.CQProtocol import smart_truncate
+from init import load_group_state
+from modules.QQNapcatListen.listen_main import napcat_listen
 from modules.message.CQParser import CQCodeParser
 from modules.vision.processor import MemeProcessor
 from network.ws_connection import BotConnector
 from network.ws_sender import MessageSender
 from config import cfg
 from webui import build_ui
-import os
 from utils.logger import setup_logging, get_logger
 
 setup_logging(debug=cfg.DEBUG)
@@ -27,44 +26,158 @@ logger = get_logger("main")
 # === 新增：群聊动态开关状态管理 ===
 GROUP_STATE_FILE = "data/group_state.json"
 
-def load_group_state():
-    if os.path.exists(GROUP_STATE_FILE):
-        try:
-            with open(GROUP_STATE_FILE, 'r', encoding='utf-8') as f:
-                return json.load(f)
-        except Exception as e:
-            logger.warning(f"[System] 读取群聊状态失败: {e}")
-    return {}
-
-def save_group_state(state):
-    try:
-        os.makedirs("data", exist_ok=True)
-        with open(GROUP_STATE_FILE, 'w', encoding='utf-8') as f:
-            json.dump(state, f, ensure_ascii=False, indent=2)
-    except Exception as e:
-        logger.error(f"[System] 保存群聊状态失败: {e}")
-
 # 初始化全局变量：消息缓冲和定时任务
 real_time_debounce_time = cfg.DEBOUNCE_TIME
 
 group_active_state = load_group_state()
 
-def check_config():
-    """在启动前进行最后的物理检查"""
-    if not os.path.exists("configs/config.yaml"):
-        env_choice = input("检测到尚未进行基础配置，是否现在运行配置向导？(y/n): ")
-        if env_choice.lower() == 'y':
-            from setup import quick_setup
-            quick_setup(0)  # 以刷新模式运行
-        else:
-            logger.warning("请手动运行 python setup.py 后再启动。")
-            sys.exit(0)
+# 插件分为三类：
+# 1. 信息流入类插件： NapcatListen
+# 2. 信息流出类插件： MessageSender
+# 3. 功能性插件： 记忆查询
 
-    required_files = ["configs/config.yaml", "blacklist.txt", "./models/text2vec-base-chinese/config.json"]
-    for f in required_files:
-        if not os.path.exists(f):
-            # 抛出异常，触发下面的错误引导
-            raise FileNotFoundError(f"关键配置文件或模型缺失: {f}")
+class FunctionRegistry:
+    """Function Call 注册中心：扫描、注册、提供 tools 列表"""
+
+    def __init__(self):
+        self._functions = {}  # name -> function_schema
+        self._handlers = {}   # name -> handler_function
+
+    def register(self, schema: dict, handler):
+        """注册一个 function tool"""
+        name = schema["function"]["name"]
+        self._functions[name] = schema
+        self._handlers[name] = handler
+        logger.info(f"[FunctionRegistry] 注册 function: {name}")
+
+    def unregister(self, name: str):
+        """注销一个 function tool"""
+        if name in self._functions:
+            del self._functions[name]
+            del self._handlers[name]
+            logger.info(f"[FunctionRegistry] 注销 function: {name}")
+
+    def get_tools(self) -> list:
+        """获取所有已注册的 tools 列表（用于 LLM 请求）"""
+        return list(self._functions.values())
+
+    def get_handler(self, name: str):
+        """获取指定 function 的执行函数"""
+        return self._handlers.get(name)
+
+    def list_functions(self) -> list:
+        """列出所有已注册的 function 名称"""
+        return list(self._functions.keys())
+
+    def scan_and_register(self, tools_list: list, handlers_dict: dict):
+        """批量扫描并注册 tools（先清空再扫描）"""
+        self._functions.clear()
+        self._handlers.clear()
+        logger.info("[FunctionRegistry] 已清空所有注册")
+        for tool in tools_list:
+            name = tool["function"]["name"]
+            if name in handlers_dict:
+                self.register(tool, handlers_dict[name])
+            else:
+                logger.warning(f"[FunctionRegistry] tool {name} 缺少 handler，跳过注册")
+
+
+
+
+
+
+
+# ==================== 初始化函数 ====================
+
+def initialize_components():
+    """初始化所有组件，返回组件字典"""
+    logger.info("[System] 请确保已运行setup.py进行初始化配置！")
+    logger.info(f"[System] {cfg.ROBOT_NAME.title()} 正在初始化...")
+    start_time = time.time()
+
+    # 加载与Napcat通信的Websocket服务
+    connector = BotConnector(cfg.NAPCAT_WS_URL, cfg.NAPCAT_WS_TOKEN)
+    # 实例化消息发送器
+    sender = MessageSender(connector)
+    # 实例化CQ码处理器
+    parser = CQCodeParser(connector)
+    
+    # 实例化表情处理器
+    meme_processor = MemeProcessor()
+    # 实例化Yuki状态
+    yuki = YukiState()
+    # 实例化历史记录管理器
+    history_manager = HistoryManager()
+    # 更新系统提示词到历史记录中，确保最新的设定被加载（防止被旧记录覆盖）
+    sync_system_prompts(history_manager, yuki)
+    
+    logger.info("[System] 开始初始化记忆系统（RAG）...")
+    from modules.memory.rag import MemoryRAG
+    # 初始化向量记忆库
+    memory_rag = MemoryRAG()
+    
+    # 实例化表情包管理器
+    from modules.stickers.manager import StickerManager
+    sticker_manager = StickerManager()
+    
+    # 实例化Yuki主引擎（内部自动从 ProviderRegistry 获取 default provider）
+    engine = YukiEngine(memory_rag, history_manager, yuki, sender)
+    engine.process_callback = main_process
+    engine.sticker_manager = sticker_manager
+    
+    end_time = time.time()
+    logger.info(f"[System] 初始化完成，耗时 {end_time - start_time:.1f} 秒")
+
+    return {
+        "connector": connector,
+        "sender": sender,
+        "parser": parser,
+        "meme_processor": meme_processor,
+        "yuki": yuki,
+        "history_manager": history_manager,
+        "memory_rag": memory_rag,
+        "sticker_manager": sticker_manager,
+        "engine": engine,
+    }
+
+
+def start_webui():
+    """启动 WebUI，返回是否成功"""
+    try:
+        webui = build_ui()
+        webui.launch(
+            server_name="127.0.0.1",
+            server_port=1314,
+            prevent_thread_lock=True,
+            quiet=True,
+            theme=webui._ui_theme,
+            css=webui._ui_css
+        )
+        logger.info("[WebUI] 控制面板已在后台线程启动: http://127.0.0.1:1314")
+        return True
+    except Exception as e:
+        logger.error(f"[WebUI] 启动失败: {e}")
+        return False
+
+
+def warmup_groups(yuki, history_manager):
+    """预热群组：初始化巡检名单，预载历史中的群聊ID和最后消息时间"""
+    h_dict = history_manager.load()
+    for cid in cfg.TARGET_GROUPS:
+        yuki.last_message_time[str(cid)] = time.time()
+        current_e = yuki.update_energy(str(cid))
+        yuki.update_desire_to_reply(str(cid))
+        logger.info(
+            f"[System] 预热群组 {str(cid)}: 精力 {current_e:.1f}, 初始欲望 {yuki.desire_to_start_topic.get(str(cid), 0)}%")
+    logger.debug(f"已预载 {len(yuki.last_message_time)} 个群组到巡检名单")
+
+
+# 启动主流程 支持热插拔和热重载插件
+async def start_main_process():
+    """启动主流程，监听消息并处理"""
+    # 初始化Yuki引擎
+    pass
+    
 
 async def main_process(chat_id, mode, debounce_flag=True, force_reply=None):
     """处理缓冲中的消息，进行API交互和回复 """
@@ -206,243 +319,68 @@ async def main_process(chat_id, mode, debounce_flag=True, force_reply=None):
         logger.info(f"[{chat_id}] 日记写入完成，全量历史已同步。")
 
 
-async def napcat_listen(mode):
-    # 启动后台常驻任务
-    if mode == "group":
-        asyncio.create_task(yuki.decay_heartbeat())
-    asyncio.create_task(engine.idle_diary_checker())
-    asyncio.create_task(engine.ice_break_monitor())
-    from core.engine import maid_worker
-    asyncio.create_task(maid_worker(engine, yuki, sender, history_manager))
-    logger.info("[System] 已启动后台辅助任务 (日记检查/破冰/精力衰减)")
+# ==================== 资源清理 ====================
 
-    logger.info(f"[System] 准备连接 NapCat 服务端 | 模式: {mode}")
-    while True:
-        try:
-            async for data in connector.listen():
-                if data.get("post_type") != "message":
-                    continue
+_cleanup_done = False
 
-                msg_type = data.get("message_type")
-                raw_msg = data.get("raw_message")
-                user_id = data.get("user_id")
+def _do_cleanup():
+    """同步清理资源：关闭 ProviderRegistry 释放 aiohttp Session"""
+    global _cleanup_done
+    if _cleanup_done:
+        return
+    _cleanup_done = True
+    logger.info("[System] 正在清理资源...")
+    try:
+        cfg._save_raw()
+        logger.info("[System] 配置已自动对齐保存")
+    except Exception as e:
+        logger.error(f"[System] 保存配置时出错: {e}")
+    try:
+        from providers.registry import ProviderRegistry
+        loop = asyncio.new_event_loop()
+        loop.run_until_complete(ProviderRegistry().close_all())
+        loop.close()
+        logger.info("[System] 资源清理完成")
+    except Exception as e:
+        logger.error(f"[System] 清理资源时出错: {e}")
 
-                if mode == "private" and msg_type == "private" and user_id == cfg.TARGET_QQ:
-                    await manage_buffer(user_id, raw_msg, mode)
 
-                elif mode == "group" and msg_type == "group":
-                    group_id = data.get("group_id")
-                    gid_str = str(group_id)
-
-                    # 检查目标群白名单 (config.yaml 中的硬性规定)
-                    if not cfg.TARGET_GROUPS or group_id in cfg.TARGET_GROUPS:
-
-                        # ================= 新增：开关拦截逻辑 =================
-                        msg_clean = raw_msg.strip()
-                        if msg_clean == '/关闭':
-                            # 权限校验：只允许主人(TARGET_QQ)操作，防止群友捣乱
-                            if user_id == cfg.TARGET_QQ:
-                                group_active_state[gid_str] = False
-                                save_group_state(group_active_state)
-                                # ================= 新增：物理切断遗留任务 =================
-                                # 1. 清空当前群的消息缓冲池
-                                if group_id in yuki.message_buffer:
-                                    yuki.message_buffer[group_id] = []
-                                # 2. 如果防抖协程正在倒计时，直接抛出 CancelledError 强制中断
-                                if group_id in yuki.buffer_tasks:
-                                    yuki.buffer_tasks[group_id].cancel()
-                                # ========================================================
-
-                                await sender.send(group_id, f"{cfg.ROBOT_NAME.title()} 已进入休眠模式，不打扰大家啦~",
-                                                  mode="group")
-                            else:
-                                await sender.send(group_id, "只有哥哥大人才能关掉我哦！", mode="group")
-                            continue  # 拦截完成，跳过后续所有处理
-
-                        elif msg_clean == '/开启':
-                            if user_id == cfg.TARGET_QQ:
-                                group_active_state[gid_str] = True
-                                save_group_state(group_active_state)
-                                await sender.send(group_id, f"{cfg.ROBOT_NAME.title()} 重新上线", mode="group")
-                            else:
-                                await sender.send(group_id, "只有哥哥大人才能唤醒我哦！", mode="group")
-                            continue  # 拦截完成，跳过后续所有处理
-
-                        # 状态检查：如果该群被主人标记为 False，则直接无视所有消息（不进缓冲，不消耗精力）
-                        # 默认获取不到值时为 True，代表默认是开启的
-                        if not group_active_state.get(gid_str, True):
-                            continue
-                        # ====================================================
-
-                        sender_info = data.get("sender", {})
-                        name = sender_info.get("card") or sender_info.get("nickname") or "路人"
-                        is_fake = name == cfg.MASTER_NAME and user_id != cfg.TARGET_QQ
-                        if is_fake:
-                            logger.warning(
-                                f"[System] 检测到疑似冒充消息，已替换发送者姓名。原始姓名: {name}, QQ: {user_id}")
-                            name = f"{name}(冒充)"
-                        # 将消息存入缓冲区并触发主进程
-                        await manage_buffer(
-                            group_id,
-                            f"【“{name}”】说: {raw_msg}",
-                            mode,
-                            raw_message=raw_msg,
-                            sender_name=name,
-                            user_id=int(user_id)
-                        )
-
-        except Exception as e:
-            logger.error(f"监听主循环发生非预期崩溃: {e}")
-            logger.info("[System] 5 秒后将尝试重启监听进程...")
-            await asyncio.sleep(5)
-
-async def manage_buffer(chat_id, content, mode, raw_message='', sender_name = '',user_id = None):
-    global real_time_debounce_time
-    cid_str = str(chat_id)
-    # === 新增：捕捉群友正反馈（RLHF） ===
-    # 如果Yuki刚发了表情包，且这句话是群友发的
-    # 判定是否为机器人（可以根据名称含 BOT，或者特定的 QQ 号判定）
-    is_bot = "BOT" in sender_name or "机器人" in sender_name
-    if cid_str in yuki.last_sent_meme and not is_bot:
-        # 定义正反馈触发词
-        feedback_words = ["哈", "草", "233", "笑", "蚌埠", "确实", "典", "好图", "偷了"]
-        # 如果消息包含触发词，或者群友紧接着也发了一张图（斗图）
-        if any(fw in raw_message for fw in feedback_words):
-            meme_id = yuki.last_sent_meme.pop(cid_str)  # 弹出记录，防止一张图被无限加分
-            if hasattr(engine, 'sticker_manager'):
-                engine.sticker_manager.add_preference(meme_id)
-    # 清空破冰失败计数器：只要群友发了消息（不论内容），就认为是积极互动，重置计数器
-    if (cid_str in yuki.ice_break_fail_count) and not is_bot:
-        if yuki.ice_break_fail_count[cid_str] > 0:
-            logger.info(f"[IceBreak] {cid_str} 收到新消息，重置破冰计数器。")
-        yuki.ice_break_fail_count[cid_str] = 0
-
-    if real_time_debounce_time <= 0:
-        real_time_debounce_time = cfg.DEBOUNCE_TIME  # 重置防抖时间，避免长时间关闭防抖导致过度频繁响应
-
-    cid_str = str(chat_id)
-    yuki.last_message_time[str(cid_str)] = time.time()
-
-    content = smart_truncate(content, max_len=cfg.MAX_MESSAGE_LENGTH, suffix='...')
-
-    # --- 拦截帮助指令并存入历史 ---
-    if raw_message in ['help', '/help', 'yuki帮助', 'yuki功能', '帮助', '功能']:
-        await sender.send_local_image(chat_id, "utils/yuki_help.png", mode=mode)
-        logger.info("[System] 已记录并发送帮助图")
-        history_manager.append_chat(chat_id, "user", f"(请求帮助文档: {content})")
-        history_manager.append_chat(chat_id, "assistant", "(已发送帮助文档图片)")
-        return 
-    # 入队
-    if chat_id not in yuki.message_buffer:
-        yuki.message_buffer[chat_id] = []
-    if (not ("BOT" in sender_name)) or (user_id and user_id == 1390249127) or (user_id and user_id == 3385516316):  # 允许特定机器人QQ发起对话
-        yuki.message_buffer[chat_id].append({
-            "name": sender_name,
-            "content": content,  # 这是带 【“姓名”】说: 的完整格式
-            "raw_text": raw_message,  # 这是原始纯文本
-            "is_bot": is_bot
-        })
-
-    if cfg.ROBOT_NAME.lower() in raw_message.lower():  # 使用原始文本判断，更准确
-        real_time_debounce_time = 3
-    if chat_id in yuki.buffer_tasks: yuki.buffer_tasks[chat_id].cancel()
-    yuki.buffer_tasks[chat_id] = asyncio.create_task(main_process(chat_id, mode))
+# ==================== 主程序入口 ====================
 
 if __name__ == "__main__":
     import os
     import atexit
     os.environ.setdefault("NO_PROXY", "127.0.0.1,localhost")
 
-    _cleanup_done = False
-
-    def _do_cleanup():
-        """同步清理资源：关闭 ProviderRegistry 释放 aiohttp Session"""
-        global _cleanup_done
-        if _cleanup_done:
-            return
-        _cleanup_done = True
-        logger.info("[System] 正在清理资源...")
-        try:
-            cfg._save_raw()
-            logger.info("[System] 配置已自动对齐保存")
-        except Exception as e:
-            logger.error(f"[System] 保存配置时出错: {e}")
-        try:
-            from providers.registry import ProviderRegistry
-            loop = asyncio.new_event_loop()
-            loop.run_until_complete(ProviderRegistry().close_all())
-            loop.close()
-            logger.info("[System] 资源清理完成")
-        except Exception as e:
-            logger.error(f"[System] 清理资源时出错: {e}")
-
     atexit.register(_do_cleanup)
 
     try:
-        logger.info("[System] 请确保已运行setup.py进行初始化配置！")
-        logger.info(f"[System] {cfg.ROBOT_NAME.title()} 正在初始化...")
-        start_time = time.time()
-
-        # 加载与Napcat通信的Websocket服务
-        connector = BotConnector(cfg.NAPCAT_WS_URL, cfg.NAPCAT_WS_TOKEN)
-        # 实例化消息发送器
-        sender = MessageSender(connector)
-        # 实例化CQ码处理器
-        parser = CQCodeParser(connector)
+        # 1. 初始化所有组件
+        components = initialize_components()
         
-        # 实例化表情处理器
-        meme_processor = MemeProcessor()
-        # 实例化Yuki状态
-        yuki = YukiState()
-        # 实例化LLM请求器
-        # llm = ApiCall(cfg.LLM_API_KEY, cfg.LLM_BASE_URL)
-        from modules.stickers.manager import StickerManager
+        # 设置全局变量供 main_process 使用
+        connector = components["connector"]
+        sender = components["sender"]
+        parser = components["parser"]
+        meme_processor = components["meme_processor"]
+        yuki = components["yuki"]
+        history_manager = components["history_manager"]
+        memory_rag = components["memory_rag"]
+        engine = components["engine"]
 
-        sticker_manager = StickerManager()
-        # 实例化历史记录管理器
-        history_manager = HistoryManager()
-        # 更新系统提示词到历史记录中，确保最新的设定被加载（防止被旧记录覆盖）
-        sync_system_prompts(history_manager, yuki)
-        logger.info("[System] 开始初始化记忆系统（RAG）...")
-        from modules.memory.rag import MemoryRAG
+        # 2. 启动 WebUI
+        start_webui()
 
-        # 初始化向量记忆库
-        memory_rag = MemoryRAG()
-        # 实例化Yuki主引擎（内部自动从 ProviderRegistry 获取 default provider）
-        engine = YukiEngine(memory_rag, history_manager, yuki, sender)
-        engine.process_callback = main_process
-        engine.sticker_manager = sticker_manager
-        # 在 engine = YukiEngine(...) 之后
-        success = False
-        try:
-            webui = build_ui()
-            webui.launch(
-                server_name="127.0.0.1",
-                server_port=1314,
-                prevent_thread_lock=True,
-                quiet=True,
-                theme=webui._ui_theme,
-                css=webui._ui_css
-            )
-            success = True
-        except Exception as e:
-            success = False
-            logger.error(f"[WebUI] 启动失败: {e}")
-        end_time = time.time()
-        logger.info(f"[System] 初始化完成，耗时 {end_time - start_time:.1f} 秒")
-        if success: logger.info("[WebUI] 控制面板已在后台线程启动: http://127.0.0.1:1314")
+        # 3. 选择运行模式
         choice = input("[System] 选择模式：1. 私聊模式  2. 群聊模式（默认）\n请输入数字: ").strip()
-        if choice != "1":
-            # 初始化巡检名单，预载历史中的群聊ID和最后消息时间，确保后台检查能正常工作
-            h_dict = history_manager.load()
-            for cid in cfg.TARGET_GROUPS:
-                yuki.last_message_time[str(cid)] = time.time()
-                current_e = yuki.update_energy(str(cid))
-                yuki.update_desire_to_reply(str(cid))
-                logger.info(
-                    f"[System] 预热群组 {str(cid)}: 精力 {current_e:.1f}, 初始欲望 {yuki.desire_to_start_topic.get(str(cid), 0)}%")
-            logger.debug(f"已预载 {len(yuki.last_message_time)} 个群组到巡检名单")
-        asyncio.run(napcat_listen("private" if choice == "1" else "group"))
+        mode = "private" if choice == "1" else "group"
+
+        # 4. 群聊模式预热
+        if mode == "group":
+            warmup_groups(yuki, history_manager)
+
+        # 5. 启动消息监听
+        asyncio.run(napcat_listen(mode))
 
     except KeyboardInterrupt:
         logger.info("[System] 收到中断信号，正在退出...")
@@ -461,7 +399,6 @@ if __name__ == "__main__":
 
     except Exception as e:
         logger.critical(f"发生未知致命错误: {e}")
-        # 这里可以选择记录日志
         sys.exit(1)
 
     finally:

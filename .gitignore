@@ -1,18 +1,46 @@
 # IDE 和编辑器配置
 .idea/
 .vscode/
+*.swp
+*.swo
+*~
 
 # 环境变量和虚拟环境
 .env
+.env.*
 .venv/
+venv/
+ENV/
 
 # Python 缓存
 __pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
 
 # 模型和数据文件
 models/
 models.zip
 data/
+*.db
+*.sqlite
+*.sqlite3
 
 # 项目运行时目录
 yuki_memory/
@@ -20,12 +48,36 @@ skills/
 core/skills
 logs/
 core/tasks
+*.log
 
 # 配置文件目录：只保留 README.md，其他全部忽略
 configs/*
 !configs/README.md
 
+# 敏感文件
+*.key
+*.pem
+*.secret
+secrets.yaml
+secrets.yml
+
 # 项目文档和脚本
 project_for_ai.txt
 start.cmd
 loadNapCat.js
+
+# 操作系统文件
+.DS_Store
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# 临时文件
+*.tmp
+*.temp
+*.bak
+*.backup
+
+# UV 包管理器
+.uv/
+uv.lock
