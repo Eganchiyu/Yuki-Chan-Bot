@@ -63,8 +63,8 @@ YukiV6 是一个基于 Python 异步架构的 QQ 智能助手系统，功能丰�
 | TD-01 | 代码质量 | engine.py 97 行注释代码块（GPT-SoVITS） | 中 | core/engine.py | 删除或迁移至独立分支 |
 | TD-02 | 代码质量 | brain.py 28 行旧版生物钟函数 | 低 | core/brain.py | 直接删除 |
 | TD-03 | 代码质量 | scripts/ 28 行旧版 main 函数 | 低 | scripts/ | 直接删除 |
-| TD-04 | 代码质量 | `get_nested` 函数重复 4 次 | 中 | config.py, setup.py, webui.py | 提取至 utils/ |
-| TD-05 | 代码质量 | `set_nested` 函数重复 4 次（setup.py 内 3 次） | 中 | setup.py, webui.py | 提取至 utils/ |
+| TD-04 | 代码质量 | `get_nested` 函数重复 4 次 | 中 | config.py, setup.py | 提取至 utils/ |
+| TD-05 | 代码质量 | `set_nested` 函数重复 4 次（setup.py 内 3 次） | 中 | setup.py | 提取至 utils/ |
 | TD-06 | 代码质量 | `label.py` 完全复制粘贴 194 行 | 中 | modules/, scripts/ | 删除副本，统一引用 |
 | TD-07 | 代码质量 | `get_smooth_time_weight` 重复 3 次 | 中 | core/brain.py, scripts/ | 删除 test 版本和脚本副本 |
 | TD-08 | 代码质量 | 5 处裸 `except:` 子句 | 高 | core/maid.py, setup.py, scripts/ | 替换为具体异常类型 |

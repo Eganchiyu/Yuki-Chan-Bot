@@ -20,7 +20,6 @@ YukiV6/
 ├── main.py                    # 主程序入口：初始化、启动流程
 ├── config.py                  # 配置管理：YAML 配置读写
 ├── init.py                    # 初始化工具：群组状态加载
-├── webui.py                   # WebUI 管理面板
 ├── setup.py                   # 一键安装/配置脚本
 │
 ├── core/                      # 核心业务逻辑

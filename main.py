@@ -17,7 +17,6 @@ from modules.vision.processor import MemeProcessor
 from network.ws_connection import BotConnector
 from network.ws_sender import MessageSender
 from config import cfg
-from webui import build_ui
 from utils.logger import setup_logging, get_logger
 
 setup_logging(debug=cfg.DEBUG)
@@ -139,25 +138,6 @@ def initialize_components():
         "sticker_manager": sticker_manager,
         "engine": engine,
     }
-
-
-def start_webui():
-    """启动 WebUI，返回是否成功"""
-    try:
-        webui = build_ui()
-        webui.launch(
-            server_name="127.0.0.1",
-            server_port=1314,
-            prevent_thread_lock=True,
-            quiet=True,
-            theme=webui._ui_theme,
-            css=webui._ui_css
-        )
-        logger.info("[WebUI] 控制面板已在后台线程启动: http://127.0.0.1:1314")
-        return True
-    except Exception as e:
-        logger.error(f"[WebUI] 启动失败: {e}")
-        return False
 
 
 def warmup_groups(yuki, history_manager):
@@ -368,18 +348,15 @@ if __name__ == "__main__":
         memory_rag = components["memory_rag"]
         engine = components["engine"]
 
-        # 2. 启动 WebUI
-        start_webui()
-
-        # 3. 选择运行模式
+        # 2. 选择运行模式
         choice = input("[System] 选择模式：1. 私聊模式  2. 群聊模式（默认）\n请输入数字: ").strip()
         mode = "private" if choice == "1" else "group"
 
-        # 4. 群聊模式预热
+        # 3. 群聊模式预热
         if mode == "group":
             warmup_groups(yuki, history_manager)
 
-        # 5. 启动消息监听
+        # 4. 启动消息监听
         asyncio.run(napcat_listen(mode))
 
     except KeyboardInterrupt:

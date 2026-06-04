@@ -18,6 +18,12 @@
   - 系统退化至使用配置文件直接管理 API 参数
   - 更新 `README.md`、`docs/architecture.md` 同步文档
 
+- **移除 WebUI 管理面板**：
+  - 删除 `webui.py` 文件（Gradio WebUI 配置面板）
+  - 从 `main.py` 中移除 `start_webui()` 函数及其调用
+  - 从 `main.py` 中移除 `from webui import build_ui` 导入
+  - 简化主程序启动流程（步骤编号从 5 步减少到 4 步）
+
 ---
 
 ## [未发布] - 2026-06-01
