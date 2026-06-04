@@ -2,7 +2,10 @@ import json
 import os
 import sys
 
-from main import GROUP_STATE_FILE, logger
+from utils.logger import get_logger
+
+GROUP_STATE_FILE = "data/group_state.json"
+logger = get_logger("init")
 
 
 def load_group_state():

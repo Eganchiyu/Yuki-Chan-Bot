@@ -533,6 +533,91 @@ class Config:
         return self.debug
 
     @property
+    def INITIAL_ENERGY(self) -> int:
+        """初始精力值"""
+        return self.energy.initial
+
+    @property
+    def MAX_ENERGY(self) -> float:
+        """最大精力值"""
+        return self.energy.max
+
+    @property
+    def RECOVERY_PER_MIN(self) -> float:
+        """每分钟恢复精力值"""
+        return self.energy.recovery_per_min
+
+    @property
+    def COST_PER_REPLY(self) -> int:
+        """每次回复消耗精力值"""
+        return self.energy.cost_per_reply
+
+    @property
+    def MIN_ACTIVE_ENERGY(self) -> int:
+        """低活跃精力阈值"""
+        return self.energy.min_active
+
+    @property
+    def SENSITIVITY(self) -> float:
+        """注意力敏感度"""
+        return self.attention.sensitivity
+
+    @property
+    def DECAY_LEVEL(self) -> float:
+        """注意力衰减系数"""
+        return self.attention.decay_level
+
+    @property
+    def SIGMOID_CENTRE(self) -> float:
+        """Sigmoid 中心点"""
+        return self.attention.sigmoid_centre
+
+    @property
+    def SIGMOID_ALPHA(self) -> float:
+        """Sigmoid 陡峭度"""
+        return self.attention.sigmoid_alpha
+
+    @property
+    def DIARY_IDLE_SECONDS(self) -> int:
+        """空闲日记触发时间"""
+        return self.diary.idle_seconds
+
+    @property
+    def DIARY_MIN_TURNS(self) -> int:
+        """日记最小轮数"""
+        return self.diary.min_turns
+
+    @property
+    def DIARY_MAX_LENGTH(self) -> int:
+        """历史强制总结长度"""
+        return self.diary.max_length
+
+    @property
+    def KEEP_LAST_DIALOGUE(self) -> int:
+        """保留近期对话条数"""
+        return self.rag.keep_last_dialogue
+
+    @property
+    def RETRIEVAL_TOP_K(self) -> int:
+        """RAG 默认检索条数"""
+        return self.rag.retrieval_top_k
+
+    @property
+    def DEBOUNCE_TIME(self) -> int:
+        """消息防抖时间"""
+        return self.timing.debounce_time
+
+    @property
+    def MAX_MESSAGE_LENGTH(self) -> int:
+        """单条消息最大长度"""
+        return self.max_message_length
+
+    @property
+    def MAX_CONCURRENT_MEME(self) -> int:
+        """最大并发表情包处理数"""
+        return self.max_concurrent_meme
+
+    @property
     def REQUEST_TIMEOUT(self):
         """请求超时配置（aiohttp.ClientTimeout）"""
         import aiohttp
