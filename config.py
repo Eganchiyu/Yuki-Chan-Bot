@@ -27,12 +27,9 @@ _ATTR_MAP = {
     "KEEP_LAST_DIALOGUE":  (("rag", "keep_last_dialogue"), 10, "保留的近期对话条数（短期记忆）"),
 
     # API
-    "LLM_PLATFORM":          (("api", "llm_platform"), "deepseek", "首选 LLM 平台名称（deepseek/dashscope/openai）"),
-    "BACKUP_PLATFORM":       (("api", "backup_platform"), "deepseek", "备选 LLM 平台名称"),
-    "VISION_PLATFORM":       (("api", "vision_platform"), "dashscope", "视觉模型平台名称"),
-    "LLM_BASE_URL":          (("api", "llm_base_url"), "", "可选：覆盖首选平台内置 API 地址"),
-    "BACKUP_BASE_URL":       (("api", "backup_base_url"), "", "可选：覆盖备选平台内置 API 地址"),
-    "IMAGE_PROCESS_API_URL": (("api", "image_process_url"), "", "可选：覆盖视觉平台内置 API 地址"),
+    "LLM_BASE_URL":          (("api", "llm_base_url"), "https://api.deepseek.com/v1", "首选 LLM API 地址"),
+    "BACKUP_BASE_URL":       (("api", "backup_base_url"), "https://api.deepseek.com/v1", "备选 LLM API 地址"),
+    "IMAGE_PROCESS_API_URL": (("api", "image_process_url"), "https://dashscope.aliyuncs.com/compatible-mode/v1", "视觉模型 API 地址"),
     "LLM_API_KEY":           (("api", "llm_api_key"), "", "首选 LLM API Key"),
     "BACKUP_API_KEY":        (("api", "backup_api_key"), "", "备选 API Key（留空则使用 llm_api_key）"),
     "IMAGE_PROCESS_API_KEY": (("api", "image_process_api_key"), "", "图像处理 API Key"),

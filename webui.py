@@ -1,14 +1,8 @@
 import gradio as gr
 from config import cfg, _ATTR_MAP, _SECTION_HEADERS
-from utils.llm_client import AVAILABLE_PLATFORMS
 import logging
 
 logger = logging.getLogger("main")
-
-
-def _get_platform_options():
-    """获取可用平台列表。"""
-    return AVAILABLE_PLATFORMS
 
 
 def get_nested(data, path):
@@ -36,7 +30,6 @@ def load_config():
 
 
 # ================= 核心：兼容深浅模式的拟物化 CSS =================
-# 不再强制写死白色/黑色，完全依赖原生主题变量，只做圆角和阴影的结构化塑形
 modern_css = """
 /* 隐藏底部不需要的 Footer */
 footer { display: none !important; }
@@ -58,7 +51,6 @@ input[type="text"]:focus, input[type="password"]:focus, input[type="number"]:foc
     box-shadow: 0 0 0 3px var(--color-accent-subtle) !important;
 }
 /* 主按钮动效 */
-/* 主按钮：果冻粉渐变与动效 */
 button.primary {
     border-radius: 14px !important;
     font-weight: 600 !important;
@@ -75,33 +67,26 @@ button.primary:active { transform: scale(0.97) !important; }
 """
 
 
-def _make_platform_panel(
+def _make_api_panel(
     demo,
     raw_config,
     components_map,
     ordered_keys,
-    platform_options,
     title,
-    platform_key,
+    url_key,
     api_key_key,
-    url_key_key,
-    default_platform,
-    platform_reg_name=None,
-    api_key_reg_name=None,
     url_reg_name=None,
+    api_key_reg_name=None,
 ):
-    """创建一个平台配置面板（Accordion），包含平台、Key、URL（条件显示）。"""
-    platform_val = raw_config.get("api", {}).get(platform_key, default_platform)
+    """创建一个 API 配置面板（Accordion），包含 URL 和 Key。"""
+    url_val = raw_config.get("api", {}).get(url_key, "")
     api_key_val = raw_config.get("api", {}).get(api_key_key, "")
-    url_val = raw_config.get("api", {}).get(url_key_key, "")
 
-    # 确保 value 在 choices 中
-    dropdown_value = platform_val if platform_val in platform_options else default_platform
     with gr.Accordion(title, open=True, elem_classes="accordion"):
-        platform_dd = gr.Dropdown(
-            label="平台名称",
-            choices=platform_options,
-            value=dropdown_value,
+        url_tb = gr.Textbox(
+            label="API 地址",
+            value=url_val,
+            max_lines=1,
         )
         api_key_tb = gr.Textbox(
             label="API Key",
@@ -109,20 +94,13 @@ def _make_platform_panel(
             type="password",
             max_lines=1,
         )
-        url_tb = gr.Textbox(
-            label="自定义 API 地址（仅在平台选择 custom 时生效）",
-            value=url_val,
-            max_lines=1,
-        )
 
-    # 注册到映射（使用 _ATTR_MAP 中的字段名，确保保存时能匹配）
-    components_map[platform_reg_name or platform_key.upper()] = platform_dd
+    # 注册到映射
+    components_map[url_reg_name or url_key.upper()] = url_tb
     components_map[api_key_reg_name or api_key_key.upper()] = api_key_tb
-    components_map[url_reg_name or url_key_key.upper()] = url_tb
     ordered_keys.extend([
-        platform_reg_name or platform_key.upper(),
+        url_reg_name or url_key.upper(),
         api_key_reg_name or api_key_key.upper(),
-        url_reg_name or url_key_key.upper(),
     ])
 
 
@@ -130,13 +108,12 @@ def build_ui():
     raw_config = load_config()
     components_map = {}
     ordered_keys = []
-    platform_options = _get_platform_options()
 
-    # 使用自带的柔和主题，完美支持右上角的 Dark Mode 切换
+    # 使用自带的柔和主题
     theme = gr.themes.Soft(
-        primary_hue="pink",  # 主色调：粉色
-        secondary_hue="rose",  # 次要色调：玫瑰粉
-        neutral_hue="stone",  # 中性底色：偏暖的石灰色（比冷灰色更搭粉色）
+        primary_hue="pink",
+        secondary_hue="rose",
+        neutral_hue="stone",
         font=[gr.themes.GoogleFont("Inter"), "system-ui", "sans-serif"]
     )
 
@@ -167,43 +144,34 @@ def build_ui():
                 )
                 components_map["robot_name"] = rn
                 components_map["master_name"] = mn
-                # ================= 瀑布流配置区 =================
                 ordered_keys.extend(["robot_name", "master_name"])
 
-        # ================= API 平台配置（三个独立面板） =================
-        _make_platform_panel(
-            demo, raw_config, components_map, ordered_keys, platform_options,
-            title="🤖 首选 LLM 平台",
-            platform_key="llm_platform",
+        # ================= API 配置（三个独立面板） =================
+        _make_api_panel(
+            demo, raw_config, components_map, ordered_keys,
+            title="🤖 首选 LLM",
+            url_key="llm_base_url",
             api_key_key="llm_api_key",
-            url_key_key="llm_base_url",
-            default_platform="deepseek",
         )
-        _make_platform_panel(
-            demo, raw_config, components_map, ordered_keys, platform_options,
-            title="🛡️ 备用 LLM 平台",
-            platform_key="backup_platform",
+        _make_api_panel(
+            demo, raw_config, components_map, ordered_keys,
+            title="🛡️ 备用 LLM",
+            url_key="backup_base_url",
             api_key_key="backup_api_key",
-            url_key_key="backup_base_url",
-            default_platform="deepseek",
         )
-        _make_platform_panel(
-            demo, raw_config, components_map, ordered_keys, platform_options,
-            title="👁️ 视觉模型平台",
-            platform_key="vision_platform",
+        _make_api_panel(
+            demo, raw_config, components_map, ordered_keys,
+            title="👁️ 视觉模型",
+            url_key="image_process_url",
             api_key_key="image_process_api_key",
-            url_key_key="image_process_url",
-            default_platform="dashscope",
             url_reg_name="IMAGE_PROCESS_API_URL",
         )
 
         # ================= 其余配置（自动遍历） =================
         for key, header in _SECTION_HEADERS.items():
-            # 先把属于这个 section 的配置项找出来
             current_items = [
                 (name, item) for name, item in _ATTR_MAP.items() if item[0][0] == key
             ]
-            # 【关键修复】如果列表是空的（比如 robot_name 已经被我们在顶部处理了），直接跳过，不画空壳！
             if not current_items:
                 continue
 
@@ -282,16 +250,18 @@ def build_ui():
 
                 set_nested(new_config, path, val)
 
-            # 非 custom 平台自动清空对应的 base_url，避免旧 URL 干扰新平台
-            _PLATFORM_URL_MAP = {
-                "LLM_PLATFORM": ("LLM_BASE_URL", ("api", "llm_base_url")),
-                "BACKUP_PLATFORM": ("BACKUP_BASE_URL", ("api", "backup_base_url")),
-                "VISION_PLATFORM": ("IMAGE_PROCESS_API_URL", ("api", "image_process_url")),
+            # 手动处理 API 面板的字段（不在 _ATTR_MAP 中的 key 映射）
+            api_field_map = {
+                "LLM_BASE_URL": ("api", "llm_base_url"),
+                "BACKUP_BASE_URL": ("api", "backup_base_url"),
+                "IMAGE_PROCESS_API_URL": ("api", "image_process_url"),
+                "LLM_API_KEY": ("api", "llm_api_key"),
+                "BACKUP_API_KEY": ("api", "backup_api_key"),
+                "IMAGE_PROCESS_API_KEY": ("api", "image_process_api_key"),
             }
-            for plat_key, (url_key, url_path) in _PLATFORM_URL_MAP.items():
-                plat_val = input_data.get(plat_key, "")
-                if plat_val != "custom":
-                    set_nested(new_config, url_path, "")
+            for field_name, path in api_field_map.items():
+                if field_name in input_data:
+                    set_nested(new_config, path, input_data[field_name])
 
             cfg._raw = new_config
             cfg._save_raw()

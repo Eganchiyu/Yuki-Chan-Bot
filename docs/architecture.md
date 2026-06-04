@@ -51,17 +51,9 @@ YukiV6/
 │   ├── ws_connection.py       # WebSocket 连接管理
 │   └── ws_sender.py           # 消息发送器
 │
-├── providers/                 # LLM Provider 层
-│   ├── base.py                # Provider 基类
-│   ├── registry.py            # Provider 注册中心（单例）
-│   ├── fallback.py            # 故障转移 Provider
-│   ├── openai_compatible.py   # OpenAI 兼容 Provider
-│   ├── deepseek.py            # DeepSeek Provider
-│   ├── dashscope.py           # 阿里灵积 Provider
-│   └── ytea.py                # YTea Provider
-│
 ├── utils/                     # 工具函数
 │   ├── logger.py              # 日志系统
+│   ├── llm_client.py          # LLM 客户端（含主备故障转移）
 │   └── download_model.py      # 模型下载工具
 │
 ├── scripts/                   # 脚本工具
@@ -259,44 +251,26 @@ maid_task_queue: asyncio.Queue     # 小女仆任务队列
 
 ---
 
-### 3.9 providers/ - LLM Provider 层
-
-#### 架构设计
-
-```
-ProviderRegistry (单例)
-    ├── DeepSeekProvider
-    ├── DashScopeProvider
-    ├── OpenAICompatibleProvider
-    └── FallbackProvider (故障转移)
-```
-
-#### registry.py - Provider 注册中心
-
-**类**：`ProviderRegistry`（单例）
+### 3.9 utils/llm_client.py - LLM 客户端
 
 **职责**：
-- 自动发现 Provider 模块
-- Provider 生命周期管理
-- 配置热重载
+- 发送 OpenAI 兼容格式的对话补全请求
+- 主备故障转移（熔断 → 切换备用 → 120 秒自动恢复）
+- 全局 aiohttp Session TCP 连接复用
+- 平台 URL 解析与参数适配
 
-**特性**：
-- 自动扫描 providers 包下的所有模块
-- 读取 `PLATFORM_NAME` 完成注册
-- 支持配置热重载
+**关键函数**：
+- `chat_completion()`: 核心 HTTP 调用
+- `llm_chat()`: 默认对话接口（含主备故障转移）
+- `vision_chat()`: 视觉模型对话接口
+- `close_global_session()`: 资源清理
 
-#### base.py - Provider 基类
-
-**抽象方法**：
-- `chat()`: 对话补全
-- `close()`: 关闭连接
-
-#### fallback.py - 故障转移 Provider
-
-**职责**：
-- 主 Provider 失败时自动切换
-- 多 Provider 轮询
-- 错误日志记录
+**支持的平台**：
+- DeepSeek (`https://api.deepseek.com/v1`)
+- DashScope (`https://dashscope.aliyuncs.com/compatible-mode/v1`)
+- YTea (`https://api.ytea.top/v1`)
+- OpenAI (`https://api.openai.com/v1`)
+- 自定义平台（通过配置文件指定 URL）
 
 ---
 
@@ -409,7 +383,6 @@ cfg (全局单例)
 
 以下组件使用单例模式：
 - `MemoryRAG`: RAG 记忆系统
-- `ProviderRegistry`: Provider 注册中心
 
 ```python
 class MemoryRAG:
@@ -434,7 +407,7 @@ class MemoryRAG:
 
 ### 5.4 故障转移模式
 
-- `FallbackProvider`: Provider 故障自动切换
+- `llm_client.py` 内置主备故障转移逻辑
 
 ---
 
@@ -457,8 +430,8 @@ from main import yuki, engine, sender, history_manager, logger, connector, group
 
 ### 6.3 配置热重载
 
-- `ProviderRegistry` 支持配置热重载
 - `MemoryRAG` 支持屏蔽词热重载
+- LLM 客户端在每次调用时直接从 config 读取最新参数
 - 其他配置需要重启生效
 
 ### 6.4 内存管理

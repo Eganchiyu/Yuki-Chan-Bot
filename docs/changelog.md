@@ -7,6 +7,19 @@
 
 ---
 
+## [未发布] - 2026-06-04
+
+### 变更
+- **移除 Provider 模块，内联 LLM 客户端逻辑**：
+  - 删除 `providers/` 目录及全部 9 个文件（base、registry、fallback、openai_compatible、deepseek、dashscope、ytea）
+  - 新增 `utils/llm_client.py`，内联所有 provider 功能
+  - 保留主备故障转移逻辑（熔断 → 切换备用 → 120 秒自动恢复）
+  - 保留全局 aiohttp Session TCP 连接复用
+  - 系统退化至使用配置文件直接管理 API 参数
+  - 更新 `README.md`、`docs/architecture.md` 同步文档
+
+---
+
 ## [未发布] - 2026-06-01
 
 ### 新增

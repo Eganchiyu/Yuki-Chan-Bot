@@ -115,9 +115,8 @@ YukiV6/
 │   ├── ws_connection.py         # NapCat WebSocket 连接
 │   ├── ws_sender.py             # 消息发送
 │   └── api_request.py           # LLM API 调用 (主备熔断)
-├── providers/                   # LLM 平台抽象层
-│   └── registry.py              # Provider 注册与热重载
 ├── utils/                       # 工具函数
+│   ├── llm_client.py            # LLM 客户端（含主备故障转移）
 │   └── logger.py                # 日志系统
 ├── models/                      # 本地嵌入模型 (text2vec-base-chinese)
 ├── yuki_memory/                 # ChromaDB 向量数据库
@@ -173,7 +172,7 @@ python main.py
 - [x] 无缝 API 熔断降级
 - [x] 自主小女仆系统（Maid Agent）
 - [x] YAML 热重载配置系统
-- [x] Provider 多平台抽象层
+- [x] 简化 LLM 客户端（内联 provider 逻辑）
 - [x] 群聊动态开关（静音/唤醒）
 - [x] 系统提示词热同步
 - [ ] 🚧 小女仆代码结构重构，增强安全性与容错率

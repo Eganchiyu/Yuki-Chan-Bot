@@ -2,7 +2,6 @@
 # 简化版 LLM 客户端 —— 直接通过配置文件管理 API 参数
 """
 替代原 providers 模块，内联所有 provider 逻辑。
-- 平台 URL 解析
 - 主备故障转移
 - 全局 aiohttp Session 复用
 - 平台参数适配（sanitize_payload）
@@ -17,17 +16,6 @@ from utils.logger import get_logger
 
 logger = get_logger("llm_client")
 
-# 平台名称 -> 默认 API 基地址
-_PLATFORM_URLS: Dict[str, str] = {
-    "deepseek": "https://api.deepseek.com/v1",
-    "dashscope": "https://dashscope.aliyuncs.com/compatible-mode/v1",
-    "ytea": "https://api.ytea.top/v1",
-    "openai": "https://api.openai.com/v1",
-}
-
-# 可用平台列表（供 WebUI 等外部模块使用）
-AVAILABLE_PLATFORMS = sorted(set(list(_PLATFORM_URLS.keys()) + ["custom"]))
-
 # 全局 aiohttp Session（TCP 连接复用）
 _global_session: Optional[aiohttp.ClientSession] = None
 
@@ -39,23 +27,25 @@ _fallback_state: Dict[str, Any] = {
 }
 
 
-def _resolve_base_url(platform: str, override_url: str = "") -> str:
-    """根据平台名称解析 API 基地址。custom 平台使用 override_url。"""
-    p = (platform or "").lower().strip()
-    if p == "custom":
-        return (override_url or "").rstrip("/")
-    url = _PLATFORM_URLS.get(p, "")
-    return url.rstrip("/") if url else ""
-
-
 def _sanitize_payload(model: str, payload: Dict[str, Any]) -> Dict[str, Any]:
     """平台参数适配：清理/转换不兼容参数。"""
+    # 仅对 OpenAI 推理模型（o1/o3）添加 reasoning_effort
     if cfg.DISABLE_THINKING and "reasoning_effort" not in payload:
-        payload["reasoning_effort"] = "low"
+        model_lower = (model or "").lower()
+        if model_lower.startswith("o1") or model_lower.startswith("o3"):
+            payload["reasoning_effort"] = "low"
     # DashScope 视觉模型不支持 response_format
     if model and "vl" in model.lower() and "response_format" in payload:
         del payload["response_format"]
     return payload
+
+
+def _normalize_url(url: str) -> str:
+    """规范化 URL：移除末尾斜杠和可能的 /chat/completions 后缀。"""
+    url = (url or "").rstrip("/")
+    if url.endswith("/chat/completions"):
+        url = url[: -len("/chat/completions")]
+    return url
 
 
 async def _get_global_session() -> aiohttp.ClientSession:
@@ -98,11 +88,7 @@ async def chat_completion(
     """
     session = await _get_global_session()
 
-    # 处理 base_url 末尾可能带的 /chat/completions
-    url = (base_url or "").rstrip("/")
-    if url.endswith("/chat/completions"):
-        url = url[: -len("/chat/completions")]
-    endpoint = f"{url}/chat/completions"
+    endpoint = f"{_normalize_url(base_url)}/chat/completions"
 
     headers = {
         "Authorization": f"Bearer {api_key}",
@@ -138,7 +124,7 @@ async def llm_chat(
 ) -> str:
     """
     默认 LLM 对话接口（含主备故障转移）。
-    自动使用配置中的首选/备选平台和密钥。
+    自动使用配置中的首选/备选 API 参数。
 
     Args:
         messages: OpenAI 格式的消息列表
@@ -160,9 +146,8 @@ async def llm_chat(
     # 策略 1：正常状态下优先尝试主线路
     if not state["is_degraded"]:
         try:
-            base_url = _resolve_base_url(cfg.LLM_PLATFORM, cfg.LLM_BASE_URL)
             return await chat_completion(
-                base_url=base_url,
+                base_url=cfg.LLM_BASE_URL,
                 api_key=cfg.LLM_API_KEY,
                 messages=messages,
                 model=model or cfg.LLM_MODEL,
@@ -170,21 +155,15 @@ async def llm_chat(
                 **kwargs,
             )
         except Exception as e:
-            logger.warning(
-                f"[LLM] 主线路 ({cfg.LLM_PLATFORM}) 失效: {e}，"
-                f"触发熔断并切换备用"
-            )
+            logger.warning(f"[LLM] 主线路失效: {e}，触发熔断并切换备用")
             state["is_degraded"] = True
             state["last_fail_time"] = time.time()
 
     # 策略 2：备用线路
     try:
-        backup_key = cfg.BACKUP_API_KEY
-        if not backup_key and cfg.BACKUP_PLATFORM == cfg.LLM_PLATFORM:
-            backup_key = cfg.LLM_API_KEY
-        base_url = _resolve_base_url(cfg.BACKUP_PLATFORM, cfg.BACKUP_BASE_URL)
+        backup_key = cfg.BACKUP_API_KEY or cfg.LLM_API_KEY
         return await chat_completion(
-            base_url=base_url,
+            base_url=cfg.BACKUP_BASE_URL,
             api_key=backup_key,
             messages=messages,
             model=model or cfg.BACKUP_MODEL,
@@ -192,7 +171,7 @@ async def llm_chat(
             **kwargs,
         )
     except Exception as e:
-        logger.error(f"[LLM] 备用线路 ({cfg.BACKUP_PLATFORM}) 也失效: {e}")
+        logger.error(f"[LLM] 备用线路也失效: {e}")
         return _get_fallback_message()
 
 
@@ -203,7 +182,7 @@ async def vision_chat(
 ) -> str:
     """
     视觉模型对话接口。
-    使用配置中的视觉平台和密钥。
+    使用配置中的视觉 API 参数。
 
     Args:
         messages: OpenAI 格式的消息列表
@@ -213,9 +192,8 @@ async def vision_chat(
     Returns:
         模型生成的文本
     """
-    base_url = _resolve_base_url(cfg.VISION_PLATFORM, cfg.IMAGE_PROCESS_API_URL)
     return await chat_completion(
-        base_url=base_url,
+        base_url=cfg.IMAGE_PROCESS_API_URL,
         api_key=cfg.IMAGE_PROCESS_API_KEY,
         messages=messages,
         model=model or cfg.VISION_MODEL,
