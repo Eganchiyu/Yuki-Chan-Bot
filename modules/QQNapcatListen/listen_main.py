@@ -159,6 +159,9 @@ async def manage_buffer(chat_id, content, mode, raw_message='', sender_name='', 
 
     if cfg.ROBOT_NAME.lower() in raw_message.lower():
         real_time_debounce_time = 3
-    if chat_id in yuki.buffer_tasks:
-        yuki.buffer_tasks[chat_id].cancel()
+
+    current_task = yuki.buffer_tasks.get(chat_id)
+    if current_task and not current_task.done():
+        logger.info(f"[Pipeline] {cid_str} 管道运行中，新消息已入队等待合并处理。")
+        return
     yuki.buffer_tasks[chat_id] = asyncio.create_task(main_process(chat_id, mode))

@@ -10,10 +10,12 @@ import time
 from typing import Any
 
 from config import cfg
-from core.maid import maid_evolution_loop
+from core.maid import MaidCapabilityBoundary, build_maid_report, build_maid_task, maid_evolution_loop
 from core.prompts import build_ice_break_prompt
 from core.prompts import get_base_setting, get_summary_prompt, build_chat_context
-from utils.llm_client import llm_chat
+from core.toolchain import FunctionRegistry, ToolCallManager, ToolContext
+from core.tools import TOOL_HANDLERS, TOOL_SCHEMAS
+from utils.llm_client import llm_chat, llm_chat_raw
 from utils.logger import get_logger
 
 logger = get_logger("engine")
@@ -28,6 +30,107 @@ class YukiEngine:
         self.maid = None  # 后面再赋值
         self.process_callback = None  # 预留回调接口
         self.sticker_manager = None
+        self.tool_registry = FunctionRegistry()
+        self.tool_registry.scan_and_register(TOOL_SCHEMAS, TOOL_HANDLERS)
+        self.tool_manager = ToolCallManager(self.tool_registry)
+
+    async def _chat_with_tools(self, chat_id, combined_text, history_dict, mode, messages):
+        """执行支持多轮工具调用的 LLM 对话。"""
+        context = ToolContext(
+            chat_id=str(chat_id),
+            mode=mode,
+            history_dict=history_dict,
+            combined_text=combined_text,
+            engine=self,
+        )
+        self.tool_manager.start_session(str(chat_id), combined_text)
+        tool_messages = list(messages)
+        reply_parts = []
+
+        def collect_reply(content):
+            """收集工具链期间 Yuki 产生的可见回复。"""
+            if not content:
+                return
+            clean_content = re.sub(r'\s*FINISHED\s*$', '', content, flags=re.IGNORECASE).strip()
+            clean_content = re.sub(r'<布局>.*?</布局>', '', clean_content, flags=re.DOTALL).strip()
+            if clean_content and (not reply_parts or reply_parts[-1] != clean_content):
+                reply_parts.append(clean_content)
+
+        def append_session_message(role, content, **extra):
+            """把工具链产生的新上下文写入当前 session。"""
+            if not content:
+                return
+            history_dict.setdefault(str(chat_id), [])
+            item = {
+                "role": role,
+                "content": content,
+                "time": datetime.datetime.now().strftime("%Y年%m月%d日%H:%M"),
+            }
+            item.update(extra)
+            history_dict[str(chat_id)].append(item)
+
+        def merge_pending_messages():
+            """工具调用间隙合并同群新消息，避免消息流分叉。"""
+            pending_objs = self.yuki.message_buffer.get(chat_id) or self.yuki.message_buffer.get(str(chat_id))
+            if not pending_objs:
+                return
+            pending_objs = self.yuki.pop_buffer(chat_id)
+            pending_text = "\n".join([m["content"] for m in pending_objs]).replace("\n", "  ").strip()
+            if not pending_text:
+                return
+            logger.info(f"[ToolChain] {chat_id} 合并工具调用期间新增消息: {pending_text}")
+            append_session_message("user", pending_text, is_pending_during_tool=True)
+            tool_messages.append({"role": "user", "content": f"【工具调用期间新增消息】{pending_text}"})
+
+        try:
+            for _ in range(self.tool_manager.max_rounds):
+                response_message = await llm_chat_raw(
+                    messages=tool_messages,
+                    model=cfg.LLM_MODEL,
+                    temperature=0.8,
+                    top_p=0.8,
+                    frequency_penalty=0.05,
+                    presence_penalty=0.2,
+                    max_tokens=220,
+                    tools=self.tool_registry.get_tools(),
+                    tool_choice="auto",
+                )
+                tool_calls = response_message.get("tool_calls") or []
+                collect_reply(response_message.get("content"))
+                if not tool_calls:
+                    answer = "\n".join(reply_parts)
+                    return answer, answer
+
+                tool_messages.append(response_message)
+                if response_message.get("content"):
+                    append_session_message(
+                        "assistant",
+                        response_message.get("content"),
+                        is_tool_thought=True,
+                    )
+                tool_result_messages = await self.tool_manager.execute_tool_calls(tool_calls, context)
+                for tool_result_message in tool_result_messages:
+                    append_session_message(
+                        "tool",
+                        tool_result_message.get("content"),
+                        name=tool_result_message.get("name"),
+                        tool_call_id=tool_result_message.get("tool_call_id"),
+                    )
+                tool_messages.extend(tool_result_messages)
+                merge_pending_messages()
+
+            fallback = await llm_chat(
+                messages=tool_messages,
+                model=cfg.LLM_MODEL,
+                temperature=0.8,
+                top_p=0.8,
+                max_tokens=220,
+            )
+            collect_reply(fallback)
+            fallback = "\n".join(reply_parts)
+            return fallback, fallback
+        finally:
+            self.tool_manager.finish_session(str(chat_id))
 
     async def api_reply(self, chat_id: str, combined_text: str, history_dict: dict, mode,
                         relevant_diaries: list[Any]) -> str:
@@ -44,17 +147,13 @@ class YukiEngine:
         # 发送对话补全到DeepSeek
         logger.info(f"[System] {cfg.ROBOT_NAME.title()} 正在打字...")
         try:
-            Yuki_Answer = await llm_chat(
-                messages=combined_API_message,
-                model=cfg.LLM_MODEL,
-                temperature=0.8,
-                top_p=0.8,
-                frequency_penalty=0.05,
-                presence_penalty=0.2,
-                max_tokens=220
+            Yuki_Answer_raw, Yuki_Answer = await self._chat_with_tools(
+                chat_id,
+                combined_text,
+                history_dict,
+                mode,
+                combined_API_message,
             )
-            # 清除补全文本
-            Yuki_Answer_raw = Yuki_Answer = re.sub(r'\s*FINISHED\s*$', '', Yuki_Answer, flags=re.IGNORECASE)
             Yuki_Answer = re.sub(r'<布局>.*?</布局>', '', Yuki_Answer, flags=re.DOTALL).strip()
             Yuki_Answer = re.sub(r'\n+', ' ', Yuki_Answer).strip()
 
@@ -65,11 +164,12 @@ class YukiEngine:
                 Yuki_Answer = re.sub(r'\[DELEGATE_TO_MAID:.+?\]', '', Yuki_Answer, flags=re.DOTALL).strip()
 
                 # 扔进小女仆队列（非阻塞）
-                await self.yuki.maid_task_queue.put({
-                    "goal": task_desc,
-                    "chat_id": chat_id
-                })
-                logger.info(f"📤 已委托小女仆：{task_desc}")
+                boundary = MaidCapabilityBoundary.judge(task_desc)
+                if boundary["allowed"]:
+                    await self.yuki.maid_task_queue.put(build_maid_task(task_desc, chat_id, mode, source="delegate_tag"))
+                    logger.info(f"📤 已委托小女仆：{task_desc}")
+                else:
+                    Yuki_Answer += f"\n（这个任务小女仆不建议做：{boundary['reason']}。{boundary['suggestion']}）"
             # === 新增：拦截表情包搜索请求 ===
             meme_match = re.search(r'\[MEME_SEARCH:(.+?)\]', Yuki_Answer, re.DOTALL)
             if meme_match and getattr(self, 'sticker_manager', None):
@@ -466,7 +566,7 @@ async def maid_worker(engine, yuki_state, sender, history_manager):
         yuki_state.maid_current_tasks.pop(chat_id, None)
 
         # 构造汇报内容
-        report = f"【小女仆完成! 小女仆汇报】\n任务：「{goal}」\n结果：{result_dict.get('result', '未知结果')}"
+        report = build_maid_report(goal, result_dict)
 
         logger.info(f"✅ 小女仆任务完成，准备交还给主流程: {chat_id}")
 

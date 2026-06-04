@@ -9,7 +9,23 @@
 
 ## [未发布] - 2026-06-04
 
+### 新增
+- **工具链与小女仆协同第一阶段重构**：
+  - 新增 `core/toolchain.py`，提供 `FunctionRegistry`、`ToolCallManager`、`ToolContext` 与 `ToolResult`
+  - 新增 `core/tools.py`，将日记查询、定时任务、小女仆委托、主人私密发送、浏览器搜索、QQ 文件发送、外部内容注入包装为统一工具接口
+  - `YukiEngine.api_reply()` 接入 OpenAI 兼容 tools 多轮调用流程，保留原有标签式委托与表情包搜索兼容逻辑
+  - `utils/llm_client.py` 新增原始 message 返回接口，支持 tool_calls 场景
+  - 小女仆新增能力边界判定、标准任务构造与结果报告封装，降低高风险或高成本任务误分发风险
+  - `config.py` 补齐旧版大写配置属性与 `_raw` 兼容字段，保持现有测试和旧调用路径可用
+  - 同群消息处理改为按 `chat_id` 串行管道，运行中新消息只入队等待，不再取消当前处理任务
+  - 工具链调用期间的可见回复、工具结果和新增用户消息会写入当前 session 上下文，避免消息流分叉
+
 ### 变更
+- **main.py 消息处理管道化重构**：
+  - 备份原始主程序到 `backup/main_backup_pipeline_20260604.py`
+  - 新增 `MessagePipeline`，按阶段拆分消息入口、内容标准化、上下文准备、回复决策、记忆检索、回复生成、消息发送和收尾保存
+  - 将 `main_process()` 简化为管道入口，保持原有消息处理行为
+
 - **移除 Provider 模块，内联 LLM 客户端逻辑**：
   - 删除 `providers/` 目录及全部 9 个文件（base、registry、fallback、openai_compatible、deepseek、dashscope、ytea）
   - 新增 `utils/llm_client.py`，内联所有 provider 功能

@@ -129,10 +129,10 @@ class YukiState:
 
     def pop_buffer(self, chat_id):
         """原子化取出并清空缓冲区"""
-        msgs = self.message_buffer.get(chat_id, [])
+        cid = str(chat_id)
+        msgs = self.message_buffer.get(chat_id) or self.message_buffer.get(cid, [])
         self.message_buffer[chat_id] = []
-        if chat_id in self.buffer_tasks:
-            del self.buffer_tasks[chat_id]
+        self.message_buffer[cid] = self.message_buffer[chat_id]
         return msgs
 
     # @staticmethod

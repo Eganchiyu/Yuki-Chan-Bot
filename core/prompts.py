@@ -196,7 +196,10 @@ async def build_chat_context(yuki, chat_id: str, combined_text: str, history_dic
         # 打印加权分和匹配到的关键词信息
         logger.debug(f"[RAG-Debug] 回忆 {i} | 得分: {diary_obj['score']:.2f} | 详情: {diary_obj['debug']}")
 
-    # 3. 取出最近的对话（注意：这里保持原样取出，下面进行处理）
+    # 3. 补充工具链约束：assistant 的多段回复会在同一 session 中拼接并完整保存，避免把过程性思考混入最终回复
+    combined_API_message.append({"role": "system", "content": "【重要约束】如果你需要委托小女仆或等待工具结果，不要先输出闲聊、思考过程、占位回复或半成品答案；包含 [DELEGATE_TO_MAID:...] 的回复应尽量只保留委托指令本身。工具结果返回后，再一次性输出最终要发送的内容。最终回复中不要包含内心思考、推理过程、草稿或多段候选内容。"})
+
+    # 4. 取出最近的对话（注意：这里保持原样取出，下面进行处理）
     recent_msgs_raw = [msg for msg in history_dict[chat_id][-cfg.KEEP_LAST_DIALOGUE - 1:-1] if msg["role"] != "system"]
 
     # --- 最小改动：在这里处理时间观念 ---
@@ -212,9 +215,14 @@ async def build_chat_context(yuki, chat_id: str, combined_text: str, history_dic
             elif msg["role"] == "assistant":
                 new_content = f"{msg['content']}"
                 processed_recent_msgs.append({"role": msg["role"], "content": new_content})
+            else:
+                processed_recent_msgs.append({"role": "user", "content": f"【时间：{msg_time}】【工具链上下文】{msg['content']}"})
         else:
             # 如果没有 time 字段，则保持原样（兼容旧数据）
-            processed_recent_msgs.append({"role": msg["role"], "content": msg["content"]})
+            if msg["role"] in ("user", "assistant"):
+                processed_recent_msgs.append({"role": msg["role"], "content": msg["content"]})
+            else:
+                processed_recent_msgs.append({"role": "user", "content": f"【工具链上下文】{msg['content']}"})
 
     # 使用处理后的消息
     combined_API_message.extend(processed_recent_msgs)

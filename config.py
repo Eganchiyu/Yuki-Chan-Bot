@@ -457,6 +457,82 @@ class Config:
         return self.master_name or "主人"
 
     @property
+    def LLM_BASE_URL(self) -> str:
+        """首选 LLM API 地址"""
+        return self.api.llm_base_url
+
+    @property
+    def BACKUP_BASE_URL(self) -> str:
+        """备选 LLM API 地址"""
+        return self.api.backup_base_url
+
+    @property
+    def IMAGE_PROCESS_API_URL(self) -> str:
+        """视觉模型 API 地址"""
+        return self.api.image_process_url
+
+    @property
+    def LLM_API_KEY(self) -> str:
+        """首选 LLM API Key"""
+        return self.api.llm_api_key
+
+    @property
+    def BACKUP_API_KEY(self) -> str:
+        """备选 LLM API Key"""
+        return self.api.backup_api_key
+
+    @property
+    def IMAGE_PROCESS_API_KEY(self) -> str:
+        """视觉模型 API Key"""
+        return self.api.image_process_api_key
+
+    @property
+    def LLM_MODEL(self) -> str:
+        """主对话模型"""
+        return self.model.llm
+
+    @property
+    def BACKUP_MODEL(self) -> str:
+        """备用对话模型"""
+        return self.model.backup
+
+    @property
+    def VISION_MODEL(self) -> str:
+        """视觉模型"""
+        return self.model.vision
+
+    @property
+    def DISABLE_THINKING(self) -> bool:
+        """是否关闭模型 thinking/reasoning 输出"""
+        raw_value = getattr(self, "_raw", {}).get("model", {}).get("disable_thinking")
+        return self.model.disable_thinking if raw_value is None else bool(raw_value)
+
+    @property
+    def NAPCAT_WS_URL(self) -> str:
+        """NapCat WebSocket 地址"""
+        return self.connection.napcat_ws_url
+
+    @property
+    def NAPCAT_WS_TOKEN(self) -> str:
+        """NapCat WebSocket Token"""
+        return self.connection.napcat_ws_token
+
+    @property
+    def MAX_RETRIES(self) -> int:
+        """最大重试次数"""
+        return self.connection.max_retries
+
+    @property
+    def TARGET_QQ(self) -> int:
+        """主人 QQ 号"""
+        return int(self.target.qq)
+
+    @property
+    def DEBUG(self) -> bool:
+        """调试模式"""
+        return self.debug
+
+    @property
     def REQUEST_TIMEOUT(self):
         """请求超时配置（aiohttp.ClientTimeout）"""
         import aiohttp
@@ -597,6 +673,8 @@ def load_config(config_path: Optional[str] = None) -> Config:
     if not os.path.exists(config_path):
         os.makedirs(os.path.dirname(config_path), exist_ok=True)
         save_config(default_config, config_path)
+        default_config._raw = {}
+        default_config._content_hash = ""
         return default_config
 
     # 读取 YAML 配置
@@ -613,6 +691,8 @@ def load_config(config_path: Optional[str] = None) -> Config:
 
     # 将 YAML 数据转换为 Config 实例
     config = _dict_to_dataclass(Config, yaml_data)
+    config._raw = yaml_data
+    config._content_hash = ""
 
     return config
 

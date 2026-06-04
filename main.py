@@ -152,144 +152,251 @@ def warmup_groups(yuki, history_manager):
     logger.debug(f"已预载 {len(yuki.last_message_time)} 个群组到巡检名单")
     
 
+class MessagePipeline:
+    """消息处理管道：按阶段处理一次消息到回复的完整流程。"""
+
+    def __init__(self):
+        self.stages = [
+            self.prepare_message_batch,
+            self.normalize_incoming_content,
+            self.prepare_chat_context,
+            self.decide_reply_action,
+            self.retrieve_memories,
+            self.generate_reply,
+            self.send_reply,
+            self.finalize_conversation,
+        ]
+
+    async def run(self, chat_id, mode, debounce_flag=True, force_reply=None):
+        """依次执行消息处理阶段，任一阶段标记 stop 后终止流程。"""
+        context = {
+            "chat_id": chat_id,
+            "mode": mode,
+            "debounce_flag": debounce_flag,
+            "force_reply": force_reply,
+        }
+        for stage in self.stages:
+            context = await stage(context)
+            if context.get("stop"):
+                return context
+        return context
+
+    async def prepare_message_batch(self, context):
+        """防抖、静音拦截、读取消息缓冲。"""
+        global real_time_debounce_time
+        chat_id = context["chat_id"]
+        mode = context["mode"]
+
+        if context["debounce_flag"]:
+            await asyncio.sleep(real_time_debounce_time)  # 防抖等待，合并短时间内的多条消息
+        else:
+            await asyncio.sleep(0.5)
+
+        if mode == "group" and not group_active_state.get(str(chat_id), True):
+            logger.info(f"[System] [{chat_id}] 协程醒来，但群已被静音，丢弃遗留消息并退出。")
+            yuki.pop_buffer(chat_id)  # 把缓存清空以绝后患
+            context["stop"] = True
+            return context
+
+        if chat_id not in yuki.message_buffer:
+            yuki.message_buffer[chat_id] = []
+        if str(chat_id) not in yuki.message_buffer:
+            yuki.message_buffer[str(chat_id)] = yuki.message_buffer[chat_id]
+        real_time_debounce_time = cfg.DEBOUNCE_TIME  # 重置防抖时间，准备处理下一轮消息
+        message_objs = yuki.pop_buffer(chat_id)  # 此时拿到的是 list[dict]
+        if not message_objs and not context["force_reply"]:
+            context["stop"] = True
+            return context
+
+        context["first_time"] = time.time()
+        context["message_objs"] = message_objs
+        await yuki.boost_activity(chat_id)
+        return context
+
+    async def normalize_incoming_content(self, context):
+        """合并消息、理解图片、解析CQ码，生成用户输入文本。"""
+        chat_id = context["chat_id"]
+        message_objs = context["message_objs"]
+        all_contents = [m["content"] for m in message_objs]
+        combined_text = "\n".join(all_contents)
+
+        modified_text, images_info = meme_processor.extract_urls_from_text(combined_text)
+        if images_info:
+            understood_contents = []
+            for img in images_info:
+                url = img["url"]
+                is_meme = img["is_meme"]
+
+                # 无论是否表情包，都先交给视觉模型理解。
+                result = await meme_processor.understand_from_url(url)
+                understood_contents.append(result)
+
+                # 只有表情包允许后续入库；当前入库逻辑仍保持注释状态。
+                if is_meme and hasattr(engine, "sticker_manager"):
+                    clean_url = url.replace("&amp;", "&")  # 清洗 URL 防 400 报错
+                    # asyncio.create_task(
+                    #     engine.sticker_manager.ingest_sticker(
+                    #         image_ref=clean_url, chat_id=chat_id, owner="群友"
+                    #     )
+                    # )
+                elif not is_meme:
+                    logger.info("[System] 拦截到非表情包图片，仅作视觉理解，不入库学习。")
+
+            combined_text = modified_text
+            for content in understood_contents:
+                combined_text = combined_text.replace("[图片占位符]", content, 1)
+
+        combined_text = await parser.parse_all_cq_codes(combined_text)
+        combined_text = combined_text.replace("\n", "  ").strip()
+        logger.info(f"[{chat_id}] 收到消息{combined_text}")
+        history_manager.append_to_log(chat_id, "User/Group", combined_text)
+
+        context["combined_text"] = combined_text
+        return context
+
+    async def prepare_chat_context(self, context):
+        """加载上下文，确保系统提示词存在，并追加当前用户消息。"""
+        logger.info("[System] 加载上下文信息...")
+        history_dict = history_manager.load()
+        chat_id = str(context["chat_id"])
+        mode = context["mode"]
+
+        if chat_id not in history_dict or not history_dict[chat_id]:
+            history_dict[chat_id] = [{"role": "system", "content": yuki.get_setting(mode)}]
+        elif history_dict[chat_id][0].get("role") != "system":
+            history_dict[chat_id].insert(0, {"role": "system", "content": yuki.get_setting(mode)})
+
+        current_time_str = datetime.datetime.now().strftime("%Y年%m月%d日%H:%M")
+        history_dict[chat_id].append({
+            "role": "user",
+            "content": context["combined_text"],
+            "time": current_time_str,
+        })
+
+        context["chat_id"] = chat_id
+        context["history_dict"] = history_dict
+        context["current_time_str"] = current_time_str
+        logger.info("[System] 加载完成")
+        return context
+
+    async def decide_reply_action(self, context):
+        """群聊中判断是否继续回复；潜水时保留用户上下文。"""
+        chat_id = context["chat_id"]
+        mode = context["mode"]
+        history_dict = context["history_dict"]
+
+        if mode == "group" and not await engine.decide_to_reply(
+            history_dict[chat_id],
+            context["message_objs"],
+            chat_id,
+            force_reply=context["force_reply"],
+        ):
+            history_manager.save(history_dict)
+            logger.info(f"[System] {cfg.ROBOT_NAME.title()} 决定继续潜水...")
+            context["stop"] = True
+        return context
+
+    async def retrieve_memories(self, context):
+        """根据输入长度动态检索相关日记。"""
+        logger.info(f"[System] {cfg.ROBOT_NAME.title()} 正在回忆...")
+        chat_id = context["chat_id"]
+        combined_text = context["combined_text"]
+        dynamic_top_k = 10 if len(combined_text) > 100 else 8
+        relevant_diaries = memory_rag.search_diaries(
+            combined_text,
+            chat_id=chat_id,
+            top_k=dynamic_top_k,
+        )
+        logger.info(f"[System] 检索到 {len(relevant_diaries)} 条相关日记:")
+        logger.info(f"检索完成，用时 {(time.time() - context['first_time']):.2f}")
+
+        context["relevant_diaries"] = relevant_diaries
+        return context
+
+    async def generate_reply(self, context):
+        """调用引擎生成回复。"""
+        chat_id = context["chat_id"]
+        answer_raw, answer_text, voice = await engine.api_reply(
+            chat_id,
+            context["combined_text"],
+            context["history_dict"],
+            context["mode"],
+            context["relevant_diaries"],
+        )
+        logger.info(f"{cfg.ROBOT_NAME.title()}打字完成！")
+
+        context["answer_raw"] = answer_raw
+        context["answer_text"] = answer_text
+        context["voice"] = voice
+        return context
+
+    async def send_reply(self, context):
+        """发送文本、表情包分段或语音回复。"""
+        chat_id = context["chat_id"]
+        mode = context["mode"]
+        answer_text = context["answer_text"]
+        voice = context["voice"]
+
+        if mode == "group":
+            yuki.consume_energy(chat_id)
+        logger.info(f"[System] {cfg.ROBOT_NAME.title()} 正在发送消息...(剩余精力: {yuki.energy[chat_id]:.1f})")
+
+        if not voice:
+            parts = re.split(r"(\[CQ:image,[^\]]*?sub_type=1\])", answer_text, flags=re.IGNORECASE)
+            for part in parts:
+                part = part.strip()
+                if not part:
+                    continue
+                await sender.send(chat_id, part, mode=mode)
+                await asyncio.sleep(1.0)
+        else:
+            await sender.send(chat_id, voice, mode=mode)
+
+        logger.info(f"[System] 发送完成！全量内容：{answer_text}")
+        return context
+
+    async def finalize_conversation(self, context):
+        """保存回复上下文，并在历史过长时触发总结。"""
+        chat_id = context["chat_id"]
+        history_dict = context["history_dict"]
+        answer_text = context["answer_text"]
+
+        logger.info(f"[System] {cfg.ROBOT_NAME.title()}正在保存上下文...")
+        history_manager.append_to_log(chat_id, cfg.ROBOT_NAME.title(), answer_text)
+        history_dict[chat_id].append({
+            "role": "assistant",
+            "content": context["answer_raw"],
+            "time": context["current_time_str"],
+        })
+        history_manager.save(history_dict)
+        logger.info("[System] 保存完成")
+
+        if len(history_dict[chat_id]) > cfg.DIARY_MAX_LENGTH:
+            summarized_list = await engine.do_summarize(chat_id, history_dict[chat_id])
+            history_dict[chat_id] = summarized_list
+            history_manager.save(history_dict)
+            logger.info(f"[{chat_id}] 日记写入完成，全量历史已同步。")
+        return context
+
+
 async def main_process(chat_id, mode, debounce_flag=True, force_reply=None):
-    """处理缓冲中的消息，进行API交互和回复 """
-    global real_time_debounce_time
-    if debounce_flag:
-        await asyncio.sleep(real_time_debounce_time)  # 防抖等待，合并短时间内的多条消息
-    else:
-        await asyncio.sleep(0.5)
+    """按 chat_id 串行处理消息；运行中新增消息留在缓冲区，下一轮自动合并。"""
+    cid = str(chat_id)
+    try:
+        while True:
+            context = await MessagePipeline().run(chat_id, mode, debounce_flag, force_reply)
+            debounce_flag = False
+            force_reply = None
 
-    # ================= 新增：醒来后的终极拦截 =================
-    if mode == "group" and not group_active_state.get(str(chat_id), True):
-        logger.info(f"[System] [{chat_id}] 协程醒来，但群已被静音，丢弃遗留消息并退出。")
-        yuki.pop_buffer(chat_id)  # 把缓存清空以绝后患
-        return
-    # ==========================================================
-
-    real_time_debounce_time = cfg.DEBOUNCE_TIME  # 重置防抖时间，准备处理下一轮消息
-    message_objs = yuki.pop_buffer(chat_id)  # 此时拿到的是 list[dict]
-    if not message_objs and not force_reply:
-        return
-    # 提高群聊的活跃度
-    first_time = time.time()
-    await yuki.boost_activity(chat_id)
-    # 视觉理解总处理
-    all_contents = [m["content"] for m in message_objs]
-    combined_text = "\n".join(all_contents)
-
-    # 接收返回的 modified_text 和 字典列表 images_info
-    modified_text, images_info = meme_processor.extract_urls_from_text(combined_text)
-
-    if images_info:
-        understood_contents = []
-        for img in images_info:
-            url = img["url"]
-            is_meme = img["is_meme"]
-
-            # 1. 看图权限：无论是不是表情包，都让视觉模型（VLM）看一眼并理解
-            result = await meme_processor.understand_from_url(url)
-            understood_contents.append(result)
-
-            # 2. 存图权限：【核心防线】只有确认为表情包 (is_meme 为 True)，才允许后台偷图入库！
-            if is_meme and hasattr(engine, 'sticker_manager'):
-                clean_url = url.replace("&amp;", "&")  # 清洗 URL 防 400 报错
-                # asyncio.create_task(
-                #     engine.sticker_manager.ingest_sticker(image_ref=clean_url, chat_id=chat_id, owner="群友")
-                # )
-            elif not is_meme:
-                logger.info("[System] 拦截到非表情包图片，仅作视觉理解，不入库学习。")
-
-        combined_text = modified_text
-        for content in understood_contents:
-            combined_text = combined_text.replace("[图片占位符]", content, 1)
-
-    # 剩下的CQ码文本解析（@、回复等）交给 parser
-    combined_text = await parser.parse_all_cq_codes(combined_text)
-    combined_text = combined_text.replace("\n", "  ").strip()
-    logger.info(f"[{chat_id}] 收到消息{combined_text}")
-    history_manager.append_to_log(chat_id, "User/Group", combined_text)
-
-    logger.info("[System] 加载上下文信息...")
-    # 加载上下文信息
-    history_dict = history_manager.load()
-    chat_id = str(chat_id)
-
-    # 【修复后】稳健的系统提示词初始化与注入
-    if chat_id not in history_dict or not history_dict[chat_id]:
-        # 情况1：完全没记录，或者列表为空，直接初始化一个包含 system prompt 的新列表
-        history_dict[chat_id] = [{"role": "system", "content": yuki.get_setting(mode)}]
-    elif history_dict[chat_id][0].get("role") != "system":
-        # 情况2：有记录但第一条不是 system prompt，则在最前面插入（而不是覆盖掉用户原本的消息）
-        history_dict[chat_id].insert(0, {"role": "system", "content": yuki.get_setting(mode)})
-    # 添加当前消息到上下文池
-    current_time_str = datetime.datetime.now().strftime("%Y年%m月%d日%H:%M")
-    history_dict[chat_id].append({
-        "role": "user",
-        "content": combined_text,
-        "time": current_time_str  # 新增独立字段
-    })
-
-    logger.info("[System] 加载完成")
-
-    if (mode == "group") and (not await engine.decide_to_reply(history_dict[chat_id], message_objs, chat_id,force_reply = force_reply)):
-        # 保存获取的上下文信息
-        history_manager.save(history_dict)
-        logger.info(f"[System] {cfg.ROBOT_NAME.title()} 决定继续潜水...")
-        return
-
-    logger.info(f"[System] {cfg.ROBOT_NAME.title()} 正在回忆...")
-
-    # 检索相关记忆总用法（包含关键词提取和语义向量匹配）
-    dynamic_top_k = 10 if len(combined_text) > 100 else 8
-    relevant_diaries = memory_rag.search_diaries(combined_text, chat_id=chat_id, top_k=dynamic_top_k)
-    logger.info(f"[System] 检索到 {len(relevant_diaries)} 条相关日记:")
-
-    logger.info(f"检索完成，用时 {(time.time()-first_time):.2f}")
-
-    Yuki_answer_raw, Yuki_Answer, voice = await engine.api_reply(chat_id, combined_text, history_dict, mode, relevant_diaries)
-
-    logger.info(f"{cfg.ROBOT_NAME.title()}打字完成！")
-    if mode == "group":
-        yuki.consume_energy(chat_id)
-    logger.info(f"[System] {cfg.ROBOT_NAME.title()} 正在发送消息...(剩余精力: {yuki.energy[chat_id]:.1f})")
-
-    if not voice:
-        # 使用正则拆分文本和表情包，() 会将匹配到的 CQ 码也保留在列表中
-        parts = re.split(r'(\[CQ:image,[^\]]*?sub_type=1\])', Yuki_Answer, flags=re.IGNORECASE)
-
-        for part in parts:
-            part = part.strip()
-            if not part:
-                continue
-
-            # 依次发送拆分出来的文字块和表情包
-            await sender.send(chat_id, part, mode=mode)
-
-            # 增加一个微小的延迟，模拟人类“发完字再点表情包”的节奏感
-            await asyncio.sleep(1.0)
-
-    else:
-        await sender.send(chat_id, voice, mode=mode)
-
-    logger.info(f"[System] 发送完成！全量内容：{Yuki_Answer}")
-    logger.info(f"[System] {cfg.ROBOT_NAME.title()}正在保存上下文...")
-    # 保存回复到上下文
-    history_manager.append_to_log(chat_id, cfg.ROBOT_NAME.title(), Yuki_Answer)
-    history_dict[chat_id].append({
-        "role": "assistant", 
-        "content": Yuki_answer_raw,
-        "time": current_time_str  # 新增独立字段
-    })
-    history_manager.save(history_dict)
-    logger.info("[System] 保存完成")
-
-    # 日记触发检查：如果历史过长，强制写日记
-    if len(history_dict[chat_id]) > cfg.DIARY_MAX_LENGTH:
-        summarized_list = await engine.do_summarize(chat_id, history_dict[chat_id])
-        history_dict[chat_id] = summarized_list
-        history_manager.save(history_dict)
-        logger.info(f"[{chat_id}] 日记写入完成，全量历史已同步。")
+            if mode == "group" and not group_active_state.get(cid, True):
+                break
+            if not yuki.message_buffer.get(chat_id):
+                break
+            logger.info(f"[Pipeline] {cid} 检测到处理期间新增消息，准备合并进入下一轮。")
+    finally:
+        current_task = asyncio.current_task()
+        if yuki.buffer_tasks.get(chat_id) is current_task:
+            yuki.buffer_tasks.pop(chat_id, None)
 
 
 # ==================== 资源清理 ====================

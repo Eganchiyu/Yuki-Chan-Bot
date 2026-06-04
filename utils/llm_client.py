@@ -30,7 +30,7 @@ _fallback_state: Dict[str, Any] = {
 def _sanitize_payload(model: str, payload: Dict[str, Any]) -> Dict[str, Any]:
     """平台参数适配：清理/转换不兼容参数。"""
     # 仅对 OpenAI 推理模型（o1/o3）添加 reasoning_effort
-    if cfg.DISABLE_THINKING and "reasoning_effort" not in payload:
+    if getattr(cfg, "DISABLE_THINKING", False) and "reasoning_effort" not in payload:
         model_lower = (model or "").lower()
         if model_lower.startswith("o1") or model_lower.startswith("o3"):
             payload["reasoning_effort"] = "low"
@@ -64,6 +64,38 @@ async def _get_global_session() -> aiohttp.ClientSession:
     return _global_session
 
 
+async def chat_completion_raw(
+    base_url: str,
+    api_key: str,
+    messages: List[Dict[str, Any]],
+    model: str,
+    timeout: float = 60.0,
+    **kwargs,
+) -> Dict[str, Any]:
+    """发送 OpenAI 兼容格式请求，并返回原始 message，供工具调用流程使用。"""
+    session = await _get_global_session()
+
+    endpoint = f"{_normalize_url(base_url)}/chat/completions"
+
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
+    payload = {"model": model, "messages": messages, **kwargs}
+    payload = _sanitize_payload(model, payload)
+
+    client_timeout = aiohttp.ClientTimeout(total=timeout, connect=10)
+    async with session.post(
+        endpoint, json=payload, headers=headers, timeout=client_timeout
+    ) as resp:
+        if resp.status == 200:
+            data = await resp.json()
+            return data["choices"][0]["message"]
+        else:
+            err_info = await resp.text()
+            raise Exception(f"HTTP {resp.status}: {err_info}")
+
+
 async def chat_completion(
     base_url: str,
     api_key: str,
@@ -86,27 +118,8 @@ async def chat_completion(
     Returns:
         模型生成的文本
     """
-    session = await _get_global_session()
-
-    endpoint = f"{_normalize_url(base_url)}/chat/completions"
-
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json",
-    }
-    payload = {"model": model, "messages": messages, **kwargs}
-    payload = _sanitize_payload(model, payload)
-
-    client_timeout = aiohttp.ClientTimeout(total=timeout, connect=10)
-    async with session.post(
-        endpoint, json=payload, headers=headers, timeout=client_timeout
-    ) as resp:
-        if resp.status == 200:
-            data = await resp.json()
-            return data["choices"][0]["message"]["content"]
-        else:
-            err_info = await resp.text()
-            raise Exception(f"HTTP {resp.status}: {err_info}")
+    message = await chat_completion_raw(base_url, api_key, messages, model, timeout, **kwargs)
+    return message.get("content") or ""
 
 
 def _get_fallback_message() -> str:
@@ -115,6 +128,50 @@ def _get_fallback_message() -> str:
         f"（{cfg.ROBOT_NAME.title()} 好像有点不舒服，"
         f"暂时连接不上大脑...{cfg.MASTER_NAME}等会再找我好吗？）"
     )
+
+
+async def llm_chat_raw(
+    messages: List[Dict[str, Any]],
+    model: Optional[str] = None,
+    **kwargs,
+) -> Dict[str, Any]:
+    """默认 LLM 对话接口，返回原始 message，支持 tool_calls。"""
+    state = _fallback_state
+
+    if state["is_degraded"] and (
+        time.time() - state["last_fail_time"] > state["recovery_seconds"]
+    ):
+        state["is_degraded"] = False
+        logger.info("[LLM] 尝试恢复主线路")
+
+    if not state["is_degraded"]:
+        try:
+            return await chat_completion_raw(
+                base_url=cfg.LLM_BASE_URL,
+                api_key=cfg.LLM_API_KEY,
+                messages=messages,
+                model=model or cfg.LLM_MODEL,
+                timeout=60.0,
+                **kwargs,
+            )
+        except Exception as e:
+            logger.warning(f"[LLM] 主线路失效: {e}，触发熔断并切换备用")
+            state["is_degraded"] = True
+            state["last_fail_time"] = time.time()
+
+    try:
+        backup_key = cfg.BACKUP_API_KEY or cfg.LLM_API_KEY
+        return await chat_completion_raw(
+            base_url=cfg.BACKUP_BASE_URL,
+            api_key=backup_key,
+            messages=messages,
+            model=model or cfg.BACKUP_MODEL,
+            timeout=60.0,
+            **kwargs,
+        )
+    except Exception as e:
+        logger.error(f"[LLM] 备用线路也失效: {e}")
+        return {"role": "assistant", "content": _get_fallback_message()}
 
 
 async def llm_chat(
@@ -134,45 +191,8 @@ async def llm_chat(
     Returns:
         模型生成的文本；全部失败时返回降级提示消息
     """
-    state = _fallback_state
-
-    # 自动恢复检查：超过 recovery_seconds 后尝试恢复主线路
-    if state["is_degraded"] and (
-        time.time() - state["last_fail_time"] > state["recovery_seconds"]
-    ):
-        state["is_degraded"] = False
-        logger.info("[LLM] 尝试恢复主线路")
-
-    # 策略 1：正常状态下优先尝试主线路
-    if not state["is_degraded"]:
-        try:
-            return await chat_completion(
-                base_url=cfg.LLM_BASE_URL,
-                api_key=cfg.LLM_API_KEY,
-                messages=messages,
-                model=model or cfg.LLM_MODEL,
-                timeout=60.0,
-                **kwargs,
-            )
-        except Exception as e:
-            logger.warning(f"[LLM] 主线路失效: {e}，触发熔断并切换备用")
-            state["is_degraded"] = True
-            state["last_fail_time"] = time.time()
-
-    # 策略 2：备用线路
-    try:
-        backup_key = cfg.BACKUP_API_KEY or cfg.LLM_API_KEY
-        return await chat_completion(
-            base_url=cfg.BACKUP_BASE_URL,
-            api_key=backup_key,
-            messages=messages,
-            model=model or cfg.BACKUP_MODEL,
-            timeout=60.0,
-            **kwargs,
-        )
-    except Exception as e:
-        logger.error(f"[LLM] 备用线路也失效: {e}")
-        return _get_fallback_message()
+    message = await llm_chat_raw(messages, model=model, **kwargs)
+    return message.get("content") or ""
 
 
 async def vision_chat(
