@@ -130,7 +130,6 @@ YukiV6 是一个基于 Python 异步架构的 QQ 智能助手系统，功能丰�
 |------|------|--------|
 | [config.py](file:///d:/Projects/YukiV6/config.py#L200) | 200 | `_get_nested(data, path)` (staticmethod) |
 | [setup.py](file:///d:/Projects/YukiV6/setup.py#L17) | 17 | `_get_nested(data, path)` |
-| [webui.py](file:///d:/Projects/YukiV6/webui.py#L16) | 16 | `get_nested(data, path)` |
 | [scripts/05_config_test_tools/test_config.py](file:///d:/Projects/YukiV6/scripts/05_config_test_tools/test_config.py) | — | 同名函数 |
 
 **建议**：提取至 `utils/dict_tools.py`，所有文件统一引用。
@@ -142,7 +141,6 @@ YukiV6 是一个基于 Python 异步架构的 QQ 智能助手系统，功能丰�
 | [setup.py L54](file:///d:/Projects/YukiV6/setup.py#L54) | `_migrate_urls_to_platforms()` 内部定义 |
 | [setup.py L213](file:///d:/Projects/YukiV6/setup.py#L213) | `migrate_from_env()` 内部定义 |
 | [setup.py L304](file:///d:/Projects/YukiV6/setup.py#L304) | `config_yaml()` 内部定义 |
-| [webui.py L26](file:///d:/Projects/YukiV6/webui.py#L26) | 全局定义 |
 
 注意：`setup.py` 中**同一文件内**就重复定义了 3 次 `set_nested`。
 

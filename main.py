@@ -142,7 +142,7 @@ def initialize_components():
 
 def warmup_groups(yuki, history_manager):
     """预热群组：初始化巡检名单，预载历史中的群聊ID和最后消息时间"""
-    h_dict = history_manager.load()
+    history_manager.load()
     for cid in cfg.TARGET_GROUPS:
         yuki.last_message_time[str(cid)] = time.time()
         current_e = yuki.update_energy(str(cid))
@@ -150,13 +150,6 @@ def warmup_groups(yuki, history_manager):
         logger.info(
             f"[System] 预热群组 {str(cid)}: 精力 {current_e:.1f}, 初始欲望 {yuki.desire_to_start_topic.get(str(cid), 0)}%")
     logger.debug(f"已预载 {len(yuki.last_message_time)} 个群组到巡检名单")
-
-
-# 启动主流程 支持热插拔和热重载插件
-async def start_main_process():
-    """启动主流程，监听消息并处理"""
-    # 初始化Yuki引擎
-    pass
     
 
 async def main_process(chat_id, mode, debounce_flag=True, force_reply=None):
