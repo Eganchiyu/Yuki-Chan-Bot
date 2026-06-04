@@ -19,6 +19,11 @@
   - `config.py` 补齐旧版大写配置属性与 `_raw` 兼容字段，保持现有测试和旧调用路径可用
   - 同群消息处理改为按 `chat_id` 串行管道，运行中新消息只入队等待，不再取消当前处理任务
   - 工具链调用期间的可见回复、工具结果和新增用户消息会写入当前 session 上下文，避免消息流分叉
+  - 新增 `core/session_pipeline.py`，将持久会话管道从 `main.py` 抽离，明确按 `chat_id` 串行运行的会话泵职责
+  - `main.py` 精简为组件初始化、运行时注入和程序入口编排
+  - `modules/QQNapcatListen/listen_main.py` 调整为输入适配层，通过 `configure_runtime()` 注入组件，消除对 `main.py` 的反向导入
+  - `core/engine.py` 归并工具链上下文辅助逻辑，减少 `_chat_with_tools()` 内部嵌套职责
+  - 更新 `docs/architecture.md` 同步目标架构状态
 
 ### 变更
 - **main.py 消息处理管道化重构**：

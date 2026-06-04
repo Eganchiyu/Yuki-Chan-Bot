@@ -23,8 +23,11 @@ YukiV6/
 ├── setup.py                   # 一键安装/配置脚本
 │
 ├── core/                      # 核心业务逻辑
-│   ├── brain.py               # 状态管理：精力、活跃度、欲望演算
-│   ├── engine.py              # 主引擎：LLM 调用、消息处理
+│   ├── brain.py               # 状态管理：精力、活跃度、消息缓冲
+│   ├── engine.py              # 主引擎：LLM 决策、工具链调用、回复生成
+│   ├── session_pipeline.py    # 按 chat_id 串行运行的持久会话管道
+│   ├── toolchain.py           # Function Call 注册、状态和结果封装
+│   ├── tools.py               # 标准工具集合与 handler
 │   ├── history_manager.py     # 历史记录管理
 │   ├── maid.py                # 小女仆子代理系统
 │   └── prompts.py             # 提示词模板管理
@@ -78,23 +81,40 @@ YukiV6/
 
 **职责**：
 - 初始化所有组件（`initialize_components()`）
-- 启动 WebUI 管理面板
+- 创建并注入 `SessionPipeline`
 - 选择运行模式（私聊/群聊）
 - 启动消息监听
 
 **关键组件**：
-- `FunctionRegistry`: Function Call 注册中心
-- `main_process()`: 核心消息处理函数
+- `SessionPipeline`: 按 `chat_id` 串行运行的会话泵
+- `main_process()`: 兼容旧调用路径的会话泵代理入口
 
 **数据流**：
 ```
-消息进入 → 防抖缓冲 → 消息合并 → CQ码解析 → 视觉处理 → 
-上下文加载 → 决策判断 → 记忆检索 → LLM 生成 → 消息发送
+输入适配层 → message_buffer → SessionPipeline → YukiEngine → ToolChain/Maid →
+上下文回写 → 消息发送 → 检查同 chat_id 新消息 → 下一轮处理
 ```
 
 ---
 
-### 3.2 core/brain.py - 状态管理
+### 3.2 core/session_pipeline.py - 持久会话管道
+
+**类**：`SessionPipeline`
+
+**职责**：
+- 按 `chat_id` 保证同一会话串行处理
+- 管理防抖、消息合并、上下文加载、回复决策、记忆检索、发送与保存
+- 在当前轮结束后继续消费运行中新增的消息，避免消息流分叉
+
+**核心原则**：
+```
+一个 chat_id 同一时间只允许一个会话管道运行。
+工具调用、小女仆回调和新消息都必须回流到同一 session 上下文。
+```
+
+---
+
+### 3.3 core/brain.py - 状态管理
 
 **类**：`YukiState`
 
@@ -120,26 +140,28 @@ maid_task_queue: asyncio.Queue     # 小女仆任务队列
 
 ---
 
-### 3.3 core/engine.py - 主引擎
+### 3.4 core/engine.py - 主引擎
 
 **类**：`YukiEngine`
 
 **职责**：
-- LLM 调用与响应处理
-- 消息上下文构建
+- LLM 决策与响应处理
+- 工具链多轮调用与结果回流
+- 工具调用期间新消息合并
 - 指令标签解析（`[DELEGATE_TO_MAID]`, `[MEME_SEARCH]`）
 - 日记归档触发
 
 **关键方法**：
 - `api_reply()`: 调用 LLM 生成回复
+- `_chat_with_tools()`: 执行多轮工具链决策
 - `decide_to_reply()`: 决策是否回复
 - `do_summarize()`: 日记归档
 
-**依赖**：
-- `rag`: RAG 记忆系统
-- `history_manager`: 历史记录管理
-- `yuki_state`: 状态管理
-- `sender`: 消息发送器
+**工具链上下文原则**：
+```
+工具调用是 Yuki 的决策过程。
+工具结果、工具期间新增消息和 Yuki 可见中间回复都会写入当前 session。
+```
 
 ---
 
@@ -200,20 +222,21 @@ maid_task_queue: asyncio.Queue     # 小女仆任务队列
 
 ---
 
-### 3.7 modules/QQNapcatListen/listen_main.py - 消息监听
+### 3.7 modules/QQNapcatListen/listen_main.py - 输入适配层
 
 **职责**：
 - WebSocket 消息监听
 - 群聊开关控制（`/关闭`, `/开启`）
-- 消息防抖缓冲
+- QQ 消息标准化并 feed 到 `SessionPipeline`
 - RLHF 正反馈捕捉
 - 帮助指令拦截
 
 **关键函数**：
+- `configure_runtime()`: 注入运行时组件，避免反向导入 `main.py`
 - `napcat_listen()`: 主监听循环
 - `start_background_tasks()`: 启动后台任务
 - `handle_group_switch()`: 处理群聊开关
-- `manage_buffer()`: 消息缓冲管理
+- `feed_message()`: 将标准化消息放入会话缓冲并唤醒会话泵
 
 ---
 

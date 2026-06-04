@@ -34,6 +34,42 @@ class YukiEngine:
         self.tool_registry.scan_and_register(TOOL_SCHEMAS, TOOL_HANDLERS)
         self.tool_manager = ToolCallManager(self.tool_registry)
 
+    @staticmethod
+    def _clean_visible_reply(content):
+        """清理工具链期间可对外发送的回复文本。"""
+        if not content:
+            return ""
+        clean_content = re.sub(r'\s*FINISHED\s*$', '', content, flags=re.IGNORECASE).strip()
+        return re.sub(r'<布局>.*?</布局>', '', clean_content, flags=re.DOTALL).strip()
+
+    @staticmethod
+    def _append_session_message(history_dict, chat_id, role, content, **extra):
+        """把工具链产生的新上下文写入当前 session。"""
+        if not content:
+            return
+        cid = str(chat_id)
+        history_dict.setdefault(cid, [])
+        item = {
+            "role": role,
+            "content": content,
+            "time": datetime.datetime.now().strftime("%Y年%m月%d日%H:%M"),
+        }
+        item.update(extra)
+        history_dict[cid].append(item)
+
+    def _merge_pending_messages(self, chat_id, history_dict, tool_messages):
+        """工具调用间隙合并同群新消息，避免消息流分叉。"""
+        pending_objs = self.yuki.message_buffer.get(chat_id) or self.yuki.message_buffer.get(str(chat_id))
+        if not pending_objs:
+            return
+        pending_objs = self.yuki.pop_buffer(chat_id)
+        pending_text = "\n".join([m["content"] for m in pending_objs]).replace("\n", "  ").strip()
+        if not pending_text:
+            return
+        logger.info(f"[ToolChain] {chat_id} 合并工具调用期间新增消息: {pending_text}")
+        self._append_session_message(history_dict, chat_id, "user", pending_text, is_pending_during_tool=True)
+        tool_messages.append({"role": "user", "content": f"【工具调用期间新增消息】{pending_text}"})
+
     async def _chat_with_tools(self, chat_id, combined_text, history_dict, mode, messages):
         """执行支持多轮工具调用的 LLM 对话。"""
         context = ToolContext(
@@ -48,39 +84,9 @@ class YukiEngine:
         reply_parts = []
 
         def collect_reply(content):
-            """收集工具链期间 Yuki 产生的可见回复。"""
-            if not content:
-                return
-            clean_content = re.sub(r'\s*FINISHED\s*$', '', content, flags=re.IGNORECASE).strip()
-            clean_content = re.sub(r'<布局>.*?</布局>', '', clean_content, flags=re.DOTALL).strip()
+            clean_content = self._clean_visible_reply(content)
             if clean_content and (not reply_parts or reply_parts[-1] != clean_content):
                 reply_parts.append(clean_content)
-
-        def append_session_message(role, content, **extra):
-            """把工具链产生的新上下文写入当前 session。"""
-            if not content:
-                return
-            history_dict.setdefault(str(chat_id), [])
-            item = {
-                "role": role,
-                "content": content,
-                "time": datetime.datetime.now().strftime("%Y年%m月%d日%H:%M"),
-            }
-            item.update(extra)
-            history_dict[str(chat_id)].append(item)
-
-        def merge_pending_messages():
-            """工具调用间隙合并同群新消息，避免消息流分叉。"""
-            pending_objs = self.yuki.message_buffer.get(chat_id) or self.yuki.message_buffer.get(str(chat_id))
-            if not pending_objs:
-                return
-            pending_objs = self.yuki.pop_buffer(chat_id)
-            pending_text = "\n".join([m["content"] for m in pending_objs]).replace("\n", "  ").strip()
-            if not pending_text:
-                return
-            logger.info(f"[ToolChain] {chat_id} 合并工具调用期间新增消息: {pending_text}")
-            append_session_message("user", pending_text, is_pending_during_tool=True)
-            tool_messages.append({"role": "user", "content": f"【工具调用期间新增消息】{pending_text}"})
 
         try:
             for _ in range(self.tool_manager.max_rounds):
@@ -103,21 +109,25 @@ class YukiEngine:
 
                 tool_messages.append(response_message)
                 if response_message.get("content"):
-                    append_session_message(
+                    self._append_session_message(
+                        history_dict,
+                        chat_id,
                         "assistant",
                         response_message.get("content"),
                         is_tool_thought=True,
                     )
                 tool_result_messages = await self.tool_manager.execute_tool_calls(tool_calls, context)
                 for tool_result_message in tool_result_messages:
-                    append_session_message(
+                    self._append_session_message(
+                        history_dict,
+                        chat_id,
                         "tool",
                         tool_result_message.get("content"),
                         name=tool_result_message.get("name"),
                         tool_call_id=tool_result_message.get("tool_call_id"),
                     )
                 tool_messages.extend(tool_result_messages)
-                merge_pending_messages()
+                self._merge_pending_messages(chat_id, history_dict, tool_messages)
 
             fallback = await llm_chat(
                 messages=tool_messages,
