@@ -45,7 +45,7 @@ Yuki 拥有真正的**动态长效记忆**：
 ### ⚡ 稳健的异步架构
 
 - **主备 API 熔断切换**：主线路失败时无缝降级至备用线路。
-- **Provider 抽象层**：支持 DeepSeek、DashScope、OpenAI 等多平台，热重载无需重启。
+- **简化 LLM 客户端**：通过配置文件直接管理平台 URL、模型名称和 API 密钥，支持 DeepSeek、DashScope、OpenAI 等多平台。
 - **YAML 热重载配置**：所有运行时参数统一从 `configs/config.yaml` 读取，修改即生效。
 
 ---

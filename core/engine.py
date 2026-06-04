@@ -13,6 +13,7 @@ from config import cfg
 from core.maid import maid_evolution_loop
 from core.prompts import build_ice_break_prompt
 from core.prompts import get_base_setting, get_summary_prompt, build_chat_context
+from utils.llm_client import llm_chat
 from utils.logger import get_logger
 
 logger = get_logger("engine")
@@ -27,12 +28,6 @@ class YukiEngine:
         self.maid = None  # 后面再赋值
         self.process_callback = None  # 预留回调接口
         self.sticker_manager = None
-
-    @property
-    def provider(self):
-        """每次访问时从 ProviderRegistry 获取最新实例，确保热重载后生效。"""
-        from providers.registry import ProviderRegistry
-        return ProviderRegistry().get("default")
 
     async def api_reply(self, chat_id: str, combined_text: str, history_dict: dict, mode,
                         relevant_diaries: list[Any]) -> str:
@@ -49,14 +44,14 @@ class YukiEngine:
         # 发送对话补全到DeepSeek
         logger.info(f"[System] {cfg.ROBOT_NAME.title()} 正在打字...")
         try:
-            Yuki_Answer = await self.provider.chat(
+            Yuki_Answer = await llm_chat(
                 messages=combined_API_message,
                 model=cfg.LLM_MODEL,
-                temperature=0.8,  # 降低温度，让它说话更稳、更常用
-                top_p=0.8,  # 稍微收窄采样范围，过滤冷门词
-                frequency_penalty=0.05,  # 极低的惩罚，允许它说大白话
-                presence_penalty=0.2,  # 不强迫它聊新话题
-                max_tokens=220  # 强制短句，短句更容易显自然
+                temperature=0.8,
+                top_p=0.8,
+                frequency_penalty=0.05,
+                presence_penalty=0.2,
+                max_tokens=220
             )
             # 清除补全文本
             Yuki_Answer_raw = Yuki_Answer = re.sub(r'\s*FINISHED\s*$', '', Yuki_Answer, flags=re.IGNORECASE)
@@ -272,7 +267,7 @@ class YukiEngine:
             logger.debug(f"[DEBUG] \n {messages}")
             logger.info(f"[System] 判定消息构建完成，正在发送API请求... (当前精力: {current_e:.1f})")
 
-            raw_response = await self.provider.chat(
+            raw_response = await llm_chat(
                 messages=messages,
                 model=cfg.LLM_MODEL,
                 max_tokens=10,
@@ -293,7 +288,7 @@ class YukiEngine:
         dialogue_msgs = [msg for msg in history if msg["role"] != "system"]
         content_to_summarize = json.dumps(dialogue_msgs, ensure_ascii=False)
         try:
-            diary_content = await self.provider.chat(
+            diary_content = await llm_chat(
                 messages=[
                     {"role": "system", "content": get_base_setting()},
                     {"role": "user", "content": (
@@ -305,7 +300,7 @@ class YukiEngine:
                 model=cfg.LLM_MODEL,
                 temperature=0.7,
                 top_p=0.8,
-                frequency_penalty=0.1,  # 极低的惩罚，允许它说大白话
+                frequency_penalty=0.1,
                 presence_penalty=0.0,
                 max_tokens=200
             )
@@ -414,7 +409,7 @@ class YukiEngine:
         logger.info(f"[System] {cfg.ROBOT_NAME.title()} 正在破冰... (Query: {query})")
         try:
             # 4. API 调用
-            Yuki_Answer = await self.provider.chat(
+            Yuki_Answer = await llm_chat(
                 messages=prompt,
                 model=cfg.LLM_MODEL,
                 temperature=0.8,

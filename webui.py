@@ -1,16 +1,14 @@
 import gradio as gr
 from config import cfg, _ATTR_MAP, _SECTION_HEADERS
-from providers.registry import _PROVIDER_REGISTRY
+from utils.llm_client import AVAILABLE_PLATFORMS
 import logging
 
 logger = logging.getLogger("main")
 
 
 def _get_platform_options():
-    """获取已注册平台列表（动态，确保 Provider 发现已完成）"""
-    from providers.registry import ProviderRegistry
-    ProviderRegistry()
-    return sorted(set(list(_PROVIDER_REGISTRY.keys()) + ["openai", "custom"]))
+    """获取可用平台列表。"""
+    return AVAILABLE_PLATFORMS
 
 
 def get_nested(data, path):

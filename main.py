@@ -120,7 +120,7 @@ def initialize_components():
     from modules.stickers.manager import StickerManager
     sticker_manager = StickerManager()
     
-    # 实例化Yuki主引擎（内部自动从 ProviderRegistry 获取 default provider）
+    # 实例化Yuki主引擎
     engine = YukiEngine(memory_rag, history_manager, yuki, sender)
     engine.process_callback = main_process
     engine.sticker_manager = sticker_manager
@@ -324,7 +324,7 @@ async def main_process(chat_id, mode, debounce_flag=True, force_reply=None):
 _cleanup_done = False
 
 def _do_cleanup():
-    """同步清理资源：关闭 ProviderRegistry 释放 aiohttp Session"""
+    """同步清理资源：关闭全局 aiohttp Session"""
     global _cleanup_done
     if _cleanup_done:
         return
@@ -336,9 +336,9 @@ def _do_cleanup():
     except Exception as e:
         logger.error(f"[System] 保存配置时出错: {e}")
     try:
-        from providers.registry import ProviderRegistry
+        from utils.llm_client import close_global_session
         loop = asyncio.new_event_loop()
-        loop.run_until_complete(ProviderRegistry().close_all())
+        loop.run_until_complete(close_global_session())
         loop.close()
         logger.info("[System] 资源清理完成")
     except Exception as e:

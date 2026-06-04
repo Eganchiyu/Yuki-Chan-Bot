@@ -8,7 +8,7 @@ import subprocess
 from datetime import datetime
 
 from config import cfg
-from providers.registry import ProviderRegistry
+from utils.llm_client import llm_chat, close_global_session
 from utils.logger import get_logger
 
 logger = get_logger("maid")
@@ -22,16 +22,14 @@ def clean_json_output(text):
 
 
 async def call_cloud_maid_robust(messages):
-    """调用 Provider 完成小女仆任务。"""
-    provider = ProviderRegistry().get("default")
-
+    """调用 LLM 完成小女仆任务。"""
     # 强制要求 JSON 格式输出
     payload_kwargs = {
         "response_format": {"type": "json_object"},
         "temperature": 0.3
     }
 
-    result = await provider.chat(
+    result = await llm_chat(
         messages=messages,
         model=cfg.LLM_MODEL,
         **payload_kwargs
@@ -440,8 +438,8 @@ if __name__ == "__main__":
             if result:
                 logger.info(f"\n✅ 任务完成！结果: {result.get('result', '无返回信息')}")
         finally:
-            # 4. 无论成功失败，关闭 ProviderRegistry 释放资源
-            await ProviderRegistry().close_all()
+            # 4. 无论成功失败，关闭全局 Session 释放资源
+            await close_global_session()
 
     # 5. 启动 asyncio 事件循环
     try:
