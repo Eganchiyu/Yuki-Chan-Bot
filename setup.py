@@ -85,8 +85,15 @@ def ensure_files():
     """确保必要的文件存在并有初始内容"""
     # 1. 自动生成初始黑名单
     if not os.path.exists("blacklist.txt"):
+        # 从配置中获取主人名称，如果配置文件不存在则使用默认值
+        try:
+            from config import cfg
+            master_name = cfg.MASTER_NAME
+        except:
+            master_name = "主人"
+        
         with open("blacklist.txt", "w", encoding="utf-8") as f:
-            f.write("yuki\n主人\n哥哥\n池宇健\n人家")
+            f.write(f"yuki\n主人\n哥哥\n{master_name}\n人家")
         print("已生成初始 blacklist.txt")
     else:
         print("📝 已存在 blacklist.txt，跳过")

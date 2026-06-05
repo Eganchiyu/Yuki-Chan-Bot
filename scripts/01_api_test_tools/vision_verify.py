@@ -11,7 +11,7 @@ from config import cfg
 
 # --- 配置区 ---
 API_KEY = cfg.LLM_API_KEY
-BASE_URL = "https://api.ytea.top/v1/chat/completions"  # 根据实际地址调整
+BASE_URL = cfg.LLM_BASE_URL + "/chat/completions"  # 从配置中读取
 # 待验证的模型列表
 MODELS_TO_CHECK = [
     "qwen3-vl-plus",

@@ -94,7 +94,7 @@ class HistoryManager:
         if cid in history:
             whisper_msg = {
                 "role": "assistant",
-                "content": f"【池宇健对yuki的悄悄话】：{message}"
+                "content": f"【{cfg.MASTER_NAME}对{cfg.ROBOT_NAME}的悄悄话】：{message}"
             }
             history[cid].append(whisper_msg)
             self.save(history)

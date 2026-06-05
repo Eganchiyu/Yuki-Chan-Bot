@@ -154,7 +154,7 @@ async def feed_message(chat_id, content, mode, raw_message="", sender_name="", u
 
     if chat_id not in yuki.message_buffer:
         yuki.message_buffer[chat_id] = []
-    if not is_bot or (user_id and user_id in (1390249127, 3385516316)):
+    if not is_bot or (user_id and user_id in cfg.TARGET_WHITELIST):
         yuki.message_buffer[chat_id].append({
             "name": sender_name,
             "content": content,

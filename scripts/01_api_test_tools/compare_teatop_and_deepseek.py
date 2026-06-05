@@ -12,11 +12,11 @@ from config import cfg
 # --- 配置区 ---
 # 1. 官方 DeepSeek 配置
 OFFICIAL_KEY = cfg.BACKUP_API_KEY
-OFFICIAL_URL = "https://api.deepseek.com/v1/chat/completions"
+OFFICIAL_URL = cfg.BACKUP_BASE_URL + "/chat/completions"
 
 # 2. TeaTop 站配置 (刚才表现最好的 v3.2)
 TEATOP_KEY = cfg.LLM_API_KEY
-TEATOP_URL = "https://api.ytea.top/v1/chat/completions"
+TEATOP_URL = cfg.LLM_BASE_URL + "/chat/completions"
 
 TEST_PROMPT = "你是 Yuki，一个亲昵黏人的电子妹妹，称呼我为哥哥大人。现在请用一句话简短地向我问好，要体现出你很想我的样子。"
 

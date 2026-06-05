@@ -178,6 +178,11 @@ class TargetConfig:
         comment="目标群聊 QQ 号列表",
         section="target"
     )
+    whitelist: List[int] = config_field_factory(
+        list,
+        comment="白名单 QQ 号列表（可绕过机器人过滤）",
+        section="target"
+    )
 
 
 @dataclass
@@ -637,6 +642,11 @@ class Config:
     def TARGET_GROUPS(self) -> List[int]:
         """目标群组列表"""
         return [int(g) for g in self.target.groups]
+
+    @property
+    def TARGET_WHITELIST(self) -> List[int]:
+        """白名单 QQ 号列表"""
+        return [int(q) for q in self.target.whitelist]
 
     @property
     def keywords(self) -> List[str]:

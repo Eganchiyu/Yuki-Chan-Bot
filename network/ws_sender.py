@@ -69,9 +69,9 @@ if __name__ == "__main__":
     import requests
 
     print("正在获取 NapCat 支持的 AI 音色列表...")
-    # 替换为你实际的 NapCat HTTP 地址和任意一个你机器人所在的群号
-    BASE_URL = "http://127.0.0.1:3004"
-    TEST_GROUP_ID = "782427668"
+    # 从配置中获取 NapCat HTTP 地址，测试群号使用配置中的第一个群组
+    BASE_URL = cfg.NAPCAT_WS_URL.replace("ws://", "http://").replace(":3001", ":3004")
+    TEST_GROUP_ID = str(cfg.TARGET_GROUPS[0]) if cfg.TARGET_GROUPS else "000000000"
 
     try:
         res = requests.post(

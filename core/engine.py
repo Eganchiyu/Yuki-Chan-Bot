@@ -244,67 +244,9 @@ class YukiEngine:
             #     logger.error(f"[System] 翻译 API 调用失败，将降级使用原文本: {e}")
 
             # # ==========================================
-
-            # def fetch_voice(text):
-            #     # ==================================================
-            #     # 1. 首次呼叫时，分别挂载 GPT 和 SoVITS 模型
-            #     # ==================================================
-            #     if not getattr(self, 'is_sovits_loaded', False):
-            #         logger.info("[System] 首次激活语音，正在将 Neuro 模型挂载至显存...")
-
-            #         # 新版 API_V2 必须分别调用这两个接口挂载模型
-            #         url_gpt = "http://127.0.0.1:9880/set_gpt_weights?weights_path=GPT_weights/keli_ZH-e10.ckpt"
-            #         url_sovits = "http://127.0.0.1:9880/set_sovits_weights?weights_path=SoVITS_weights/keli_ZH_e10_s530_l32.pth"
-
-            #         try:
-            #             requests.get(url_gpt, timeout=60)
-            #             requests.get(url_sovits, timeout=60)
-            #             self.is_sovits_loaded = True
-            #             logger.info("[System] Neuro 灵魂挂载成功！")
-            #         except Exception as e:
-            #             logger.error(f"[SoVITS] 模型挂载失败: {e}")
-            #             return None
-
-            #     # ==================================================
-            #     # 2. 正式请求语音合成 (注意路由改为了 /tts)
-            #     # ==================================================
-            #     encoded_text = urllib.parse.quote(text)
-
-            #     # 你的参考音频绝对路径 (确保用正斜杠)
-            #     ref_audio_abs_path = "D:/Projects/GPT-SoVITS-v2pro-20250604/assets/ref.wav"
-            #     # 你的神仙空耳台词
-            #     prompt_text = urllib.parse.quote(
-            #         "玩得太开心，忘、忘在脑后了…")
-
-            #     # 新版请求地址：带有 /tts 前缀
-            #     # ⚠️ 修正：日文的语言代码在 SoVITS 中通常是 'ja' 而不是 'jp'
-            #     url = f"http://127.0.0.1:9880/tts?text={encoded_text}&text_lang=zh&ref_audio_path={ref_audio_abs_path}&prompt_text={prompt_text}&prompt_lang=en"
-
-            #     try:
-            #         res = requests.get(url, timeout=75)
-            #         if res.status_code == 200:
-            #             os.makedirs("data/voices", exist_ok=True)
-            #             save_path = os.path.abspath(f"data/voices/{chat_id}_reply.wav")
-            #             with open(save_path, "wb") as f:
-            #                 f.write(res.content)
-            #             return save_path
-            #         else:
-            #             logger.error(f"[SoVITS] 生成失败，服务器返回状态码: {res.status_code}")
-            #     except Exception as e:
-            #         logger.error(f"[SoVITS] 请求异常: {e}")
-            #     return None
-
-            # logger.info(f"[System] 正在呼叫 GPT-SoVITS 生成声音...")
-
-            # # 使用 asyncio.to_thread 防止 requests 阻塞主协程
-            # voice_local_path = await asyncio.to_thread(fetch_voice, clean_text)
-
-            # if voice_local_path:
-            #     # 偷天换日：把返回的文字变成 QQ 的语音 CQ 码！
-            #     # 这样外层的 sender.send() 就会把它当成本地语音发送啦
-            #     return Yuki_Answer, f"[CQ:record,file=file:///{voice_local_path}]"
-
-            # # 如果语音生成失败了（比如超时或报错），降级返回文字，保证不冷场
+            # # 语音合成功能（已禁用）
+            # # 需要配置本地 SoVITS 服务才能使用
+            # # ==========================================
             return Yuki_Answer_raw, Yuki_Answer, ""
         except Exception as e:
             logger.error(f"调用失败: {e}")

@@ -184,11 +184,14 @@ if __name__ == "__main__":
 
     print("正在启动打标 UI 工具...")
 
-    # 获取项目根目录，或者直接硬编码你的绝对路径
+    # 动态获取项目根目录
+    project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+    stickers_path = os.path.join(project_root, "data", "stickers")
+    
     demo.launch(
         inbrowser=True,
         allowed_paths=[
-            "D:/Projects/YukiV6",  # 放行整个项目根目录
-            "D:/Projects/YukiV6/data/stickers"  # 精准放行表情包目录
+            project_root,  # 放行整个项目根目录
+            stickers_path  # 精准放行表情包目录
         ]
     )

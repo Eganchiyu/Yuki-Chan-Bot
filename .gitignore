@@ -61,6 +61,9 @@ configs/*
 secrets.yaml
 secrets.yml
 
+# 包含硬编码路径的数据文件
+manual_stickers.json
+
 # 项目文档和脚本
 project_for_ai.txt
 start.cmd
@@ -77,6 +80,8 @@ Desktop.ini
 *.temp
 *.bak
 *.backup
+temp_expression.png
+window_list.txt
 
 # UV 包管理器
 .uv/

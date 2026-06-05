@@ -13,9 +13,10 @@ import config as cfg
 
 class MemoryAuditor:
     def __init__(self):
-        self.api_key = "xxxxxxxxx"
-        self.api_url = "https://api.deepseek.com/chat/completions"
-        self.model = "deepseek-chat"  # 沿用你测试效果最好的模型
+        # 从配置文件读取 API 配置
+        self.api_key = cfg.LLM_API_KEY
+        self.api_url = cfg.LLM_BASE_URL + "/chat/completions"
+        self.model = cfg.LLM_MODEL
 
     async def ask_yuki_to_choose(self, doc_a, doc_b, retries=3):
         """让 AI 决定保留哪条记录，带重试逻辑"""

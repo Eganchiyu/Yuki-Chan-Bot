@@ -7,9 +7,24 @@
 
 ---
 
-## [未发布] - 2026-06-04
+## [未发布] - 2026-06-05
 
 ### 新增
+- **硬编码敏感信息清理**：
+  - 在 `config.py` 中新增 `TargetConfig.whitelist` 字段和 `Config.TARGET_WHITELIST` 属性，支持白名单 QQ 号配置
+  - 将 `modules/QQNapcatListen/listen_main.py` 中硬编码的 QQ 号白名单改为从配置读取
+  - 将 `core/history_manager.py` 中硬编码的真实姓名改为从 `cfg.MASTER_NAME` 和 `cfg.ROBOT_NAME` 动态读取
+  - 将 `modules/memory/rag.py` 和 `setup.py` 中的黑名单默认值改为从配置读取主人名称
+  - 将 `scripts/03_RAG_Tools/yuki_memoryDB_tool.py` 中硬编码的 API Key 和 URL 改为从配置读取
+  - 将 `scripts/01_api_test_tools/` 目录下多个测试脚本中的硬编码 API URL 改为从配置读取
+  - 将 `modules/label.py` 中硬编码的绝对路径改为动态获取项目根目录
+  - 将 `network/ws_sender.py` 中硬编码的测试群号改为从配置读取
+  - 清理 `core/engine.py` 中包含本机路径和 IP 地址的注释代码块
+  - 更新 `blacklist.txt`、`modules/memory/blacklist.txt`、`scripts/03_RAG_Tools/blacklist.txt`，将真实姓名替换为通用占位符
+  - 更新 `scripts/01_api_test_tools/teatop.py` 中的测试 Prompt，移除真实姓名
+  - 更新 `.gitignore`，添加 `manual_stickers.json`、`temp_expression.png`、`window_list.txt` 防止敏感数据文件被提交
+
+### 变更
 - **工具链与小女仆协同第一阶段重构**：
   - 新增 `core/toolchain.py`，提供 `FunctionRegistry`、`ToolCallManager`、`ToolContext` 与 `ToolResult`
   - 新增 `core/tools.py`，将日记查询、定时任务、小女仆委托、主人私密发送、浏览器搜索、QQ 文件发送、外部内容注入包装为统一工具接口
