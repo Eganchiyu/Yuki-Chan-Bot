@@ -1,12 +1,12 @@
 # core/brain.py
+import asyncio
 import datetime
 import math
 from collections import defaultdict
 from concurrent.futures.thread import ThreadPoolExecutor
 
-from core.prompts import get_yuki_setting_private, get_yuki_setting_group
 from config import cfg
-import asyncio
+from core.prompts import get_yuki_setting_private, get_yuki_setting_group
 from utils.logger import get_logger
 
 logger = get_logger("brain")
@@ -129,10 +129,16 @@ class YukiState:
 
     def pop_buffer(self, chat_id):
         """原子化取出并清空缓冲区"""
-        msgs = self.message_buffer.get(chat_id, [])
+        cid = str(chat_id)
+        msgs = self.message_buffer.get(chat_id) or self.message_buffer.get(cid, [])
         self.message_buffer[chat_id] = []
-        if chat_id in self.buffer_tasks:
-            del self.buffer_tasks[chat_id]
+        self.message_buffer[cid] = self.message_buffer[chat_id]
+        # 清理已完成的 buffer_tasks，防止内存泄漏
+        # 注意：只清理已完成的任务，避免在任务执行期间删除导致竞态条件
+        task = self.buffer_tasks.get(chat_id) or self.buffer_tasks.get(cid)
+        if task and task.done():
+            self.buffer_tasks.pop(chat_id, None)
+            self.buffer_tasks.pop(cid, None)
         return msgs
 
     # @staticmethod

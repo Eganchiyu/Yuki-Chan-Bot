@@ -1,5 +1,5 @@
-import sys
 import os
+import sys
 
 # 魔法代码：动态获取当前文件的上一级（也就是 YukiV6 根目录），并塞进环境变量
 project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -7,7 +7,7 @@ if project_root not in sys.path:
     sys.path.append(project_root)
 
 # 现在 Python 能看到根目录的 config.py 了，再正常导入就没问题啦
-from maid import search_diary_fast
+from core.maid import search_diary_fast
 
 def run_tests():
     print(f"{' Yuki 记忆检索引擎测试 ':=^40}")
