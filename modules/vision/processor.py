@@ -18,10 +18,10 @@ logger = get_logger("vision_processor")
 
 class MemeProcessor:
     def __init__(self):
-        from providers.registry import ProviderRegistry
+        from utils.llm_client import vision_chat as _vision_chat
         self.cache = MemeCache()
         self.semaphore = asyncio.Semaphore(cfg.MAX_CONCURRENT_MEME)
-        self._registry = ProviderRegistry()
+        self._vision_chat = _vision_chat
 
     @staticmethod
     def get_image_hash(image_data):
@@ -75,10 +75,9 @@ class MemeProcessor:
             }
         ]
 
-        # 优先使用注册中心的 vision provider（更具扩展性）
-        if self._registry and self._registry.has("vision"):
-            provider = self._registry.get("vision")
-            return await provider.chat(
+        # 优先使用视觉模型接口
+        if self._vision_chat:
+            return await self._vision_chat(
                 messages=messages,
                 model=cfg.VISION_MODEL,
                 max_tokens=50,

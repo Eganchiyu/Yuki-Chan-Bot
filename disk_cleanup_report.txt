@@ -1,0 +1,52 @@
+=== 磁盘清理建议报告（快速扫描） ===
+生成时间: 2026-06-05 09:15:28
+
+--- C: 盘 ---
+总占用空间（根目录及一级子目录）: 32.91 GB
+
+占用空间最大的文件类型（前10）:
+  .sys: 26.30 GB
+  .dll: 176.38 KB
+  .tmp: 12.00 KB
+
+占用空间最大的文件夹（前10）:
+  Windows: 4.91 GB
+  $Recycle.Bin: 1.26 GB
+  Program Files: 400.71 MB
+  Users: 18.05 MB
+  Ruby33-x64: 16.31 MB
+  Program Files (x86): 15.98 MB
+  ProgramData: 1.13 MB
+  IddSampleDriver: 231.00 B
+  Documents and Settings: 0.00 B
+  inetpub: 0.00 B
+
+清理建议:
+  - 临时文件（Temp）: 3.24 GB，可安全清理。
+  - 回收站: 1.26 GB，可清空。
+  - 浏览器缓存: 389.64 MB，可清理。
+  - 重复文件检测：建议使用专业工具（如CCleaner）进行深度扫描。
+
+--- D: 盘 ---
+总占用空间（根目录及一级子目录）: 44.39 GB
+
+占用空间最大的文件类型（前10）:
+  .zip: 2.92 MB
+  .txt: 132.00 B
+
+占用空间最大的文件夹（前10）:
+  Download: 19.88 GB
+  BaiduNetdiskDownload: 19.88 GB
+  Softwares: 1.70 GB
+  电脑驱动: 854.00 MB
+  $RECYCLE.BIN: 726.74 MB
+  Files: 579.83 MB
+  Games: 319.75 MB
+  Projects: 288.55 MB
+  Dev: 146.47 MB
+  Tools: 68.46 MB
+
+清理建议:
+  - 临时文件（Temp）: 2.16 GB，可安全清理。
+  - 回收站: 726.74 MB，可清空。
+  - 重复文件检测：建议使用专业工具（如CCleaner）进行深度扫描。

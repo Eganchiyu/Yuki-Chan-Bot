@@ -1,93 +1,860 @@
 # config.py
-import copy
-import hashlib
-import logging
+"""
+YukiV6 配置系统
+
+设计原则：
+1. 使用 dataclass 定义配置结构 - 类型安全、IDE 友好
+2. 分层配置 - 默认值 → YAML 文件
+3. 简化路径解析 - 统一处理相对路径
+4. 启动时一次性加载 - 无热重载
+5. 向后兼容 - cfg.xxx 访问方式不变
+
+增强特性：
+- 单一数据源：只在 dataclass 中定义，yaml 自动同步
+- 配置项注释：通过 field metadata 添加注释
+- 自动同步：运行 python config.py sync 自动生成/更新 yaml
+"""
+
 import os
-import time
+from dataclasses import dataclass, field, fields
+from typing import List, Optional, Any
+
 import yaml
-import aiohttp
 
 from utils import BASE_DIR
 
-logger = logging.getLogger("config")
 
-# 属性名 -> (yaml 路径元组, 默认值, 注释)
-# 注释为 None 表示不添加行尾注释
-_ATTR_MAP = {
+def config_field(
+    default: Any = None,
+    *,
+    comment: str = "",
+    section: str = "",
+    **kwargs
+) -> Any:
+    """
+    配置项字段工厂函数
+
+    Args:
+        default: 默认值
+        comment: 配置项注释
+        section: 所属分组（用于 yaml 生成）
+        **kwargs: 其他 dataclass field 参数
+
+    Returns:
+        dataclass field
+
+    示例：
+        @dataclass
+        class MyConfig:
+            name: str = config_field("default", comment="名称配置")
+    """
+    metadata = kwargs.pop("metadata", {})
+    metadata.update({
+        "comment": comment,
+        "section": section,
+    })
+    return field(default=default, metadata=metadata, **kwargs)
+
+
+def config_field_factory(
+    default_factory,
+    *,
+    comment: str = "",
+    section: str = "",
+    **kwargs
+) -> Any:
+    """
+    配置项字段工厂函数（用于可变默认值）
+
+    Args:
+        default_factory: 默认值工厂函数
+        comment: 配置项注释
+        section: 所属分组
+        **kwargs: 其他 dataclass field 参数
+
+    Returns:
+        dataclass field
+    """
+    metadata = kwargs.pop("metadata", {})
+    metadata.update({
+        "comment": comment,
+        "section": section,
+    })
+    return field(default_factory=default_factory, metadata=metadata, **kwargs)
+
+
+# ==================== 配置数据类 ====================
+
+@dataclass
+class APIConfig:
+    """API 配置"""
+    llm_base_url: str = config_field(
+        "https://api.deepseek.com/v1",
+        comment="首选 LLM API 地址",
+        section="api"
+    )
+    backup_base_url: str = config_field(
+        "https://api.deepseek.com/v1",
+        comment="备选 LLM API 地址",
+        section="api"
+    )
+    image_process_url: str = config_field(
+        "https://dashscope.aliyuncs.com/compatible-mode/v1",
+        comment="视觉模型 API 地址",
+        section="api"
+    )
+    llm_api_key: str = config_field(
+        "",
+        comment="首选 LLM API Key",
+        section="api"
+    )
+    backup_api_key: str = config_field(
+        "",
+        comment="备选 API Key（留空则使用 llm_api_key）",
+        section="api"
+    )
+    image_process_api_key: str = config_field(
+        "",
+        comment="图像处理 API Key",
+        section="api"
+    )
+
+
+@dataclass
+class ModelConfig:
+    """模型配置"""
+    llm: str = config_field(
+        "deepseek-chat",
+        comment="主对话模型",
+        section="model"
+    )
+    backup: str = config_field(
+        "deepseek-chat",
+        comment="备用对话模型",
+        section="model"
+    )
+    vision: str = config_field(
+        "qwen3-vl-flash",
+        comment="视觉/多模态模型；如不需要可留空",
+        section="model"
+    )
+    disable_thinking: bool = config_field(
+        True,
+        comment="默认关闭模型的 thinking/reasoning 输出",
+        section="model"
+    )
+
+
+@dataclass
+class ConnectionConfig:
+    """连接配置"""
+    napcat_ws_url: str = config_field(
+        "ws://localhost:3001",
+        comment="NapCat WebSocket 地址",
+        section="connection"
+    )
+    napcat_ws_token: str = config_field(
+        "",
+        comment="NapCat WebSocket 认证 Token（留空则不认证）",
+        section="connection"
+    )
+    max_retries: int = config_field(
+        3,
+        comment="最大重试次数",
+        section="connection"
+    )
+
+
+@dataclass
+class TargetConfig:
+    """目标配置"""
+    qq: int = config_field(
+        0,
+        comment="私聊目标 QQ 号",
+        section="target"
+    )
+    groups: List[int] = config_field_factory(
+        list,
+        comment="目标群聊 QQ 号列表",
+        section="target"
+    )
+
+
+@dataclass
+class DiaryConfig:
+    """日记触发配置"""
+    idle_seconds: int = config_field(
+        120,
+        comment="空闲多久后触发日记（秒）",
+        section="diary"
+    )
+    min_turns: int = config_field(
+        15,
+        comment="最小对话轮数阈值",
+        section="diary"
+    )
+    max_length: int = config_field(
+        50,
+        comment="历史记录超过此条数强制写日记",
+        section="diary"
+    )
+
+
+@dataclass
+class RAGConfig:
+    """RAG 记忆配置"""
+    retrieval_top_k: int = config_field(
+        20,
+        comment="检索返回的最大日记条数",
+        section="rag"
+    )
+    keep_last_dialogue: int = config_field(
+        10,
+        comment="保留的近期对话条数（短期记忆）",
+        section="rag"
+    )
+
+
+@dataclass
+class EnergyConfig:
+    """精力值系统配置"""
+    initial: int = config_field(
+        100,
+        comment="初始精力值",
+        section="energy"
+    )
+    max: float = config_field(
+        100.0,
+        comment="最大精力值上限",
+        section="energy"
+    )
+    recovery_per_min: float = config_field(
+        0.8,
+        comment="每分钟恢复精力值",
+        section="energy"
+    )
+    cost_per_reply: int = config_field(
+        6,
+        comment="每次回复消耗精力值",
+        section="energy"
+    )
+    min_active: int = config_field(
+        25,
+        comment="低于此值进入低活跃状态",
+        section="energy"
+    )
+
+
+@dataclass
+class AttentionConfig:
+    """注意力/响应配置"""
+    sensitivity: float = config_field(
+        0.12,
+        comment="注意力敏感度",
+        section="attention"
+    )
+    decay_level: float = config_field(
+        0.65,
+        comment="注意力衰减系数",
+        section="attention"
+    )
+    sigmoid_centre: float = config_field(
+        50.0,
+        comment="Sigmoid 中心点",
+        section="attention"
+    )
+    sigmoid_alpha: float = config_field(
+        0.08,
+        comment="Sigmoid 陡峭度",
+        section="attention"
+    )
+    keywords: List[str] = config_field_factory(
+        lambda: ["主人", "哥哥"],
+        comment="注意力关键词列表",
+        section="attention"
+    )
+
+
+@dataclass
+class PathsConfig:
+    """本地文件路径配置"""
+    vector_db: str = config_field(
+        "./yuki_memory",
+        comment="向量数据库路径",
+        section="paths"
+    )
+    embed_model: str = config_field(
+        "./models/text2vec-base-chinese",
+        comment="嵌入模型路径",
+        section="paths"
+    )
+    history_file: str = config_field(
+        "./data/chat_history.json",
+        comment="历史记录文件路径",
+        section="paths"
+    )
+    log_file: str = config_field(
+        "./data/yuki_log.txt",
+        comment="日志文件路径",
+        section="paths"
+    )
+    cache_dir: str = config_field(
+        "./data",
+        comment="缓存目录路径",
+        section="paths"
+    )
+    cache_file: str = config_field(
+        "./data/meme_cache.json",
+        comment="缓存文件路径",
+        section="paths"
+    )
+
+
+@dataclass
+class RequestTimeoutConfig:
+    """请求超时配置"""
+    total: int = config_field(
+        60,
+        comment="总超时时间（秒）",
+        section="timing"
+    )
+    connect: int = config_field(
+        10,
+        comment="连接超时时间（秒）",
+        section="timing"
+    )
+    sock_read: int = config_field(
+        30,
+        comment="读取超时时间（秒）",
+        section="timing"
+    )
+
+
+@dataclass
+class TimingConfig:
+    """时间/超时配置"""
+    debounce_time: int = config_field(
+        32,
+        comment="防抖时间（秒）",
+        section="timing"
+    )
+    tool_call_delay_seconds: float = config_field(
+        1.2,
+        comment="工具调用前等待时间（秒），用于降低连续工具调用的机械感",
+        section="timing"
+    )
+    request_timeout: RequestTimeoutConfig = config_field_factory(
+        RequestTimeoutConfig,
+        comment="请求超时配置",
+        section="timing"
+    )
+
+
+# ==================== 主配置类 ====================
+
+@dataclass
+class Config:
+    """
+    配置中心 - 启动时从 config.yaml 一次性加载
+
+    使用方式：
+        from config import cfg
+        print(cfg.robot_name)
+        print(cfg.api.llm_api_key)
+
+    添加新配置项：
+        1. 在对应的 dataclass 中使用 config_field() 定义
+        2. 运行 python config.py sync 自动生成/更新 yaml
+    """
+    # 基础身份
+    robot_name: str = config_field(
+        "yuki",
+        comment="机器人名称",
+        section="identity"
+    )
+    master_name: str = config_field(
+        "主人",
+        comment="主人称呼",
+        section="identity"
+    )
+
     # 安全配置
-    "MAX_MESSAGE_LENGTH": (("max_message_length",), 150, "单条消息最大长度，防止 token 炸弹"),
+    max_message_length: int = config_field(
+        150,
+        comment="单条消息最大长度，防止 token 炸弹",
+        section="security"
+    )
 
-    # 日记触发
-    "DIARY_IDLE_SECONDS": (("diary", "idle_seconds"), 120, "空闲多久后触发日记（秒）"),
-    "DIARY_MIN_TURNS":    (("diary", "min_turns"), 15, "最小对话轮数阈值"),
-    "DIARY_MAX_LENGTH":   (("diary", "max_length"), 50, "历史记录超过此条数强制写日记"),
+    # 子配置组
+    api: APIConfig = config_field_factory(
+        APIConfig,
+        comment="API 配置",
+        section="api"
+    )
+    model: ModelConfig = config_field_factory(
+        ModelConfig,
+        comment="模型配置",
+        section="model"
+    )
+    connection: ConnectionConfig = config_field_factory(
+        ConnectionConfig,
+        comment="连接配置",
+        section="connection"
+    )
+    target: TargetConfig = config_field_factory(
+        TargetConfig,
+        comment="目标配置",
+        section="target"
+    )
+    diary: DiaryConfig = config_field_factory(
+        DiaryConfig,
+        comment="日记触发配置",
+        section="diary"
+    )
+    rag: RAGConfig = config_field_factory(
+        RAGConfig,
+        comment="RAG 记忆配置",
+        section="rag"
+    )
+    energy: EnergyConfig = config_field_factory(
+        EnergyConfig,
+        comment="精力值系统配置",
+        section="energy"
+    )
+    attention: AttentionConfig = config_field_factory(
+        AttentionConfig,
+        comment="注意力/响应配置",
+        section="attention"
+    )
+    paths: PathsConfig = config_field_factory(
+        PathsConfig,
+        comment="本地文件路径配置",
+        section="paths"
+    )
+    timing: TimingConfig = config_field_factory(
+        TimingConfig,
+        comment="时间/超时配置",
+        section="timing"
+    )
 
-    # RAG 记忆
-    "RETRIEVAL_TOP_K":     (("rag", "retrieval_top_k"), 20, "检索返回的最大日记条数"),
-    "KEEP_LAST_DIALOGUE":  (("rag", "keep_last_dialogue"), 10, "保留的近期对话条数（短期记忆）"),
+    # 并发/调试
+    max_concurrent_meme: int = config_field(
+        3,
+        comment="最大并发处理表情包数量",
+        section="debug"
+    )
+    debug: bool = config_field(
+        True,
+        comment="调试模式开关",
+        section="debug"
+    )
 
-    # API
-    "LLM_PLATFORM":          (("api", "llm_platform"), "deepseek", "首选 LLM 平台名称（deepseek/dashscope/openai）"),
-    "BACKUP_PLATFORM":       (("api", "backup_platform"), "deepseek", "备选 LLM 平台名称"),
-    "VISION_PLATFORM":       (("api", "vision_platform"), "dashscope", "视觉模型平台名称"),
-    "LLM_BASE_URL":          (("api", "llm_base_url"), "", "可选：覆盖首选平台内置 API 地址"),
-    "BACKUP_BASE_URL":       (("api", "backup_base_url"), "", "可选：覆盖备选平台内置 API 地址"),
-    "IMAGE_PROCESS_API_URL": (("api", "image_process_url"), "", "可选：覆盖视觉平台内置 API 地址"),
-    "LLM_API_KEY":           (("api", "llm_api_key"), "", "首选 LLM API Key"),
-    "BACKUP_API_KEY":        (("api", "backup_api_key"), "", "备选 API Key（留空则使用 llm_api_key）"),
-    "IMAGE_PROCESS_API_KEY": (("api", "image_process_api_key"), "", "图像处理 API Key"),
+    # ==================== 计算属性 ====================
 
-    # 模型
-    "LLM_MODEL":    (("model", "llm"), "deepseek-chat", "主对话模型"),
-    "BACKUP_MODEL": (("model", "backup"), "deepseek-chat", "备用对话模型"),
-    "VISION_MODEL": (("model", "vision"), "qwen3-vl-flash", "视觉/多模态模型；如不需要可留空"),
-    "DISABLE_THINKING": (("model", "disable_thinking"), True, "默认关闭模型的 thinking/reasoning 输出"),
+    @property
+    def ROBOT_NAME(self) -> str:
+        """机器人名称（小写）"""
+        return (self.robot_name or "yuki").lower()
 
-    # 连接
-    "NAPCAT_WS_URL":  (("connection", "napcat_ws_url"), "ws://localhost:3001", "NapCat WebSocket 地址"),
-    "NAPCAT_WS_TOKEN": (("connection", "napcat_ws_token"), "", "NapCat WebSocket 认证 Token（留空则不认证）"),
-    "MAX_RETRIES":    (("connection", "max_retries"), 3, "最大重试次数"),
+    @property
+    def MASTER_NAME(self) -> str:
+        """主人称呼"""
+        return self.master_name or "主人"
 
-    # 目标
-    "TARGET_QQ":     (("target", "qq"), 0, "私聊目标 QQ 号"),
-    "TARGET_GROUPS": (("target", "groups"), [], "目标群聊 QQ 号列表"),
+    @property
+    def LLM_BASE_URL(self) -> str:
+        """首选 LLM API 地址"""
+        return self.api.llm_base_url
 
-    # 时间
-    "DEBOUNCE_TIME": (("timing", "debounce_time"), 32, "防抖时间（秒）"),
+    @property
+    def BACKUP_BASE_URL(self) -> str:
+        """备选 LLM API 地址"""
+        return self.api.backup_base_url
 
-    # 精力值
-    "INITIAL_ENERGY":     (("energy", "initial"), 100, "初始精力值"),
-    "MAX_ENERGY":         (("energy", "max"), 100.0, "最大精力值上限"),
-    "RECOVERY_PER_MIN":   (("energy", "recovery_per_min"), 0.8, "每分钟恢复精力值"),
-    "COST_PER_REPLY":     (("energy", "cost_per_reply"), 6, "每次回复消耗精力值"),
-    "MIN_ACTIVE_ENERGY":  (("energy", "min_active"), 25, "低于此值进入低活跃状态"),
+    @property
+    def IMAGE_PROCESS_API_URL(self) -> str:
+        """视觉模型 API 地址"""
+        return self.api.image_process_url
 
-    # 注意力
-    "SENSITIVITY":      (("attention", "sensitivity"), 0.12, "注意力敏感度"),
-    "DECAY_LEVEL":      (("attention", "decay_level"), 0.65, "注意力衰减系数"),
-    "SIGMOID_CENTRE":   (("attention", "sigmoid_centre"), 50.0, "Sigmoid 中心点"),
-    "SIGMOID_ALPHA":    (("attention", "sigmoid_alpha"), 0.08, "Sigmoid 陡峭度"),
+    @property
+    def LLM_API_KEY(self) -> str:
+        """首选 LLM API Key"""
+        return self.api.llm_api_key
 
-    # 本地文件路径
-    "VECTOR_DB_PATH":  (("paths", "vector_db"), "./yuki_memory", "向量数据库路径"),
-    "EMBED_MODEL":     (("paths", "embed_model"), "./models/text2vec-base-chinese", "嵌入模型路径"),
-    "HISTORY_FILE":    (("paths", "history_file"), "./data/chat_history.json", "历史记录文件路径"),
-    "LOG_FILE":        (("paths", "log_file"), "./data/yuki_log.txt", "日志文件路径"),
-    "CACHE_DIR":       (("paths", "cache_dir"), "./data", "缓存目录路径"),
-    "CACHE_FILE":      (("paths", "cache_file"), "./data/meme_cache.json", "缓存文件路径"),
+    @property
+    def BACKUP_API_KEY(self) -> str:
+        """备选 LLM API Key"""
+        return self.api.backup_api_key
 
-    # 注意力关键词
-    "ATTENTION_KEYWORDS": (("attention", "keywords"), ["主人", "哥哥"], "注意力关键词列表（逗号分隔）"),
+    @property
+    def IMAGE_PROCESS_API_KEY(self) -> str:
+        """视觉模型 API Key"""
+        return self.api.image_process_api_key
 
-    # 并发 / 调试
-    "MAX_CONCURRENT_MEME": (("max_concurrent_meme",), 3, "最大并发处理表情包数量"),
-    "DEBUG":               (("debug",), True, "调试模式开关"),
-}
+    @property
+    def LLM_MODEL(self) -> str:
+        """主对话模型"""
+        return self.model.llm
 
-# Section 注释头映射：顶级键 -> 注释头
+    @property
+    def BACKUP_MODEL(self) -> str:
+        """备用对话模型"""
+        return self.model.backup
+
+    @property
+    def VISION_MODEL(self) -> str:
+        """视觉模型"""
+        return self.model.vision
+
+    @property
+    def DISABLE_THINKING(self) -> bool:
+        """是否关闭模型 thinking/reasoning 输出"""
+        raw_value = getattr(self, "_raw", {}).get("model", {}).get("disable_thinking")
+        return self.model.disable_thinking if raw_value is None else bool(raw_value)
+
+    @property
+    def NAPCAT_WS_URL(self) -> str:
+        """NapCat WebSocket 地址"""
+        return self.connection.napcat_ws_url
+
+    @property
+    def NAPCAT_WS_TOKEN(self) -> str:
+        """NapCat WebSocket Token"""
+        return self.connection.napcat_ws_token
+
+    @property
+    def MAX_RETRIES(self) -> int:
+        """最大重试次数"""
+        return self.connection.max_retries
+
+    @property
+    def TARGET_QQ(self) -> int:
+        """主人 QQ 号"""
+        return int(self.target.qq)
+
+    @property
+    def DEBUG(self) -> bool:
+        """调试模式"""
+        return self.debug
+
+    @property
+    def INITIAL_ENERGY(self) -> int:
+        """初始精力值"""
+        return self.energy.initial
+
+    @property
+    def MAX_ENERGY(self) -> float:
+        """最大精力值"""
+        return self.energy.max
+
+    @property
+    def RECOVERY_PER_MIN(self) -> float:
+        """每分钟恢复精力值"""
+        return self.energy.recovery_per_min
+
+    @property
+    def COST_PER_REPLY(self) -> int:
+        """每次回复消耗精力值"""
+        return self.energy.cost_per_reply
+
+    @property
+    def MIN_ACTIVE_ENERGY(self) -> int:
+        """低活跃精力阈值"""
+        return self.energy.min_active
+
+    @property
+    def SENSITIVITY(self) -> float:
+        """注意力敏感度"""
+        return self.attention.sensitivity
+
+    @property
+    def DECAY_LEVEL(self) -> float:
+        """注意力衰减系数"""
+        return self.attention.decay_level
+
+    @property
+    def SIGMOID_CENTRE(self) -> float:
+        """Sigmoid 中心点"""
+        return self.attention.sigmoid_centre
+
+    @property
+    def SIGMOID_ALPHA(self) -> float:
+        """Sigmoid 陡峭度"""
+        return self.attention.sigmoid_alpha
+
+    @property
+    def DIARY_IDLE_SECONDS(self) -> int:
+        """空闲日记触发时间"""
+        return self.diary.idle_seconds
+
+    @property
+    def DIARY_MIN_TURNS(self) -> int:
+        """日记最小轮数"""
+        return self.diary.min_turns
+
+    @property
+    def DIARY_MAX_LENGTH(self) -> int:
+        """历史强制总结长度"""
+        return self.diary.max_length
+
+    @property
+    def KEEP_LAST_DIALOGUE(self) -> int:
+        """保留近期对话条数"""
+        return self.rag.keep_last_dialogue
+
+    @property
+    def RETRIEVAL_TOP_K(self) -> int:
+        """RAG 默认检索条数"""
+        return self.rag.retrieval_top_k
+
+    @property
+    def DEBOUNCE_TIME(self) -> int:
+        """消息防抖时间"""
+        return self.timing.debounce_time
+
+    @property
+    def MAX_MESSAGE_LENGTH(self) -> int:
+        """单条消息最大长度"""
+        return self.max_message_length
+
+    @property
+    def MAX_CONCURRENT_MEME(self) -> int:
+        """最大并发表情包处理数"""
+        return self.max_concurrent_meme
+
+    @property
+    def REQUEST_TIMEOUT(self):
+        """请求超时配置（aiohttp.ClientTimeout）"""
+        import aiohttp
+        tc = self.timing.request_timeout
+        return aiohttp.ClientTimeout(
+            total=tc.total,
+            connect=tc.connect,
+            sock_read=tc.sock_read
+        )
+
+    @property
+    def TARGET_GROUPS(self) -> List[int]:
+        """目标群组列表"""
+        return [int(g) for g in self.target.groups]
+
+    @property
+    def keywords(self) -> List[str]:
+        """注意力关键词列表（包含机器人名称）"""
+        base = list(self.attention.keywords)
+        robot = self.ROBOT_NAME
+        if robot and robot not in base:
+            base.append(robot)
+        return base
+
+    # ==================== 路径属性（自动解析相对路径）====================
+
+    @staticmethod
+    def _resolve_path(p: str) -> str:
+        """解析路径：相对路径转绝对路径"""
+        if p and isinstance(p, str) and p.startswith("./"):
+            return os.path.join(BASE_DIR, p[2:])
+        return p
+
+    @property
+    def VECTOR_DB_PATH(self) -> str:
+        """向量数据库路径"""
+        return self._resolve_path(self.paths.vector_db) or os.path.join(BASE_DIR, "yuki_memory")
+
+    @property
+    def EMBED_MODEL(self) -> str:
+        """嵌入模型路径"""
+        return self._resolve_path(self.paths.embed_model) or os.path.join(BASE_DIR, "models", "text2vec-base-chinese")
+
+    @property
+    def HISTORY_FILE(self) -> str:
+        """历史记录文件路径"""
+        return self._resolve_path(self.paths.history_file) or os.path.join(BASE_DIR, "data", "chat_history.json")
+
+    @property
+    def LOG_FILE(self) -> str:
+        """日志文件路径"""
+        return self._resolve_path(self.paths.log_file) or os.path.join(BASE_DIR, "data", "yuki_log.txt")
+
+    @property
+    def CACHE_DIR(self) -> str:
+        """缓存目录路径"""
+        return self._resolve_path(self.paths.cache_dir) or os.path.join(BASE_DIR, "data")
+
+    @property
+    def CACHE_FILE(self) -> str:
+        """缓存文件路径"""
+        return self._resolve_path(self.paths.cache_file) or os.path.join(self.CACHE_DIR, "meme_cache.json")
+
+    # ==================== 兼容旧版 API ====================
+
+    def get(self, *keys, default=None):
+        """
+        显式读取嵌套配置（兼容旧版 API）
+
+        用法：cfg.get("api", "llm_api_key", default="")
+        """
+        d = self.__dict__
+        for k in keys:
+            if isinstance(d, dict) and k in d:
+                d = d[k]
+            elif hasattr(d, k):
+                d = getattr(d, k)
+            else:
+                return default
+        return d
+
+    def reload(self):
+        """兼容旧版 reload() - 重新加载配置文件"""
+        global cfg
+        cfg = load_config()
+
+
+# ==================== 配置加载函数 ====================
+
+def _deep_merge(base: dict, override: dict) -> dict:
+    """深度合并两个字典"""
+    result = base.copy()
+    for key, value in override.items():
+        if key in result and isinstance(result[key], dict) and isinstance(value, dict):
+            result[key] = _deep_merge(result[key], value)
+        else:
+            result[key] = value
+    return result
+
+
+def _dict_to_dataclass(cls, data: dict):
+    """将字典转换为 dataclass 实例"""
+    if not isinstance(data, dict):
+        return data
+
+    field_types = {f.name: f.type for f in cls.__dataclass_fields__.values()}
+    kwargs = {}
+
+    for key, value in data.items():
+        if key in field_types:
+            field_type = field_types[key]
+            # 如果字段类型是 dataclass，递归转换
+            if hasattr(field_type, '__dataclass_fields__') and isinstance(value, dict):
+                kwargs[key] = _dict_to_dataclass(field_type, value)
+            else:
+                kwargs[key] = value
+
+    return cls(**kwargs)
+
+
+def load_config(config_path: Optional[str] = None) -> Config:
+    """
+    加载配置文件
+
+    Args:
+        config_path: 配置文件路径，默认为 configs/config.yaml
+
+    Returns:
+        Config 实例
+    """
+    if config_path is None:
+        config_path = os.path.join(BASE_DIR, "configs", "config.yaml")
+
+    # 默认配置
+    default_config = Config()
+
+    # 如果配置文件不存在，创建默认配置
+    if not os.path.exists(config_path):
+        os.makedirs(os.path.dirname(config_path), exist_ok=True)
+        save_config(default_config, config_path)
+        default_config._raw = {}
+        default_config._content_hash = ""
+        return default_config
+
+    # 读取 YAML 配置
+    try:
+        with open(config_path, "r", encoding="utf-8") as f:
+            yaml_data = yaml.safe_load(f) or {}
+    except yaml.YAMLError as e:
+        # 配置文件损坏，备份并使用默认配置
+        bak_path = config_path + ".bak"
+        import shutil
+        shutil.copy2(config_path, bak_path)
+        print(f"[Config] 配置文件解析失败，已备份到 {bak_path}: {e}")
+        return default_config
+
+    # 将 YAML 数据转换为 Config 实例
+    config = _dict_to_dataclass(Config, yaml_data)
+    config._raw = yaml_data
+    config._content_hash = ""
+
+    return config
+
+
+def save_config(config: Config, config_path: Optional[str] = None):
+    """
+    保存配置到文件
+
+    Args:
+        config: Config 实例
+        config_path: 配置文件路径
+    """
+    if config_path is None:
+        config_path = os.path.join(BASE_DIR, "configs", "config.yaml")
+
+    os.makedirs(os.path.dirname(config_path), exist_ok=True)
+
+    # 转换为字典
+    from dataclasses import asdict
+    data = asdict(config)
+
+    # 生成 YAML
+    yaml_content = yaml.dump(
+        data,
+        allow_unicode=True,
+        default_flow_style=False,
+        sort_keys=False
+    )
+
+    # 添加文件头
+    header = "# YukiV6 配置文件\n# 所有配置均在此文件管理，请勿提交到 Git\n# 本文件已在 .gitignore 中\n\n"
+
+    with open(config_path, "w", encoding="utf-8") as f:
+        f.write(header + yaml_content)
+
+
+# ==================== 兼容旧版接口 ====================
+
+def _build_attr_map() -> dict:
+    """
+    从 dataclass 的 field metadata 自动构建 _ATTR_MAP
+
+    这样只需要在 dataclass 中定义一次，_ATTR_MAP 自动生成
+    """
+    attr_map = {}
+
+    def _collect_fields(cls, prefix=()):
+        for f in fields(cls):
+            field_path = prefix + (f.name,)
+            metadata = f.metadata or {}
+            comment = metadata.get("comment", "")
+
+            # 如果是 dataclass 类型，递归收集
+            field_type = f.type
+            if hasattr(field_type, '__dataclass_fields__'):
+                _collect_fields(field_type, field_path)
+            else:
+                # 构建大写名称
+                attr_name = "_".join(field_path).upper()
+                attr_map[attr_name] = (field_path, f.default if f.default is not f.default_factory else f.default_factory(), comment)
+
+    _collect_fields(Config)
+    return attr_map
+
+
+# 自动构建 _ATTR_MAP（向后兼容）
+_ATTR_MAP = _build_attr_map()
+
+# Section 注释头映射
 _SECTION_HEADERS = {
-    "robot_name": "# ================= 机器人身份 =================",
-    "max_message_length": "# ================= 安全配置 =================",
+    "identity": "# ================= 机器人身份 =================",
+    "security": "# ================= 安全配置 =================",
     "api": "# ================= API 配置 =================",
     "model": "# ================= 模型配置 =================",
     "connection": "# ================= 连接配置 =================",
@@ -98,265 +865,51 @@ _SECTION_HEADERS = {
     "timing": "# ================= 时间/超时配置 =================",
     "energy": "# ================= 精力值系统配置 =================",
     "attention": "# ================= 注意力/响应配置 =================",
-    "max_concurrent_meme": "# ================= 并发与调试配置 =================",
     "debug": "# ================= 调试配置 =================",
 }
 
 
-class Config:
-    """热重载配置中心 —— 所有配置项运行时从 configs/config.yaml 读取"""
+def _get_section_for_field(field_path: tuple) -> str:
+    """根据字段路径获取所属 section"""
+    # 从 dataclass 的 metadata 中获取 section
+    def _find_section(cls, prefix=(), target_path=()):
+        for f in fields(cls):
+            current_path = prefix + (f.name,)
+            metadata = f.metadata or {}
+            section = metadata.get("section", "")
 
-    _instance = None
+            if current_path == target_path:
+                return section
 
-    def __new__(cls):
-        if cls._instance is None:
-            cls._instance = super().__new__(cls)
-            cls._instance._init()
-        return cls._instance
+            field_type = f.type
+            if hasattr(field_type, '__dataclass_fields__'):
+                result = _find_section(field_type, current_path, target_path)
+                if result:
+                    return result
+        return ""
 
-    def _init(self):
-        self._path = os.path.join(BASE_DIR, "configs", "config.yaml")
-        self._raw = {}
-        self._content_hash = ""
-        self._last_good_content = ""
-        self._last_check = 0
-        self.reload()
+    return _find_section(Config, (), field_path)
 
-    def reload(self):
-        """强制重新加载配置文件，并自动补全缺失字段"""
-        if os.path.exists(self._path):
-            with open(self._path, "r", encoding="utf-8") as f:
-                content = f.read()
-            self._compute_hash(content)
-        else:
-            # 文件不存在时，生成带注释的默认配置并写入
-            content = generate_default_config()
-            with open(self._path, "w", encoding="utf-8") as f:
-                f.write(content)
-            self._compute_hash(content)
-        self._auto_fill()
 
-    def _auto_fill(self):
-        """自动将 _ATTR_MAP 中缺失的字段补全到内存中的 _raw（不覆盖已有值，不写磁盘）"""
-        added = []
-        for name, (path, default, comment) in _ATTR_MAP.items():
-            d = self._raw
-            exists = True
-            for k in path[:-1]:
-                if k not in d or not isinstance(d[k], dict):
-                    exists = False
-                    break
-                d = d[k]
-            if not exists or path[-1] not in d:
-                # 补全缺失字段
-                d = self._raw
-                for k in path[:-1]:
-                    if k not in d or not isinstance(d[k], dict):
-                        d[k] = {}
-                    d = d[k]
-                d[path[-1]] = default
-                added.append(".".join(path))
-        if added:
-            # 仅更新内存，不写入磁盘，避免覆盖用户注释
-            logger.info(f"[Config] 已自动补全 {len(added)} 个缺失字段（仅内存）: {', '.join(added)}")
+def generate_default_config() -> str:
+    """生成默认配置 YAML 文本（用于 setup.py）"""
+    from dataclasses import asdict
+    default_config = Config()
+    data = asdict(default_config)
 
-    def _save_raw(self):
-        """将当前 _raw 写回 configs/config.yaml"""
-        os.makedirs(os.path.dirname(self._path), exist_ok=True)
-        with open(self._path, "w", encoding="utf-8") as f:
-            yaml.dump(self._raw, f, allow_unicode=True, default_flow_style=False, sort_keys=False)
+    header = "# YukiV6 配置文件\n# 所有配置均在此文件管理，请勿提交到 Git\n# 本文件已在 .gitignore 中\n\n"
+    yaml_content = yaml.dump(
+        data,
+        allow_unicode=True,
+        default_flow_style=False,
+        sort_keys=False
+    )
 
-    def _compute_hash(self, content: str) -> bool:
-        """计算 hash，若内容变化则更新 _content_hash 和 _raw，返回 True"""
-        new_hash = hashlib.md5(content.encode("utf-8")).hexdigest()
-        if new_hash == self._content_hash:
-            return False
-        is_first_load = not self._content_hash and not self._raw
-        try:
-            new_raw = yaml.safe_load(content) or {}
-        except yaml.YAMLError as e:
-            # 备份损坏的配置文件
-            bak_path = self._path + ".bak"
-            with open(bak_path, "w", encoding="utf-8") as f:
-                f.write(content)
-            if is_first_load:
-                logger.error(f"[Config] 配置文件解析失败，已备份到 {os.path.basename(bak_path)}: {e}")
-                raise RuntimeError(f"配置文件 {self._path} 解析失败") from e
-            # 运行时自愈：恢复上一个已知的好的文件内容（保留注释）
-            if self._last_good_content:
-                with open(self._path, "w", encoding="utf-8") as f:
-                    f.write(self._last_good_content)
-                logger.warning(f"[Config] 配置文件解析失败，已备份到 {os.path.basename(bak_path)} 并恢复原文: {e}")
-            else:
-                self._save_raw()
-                logger.warning(f"[Config] 配置文件解析失败，已备份到 {os.path.basename(bak_path)} 并恢复默认配置: {e}")
-            return False
-        self._content_hash = new_hash
-        self._raw = new_raw
-        self._last_good_content = content
-        return True
-
-    @staticmethod
-    def _get_nested(data, path):
-        """按路径从嵌套字典取值"""
-        d = data
-        for k in path:
-            if isinstance(d, dict) and k in d:
-                d = d[k]
-            else:
-                return None
-        return d
-
-    def _check(self):
-        """检查文件是否有变更，如有则自动 reload（最多每秒检查一次）"""
-        now = time.time()
-        if now - self._last_check < 1.0:
-            return
-        self._last_check = now
-        if os.path.exists(self._path):
-            with open(self._path, "r", encoding="utf-8") as f:
-                content = f.read()
-            old_raw = copy.deepcopy(self._raw)
-            if self._compute_hash(content):
-                self._auto_fill()
-                changed = []
-                for name, (path, default, comment) in _ATTR_MAP.items():
-                    old_val = self._get_nested(old_raw, path)
-                    new_val = self._get_nested(self._raw, path)
-                    if old_val != new_val:
-                        changed.append((name, old_val, new_val))
-                if changed:
-                    logger.info("[Config] 检测到配置变更，已自动重载：")
-                    _SENSITIVE_KEYS = {"LLM_API_KEY", "BACKUP_API_KEY", "IMAGE_PROCESS_API_KEY", "NAPCAT_WS_TOKEN"}
-                    for name, old_val, new_val in changed:
-                        if name in _SENSITIVE_KEYS:
-                            old_disp = "***" if old_val else "(空)"
-                            new_disp = "***" if new_val else "(空)"
-                            logger.info(f"  {name}: {old_disp} → {new_disp}")
-                        else:
-                            logger.info(f"  {name}: {old_val!r} → {new_val!r}")
-
-                    # 若平台/API/模型配置发生变更，通知 ProviderRegistry 重新构建
-                    platform_related = {
-                        "LLM_PLATFORM", "BACKUP_PLATFORM", "VISION_PLATFORM",
-                        "LLM_API_KEY", "BACKUP_API_KEY", "IMAGE_PROCESS_API_KEY",
-                        "LLM_BASE_URL", "BACKUP_BASE_URL", "IMAGE_PROCESS_API_URL",
-                        "LLM_MODEL", "BACKUP_MODEL", "VISION_MODEL",
-                    }
-                    if any(n in platform_related for n, _, _ in changed):
-                        try:
-                            from providers.registry import ProviderRegistry
-                            ProviderRegistry().reload()
-                        except Exception as e:
-                            logger.error(f"[Config] ProviderRegistry 重载失败: {e}")
-
-    # ---------------- 通用属性访问 ----------------
-    def __getattr__(self, name):
-        if name.startswith("_"):
-            raise AttributeError(name)
-        self._check()
-        if name in _ATTR_MAP:
-            path, default, comment = _ATTR_MAP[name]
-            d = self._raw
-            for k in path:
-                if isinstance(d, dict) and k in d:
-                    d = d[k]
-                else:
-                    return default
-            return d
-        # 兜底：直接读顶层键
-        return self._raw.get(name)
-
-    def get(self, *keys, default=None):
-        """显式读取嵌套配置：cfg.get("api", "llm_api_key", default="")"""
-        self._check()
-        d = self._raw
-        for k in keys:
-            if isinstance(d, dict) and k in d:
-                d = d[k]
-            else:
-                return default
-        return d
-
-    # ---------------- 计算属性（需动态构造） ----------------
-    @property
-    def ROBOT_NAME(self):
-        self._check()
-        return (self._raw.get("robot_name") or "yuki").lower()
-
-    @property
-    def MASTER_NAME(self):
-        self._check()
-        return self._raw.get("master_name") or "主人"
-
-    @property
-    def REQUEST_TIMEOUT(self):
-        self._check()
-        tc = self._raw.get("timing", {}).get("request_timeout", {})
-        return aiohttp.ClientTimeout(
-            total=tc.get("total", 60),
-            connect=tc.get("connect", 10),
-            sock_read=tc.get("sock_read", 30)
-        )
-
-    @property
-    def TARGET_GROUPS(self):
-        self._check()
-        groups = self._raw.get("target", {}).get("groups", [])
-        if isinstance(groups, str):
-            return [int(g.strip()) for g in groups.split(",") if g.strip()]
-        return [int(g) for g in groups]
-
-    @property
-    def keywords(self):
-        self._check()
-        base = list(self._raw.get("attention", {}).get("keywords", ["主人", "哥哥"]))
-        robot = self.ROBOT_NAME
-        if robot and robot not in base:
-            base.append(robot)
-        return base
-
-    # ---------------- 路径解析 ----------------
-    @staticmethod
-    def _resolve_path(p):
-        if p and isinstance(p, str) and p.startswith("./"):
-            return os.path.join(BASE_DIR, p[2:])
-        return p
-
-    @property
-    def VECTOR_DB_PATH(self):
-        p = self._resolve_path(self._raw.get("paths", {}).get("vector_db", "./yuki_memory"))
-        return p or os.path.join(BASE_DIR, "yuki_memory")
-
-    @property
-    def EMBED_MODEL(self):
-        p = self._resolve_path(self._raw.get("paths", {}).get("embed_model", "./models/text2vec-base-chinese"))
-        return p or os.path.join(BASE_DIR, "models", "text2vec-base-chinese")
-
-    @property
-    def HISTORY_FILE(self):
-        p = self._resolve_path(self._raw.get("paths", {}).get("history_file", "./data/chat_history.json"))
-        return p or os.path.join(BASE_DIR, "data", "chat_history.json")
-
-    @property
-    def LOG_FILE(self):
-        p = self._resolve_path(self._raw.get("paths", {}).get("log_file", "./data/yuki_log.txt"))
-        return p or os.path.join(BASE_DIR, "data", "yuki_log.txt")
-
-    @property
-    def CACHE_DIR(self):
-        p = self._resolve_path(self._raw.get("paths", {}).get("cache_dir", "./data"))
-        return p or os.path.join(BASE_DIR, "data")
-
-    @property
-    def CACHE_FILE(self):
-        p = self._resolve_path(self._raw.get("paths", {}).get("cache_file", "./data/meme_cache.json"))
-        return p or os.path.join(self.CACHE_DIR, "meme_cache.json")
+    return header + yaml_content
 
 
 def _add_inline_comments(yaml_text: str) -> str:
-    """给 yaml 文本添加行尾注释和 section 注释头"""
-    # 从 _ATTR_MAP 构建注释映射
+    """给 YAML 文本添加行尾注释（用于 setup.py）"""
     comment_map = {}
     for name, (path, default, comment) in _ATTR_MAP.items():
         if comment:
@@ -372,84 +925,201 @@ def _add_inline_comments(yaml_text: str) -> str:
             result.append(line)
             continue
 
-        # 计算当前层级（yaml dump 默认缩进 2 空格）
         indent = len(line) - len(stripped)
         level = indent // 2
         path_stack = path_stack[:level]
 
-        # Section 注释头：顶级键前插入
+        # Section 注释头
         if level == 0 and ":" in stripped and not stripped.startswith("#"):
             key = stripped.split(":")[0].strip()
             if key in _SECTION_HEADERS:
                 result.append("")
                 result.append(_SECTION_HEADERS[key])
 
-        # 行尾注释：匹配键值对
+        # 行尾注释
         if ":" in stripped and not stripped.startswith("#") and not stripped.startswith("-"):
             key = stripped.split(":")[0].strip()
             path_stack.append(key)
             path_tuple = tuple(path_stack)
             if path_tuple in comment_map:
                 line = f"{line}  # {comment_map[path_tuple]}"
-        elif stripped.startswith("-"):
-            # 列表项，不追加路径
-            pass
-        else:
-            # 其他非键值对行，保持路径栈
-            pass
 
         result.append(line)
 
     return "\n".join(result)
 
 
-def generate_default_config() -> str:
-    """基于 _ATTR_MAP 动态生成默认 YAML 配置文本"""
-    defaults = {}
+# ==================== 同步功能 ====================
 
-    # 1. 先放入不在 _ATTR_MAP 中的顶层配置
-    defaults["robot_name"] = "yuki"
-    defaults["master_name"] = "主人"
+def sync_config(config_path: Optional[str] = None, verbose: bool = True) -> bool:
+    """
+    同步配置文件到 dataclass 定义的最新结构
 
-    # 2. 从 _ATTR_MAP 构建嵌套结构
-    for name, (path, default, comment) in _ATTR_MAP.items():
-        d = defaults
-        for k in path[:-1]:
-            if k not in d or not isinstance(d[k], dict):
-                d[k] = {}
-            d = d[k]
-        d[path[-1]] = default
+    功能：
+    1. 保留用户已修改的值
+    2. 添加新增的配置项（使用默认值）
+    3. 删除已移除的配置项
+    4. 更新注释和格式
 
-    # 3. 补充 paths 配置（_ATTR_MAP 中未包含）
-    defaults.setdefault("paths", {
-        "vector_db": "./yuki_memory",
-        "embed_model": "./models/text2vec-base-chinese",
-        "history_file": "./data/chat_history.json",
-        "log_file": "./data/yuki_log.txt",
-        "cache_dir": "./data",
-        "cache_file": "./data/meme_cache.json",
-    })
+    Args:
+        config_path: 配置文件路径
+        verbose: 是否打印详细信息
 
-    # 4. 补充 timing.request_timeout（_ATTR_MAP 中未包含）
-    defaults.setdefault("timing", {}).setdefault("request_timeout", {
-        "total": 60,
-        "connect": 10,
-        "sock_read": 30,
-    })
+    Returns:
+        是否有变更
+    """
+    if config_path is None:
+        config_path = os.path.join(BASE_DIR, "configs", "config.yaml")
 
-    # 5. 补充 attention.keywords（_ATTR_MAP 中未包含）
-    defaults.setdefault("attention", {}).setdefault("keywords", ["主人", "哥哥"])
+    # 1. 读取现有配置
+    existing_data = {}
+    if os.path.exists(config_path):
+        try:
+            with open(config_path, "r", encoding="utf-8") as f:
+                existing_data = yaml.safe_load(f) or {}
+        except yaml.YAMLError as e:
+            if verbose:
+                print(f"[Config Sync] 配置文件解析失败: {e}")
+            return False
 
-    header = "# Yuki-Chan Bot 配置文件\n# 所有配置均在此文件管理，请勿提交到 Git\n# 本文件已在 .gitignore 中\n\n"
-    yaml_content = yaml.dump(
-        defaults,
-        allow_unicode=True,
-        default_flow_style=False,
-        sort_keys=False
-    )
-    yaml_content = _add_inline_comments(yaml_content)
-    return header + yaml_content
+    # 2. 获取默认配置结构
+    default_config = Config()
+    from dataclasses import asdict
+    default_data = asdict(default_config)
+
+    # 3. 深度合并（保留用户值，添加新字段）
+    merged_data = _deep_merge(default_data, existing_data)
+
+    # 4. 检查是否有变更
+    has_changes = merged_data != existing_data
+
+    # 5. 保存更新后的配置
+    if has_changes or not os.path.exists(config_path):
+        # 备份原文件
+        if os.path.exists(config_path):
+            import shutil
+            backup_path = config_path + ".backup"
+            shutil.copy2(config_path, backup_path)
+            if verbose:
+                print(f"[Config Sync] 已备份原配置到: {backup_path}")
+
+        # 生成带注释的 YAML
+        yaml_content = yaml.dump(
+            merged_data,
+            allow_unicode=True,
+            default_flow_style=False,
+            sort_keys=False
+        )
+        yaml_content = _add_inline_comments(yaml_content)
+
+        # 添加文件头
+        header = "# YukiV6 配置文件\n# 所有配置均在此文件管理，请勿提交到 Git\n# 本文件已在 .gitignore 中\n\n"
+
+        os.makedirs(os.path.dirname(config_path), exist_ok=True)
+        with open(config_path, "w", encoding="utf-8") as f:
+            f.write(header + yaml_content)
+
+        if verbose:
+            print(f"[Config Sync] 配置已同步到: {config_path}")
+            if has_changes:
+                # 显示变更的字段
+                added = set(default_data.keys()) - set(existing_data.keys())
+                removed = set(existing_data.keys()) - set(default_data.keys())
+                if added:
+                    print(f"[Config Sync] 新增字段: {added}")
+                if removed:
+                    print(f"[Config Sync] 移除字段: {removed}")
+    else:
+        if verbose:
+            print("[Config Sync] 配置已是最新，无需同步")
+
+    return has_changes
 
 
-# 全局单例 —— 所有模块通过 `from config import cfg` 访问
-cfg = Config()
+# ==================== CLI 入口 ====================
+
+if __name__ == "__main__":
+    import sys
+
+    def print_help():
+        """打印帮助信息"""
+        print("""
+YukiV6 配置管理工具
+
+用法:
+    python config.py <command> [options]
+
+命令:
+    sync        同配配置文件到最新结构
+    generate    生成默认配置文件
+    help        显示此帮助信息
+
+示例:
+    python config.py sync
+    python config.py sync --path configs/config.yaml
+    python config.py generate
+    python config.py generate --output configs/config.yaml
+        """)
+
+    def cmd_sync(args):
+        """同步配置"""
+        path = None
+        verbose = True
+
+        i = 0
+        while i < len(args):
+            if args[i] == "--path" and i + 1 < len(args):
+                path = args[i + 1]
+                i += 2
+            elif args[i] == "--quiet":
+                verbose = False
+                i += 1
+            else:
+                i += 1
+
+        success = sync_config(path, verbose)
+        sys.exit(0 if success else 1)
+
+    def cmd_generate(args):
+        """生成默认配置"""
+        path = None
+
+        i = 0
+        while i < len(args):
+            if args[i] == "--output" and i + 1 < len(args):
+                path = args[i + 1]
+                i += 2
+            else:
+                i += 1
+
+        if path is None:
+            path = os.path.join(BASE_DIR, "configs", "config.yaml")
+
+        # 生成默认配置
+        config = Config()
+        save_config(config, path)
+        print(f"[Config] 默认配置已生成到: {path}")
+
+    # 解析命令
+    if len(sys.argv) < 2:
+        print_help()
+        sys.exit(0)
+
+    command = sys.argv[1]
+    args = sys.argv[2:]
+
+    if command == "sync":
+        cmd_sync(args)
+    elif command == "generate":
+        cmd_generate(args)
+    elif command in ("help", "--help", "-h"):
+        print_help()
+    else:
+        print(f"未知命令: {command}")
+        print_help()
+        sys.exit(1)
+
+
+# ==================== 全局单例 ====================
+
+cfg = load_config()

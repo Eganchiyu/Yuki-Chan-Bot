@@ -46,8 +46,8 @@ Yuki的回复内容：{yuki_message}
 
 class StickerManager:
     def __init__(self):
-        from providers.registry import ProviderRegistry
-        self.registry = ProviderRegistry()
+        from utils.llm_client import llm_chat as _llm_chat
+        self._llm_chat = _llm_chat
         self.vl_processor = MemeProcessor()
         self.model = SentenceTransformer(cfg.EMBED_MODEL)
 
@@ -189,8 +189,7 @@ class StickerManager:
     async def _judge_emotion(self, yuki_message: str) -> str:
         prompt = EMOTION_JUDGE_PROMPT.format(yuki_message=yuki_message)
 
-        provider = self.registry.get("default")
-        raw = await provider.chat(
+        raw = await self._llm_chat(
             messages=[{"role": "user", "content": prompt}],
             model=cfg.LLM_MODEL,
             temperature=0.0,

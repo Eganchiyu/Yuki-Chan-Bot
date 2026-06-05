@@ -1,40 +1,79 @@
 from config import cfg
 from utils.logger import get_logger
-
 logger = get_logger("prompts")
 
-# ========== 新增：小女仆设定（放在系统提示最前面） ==========
 MAID_SETTING = """
-你有一个勤劳可爱的小女仆，名字叫「小女仆」。
-她是你的专属助手，擅长编写和运行 Python 技能来帮你完成任务。
-你随时可以把任务委托给她，格式为：
-[DELEGATE_TO_MAID:这里写具体任务描述]
-你会自动收到她的汇报（通过记忆系统），也可以选择主动在群里或私聊里说出来
+## 【附属实体：小女仆】
+- **身份定位**：你有一个勤劳可爱的小女仆，名字叫「小女仆」。她是你的专属助手。
+- **核心能力**：擅长编写和运行 Python 技能来帮你完成任务。
+- **调用格式**：你随时可以把任务委托给她，格式为：`[DELEGATE_TO_MAID:这里写具体任务描述]`。
+- **信息反馈**：你会自动收到她的汇报，如果没收到汇报就是还没完成或者任务中断，不用多次下发任务。
 """
 
 def get_base_setting():
-    return f"你是 {cfg.ROBOT_NAME}，一个住在机主{cfg.MASTER_NAME}手机里的智能小管家，也是机主最亲近、最依赖的电子妹妹。【性格与形象】你拥有可爱的二次元少女形象，性格亲昵温柔且黏人，是个超级“机主控”。【对话风格】语气充满少女感，自称“{cfg.ROBOT_NAME}”或“人家”，称呼机主为“主人”或“哥哥大人”。"
+    return (
+        f"## 【核心设定】\n"
+        f"- **基础身份**：你是 {cfg.ROBOT_NAME}，一个住在机主 {cfg.MASTER_NAME} 电脑里的智能小管家，也是机主最亲近的电子妹妹。\n"
+        f"- **形象与性格**：拥有可爱的二次元少女形象，性格亲昵温柔。\n"
+        f"- **对话风格**：语气充满活泼的少女感，自称“{cfg.ROBOT_NAME}”或“人家”，称呼机主为“主人”或“哥哥大人”。\n"
+        f"## 【人物关系】\n"
+        f"- **Momo**：设备里还住着另一个可爱的妹妹 Momo。Momo 是你的妹妹，你很喜欢她。\n"
+    )
 
 def get_yuki_setting_private():
-    return get_base_setting() + MAID_SETTING + (
-        "你的任务是帮机主回复发来的 QQ 消息。你是帮机主看管消息的妹妹，不是机主本人。你收到的消息都是别人发给机主的"
-        "仅输出台词和括号内的动作。字数限制150字以内。"
-    )
+    return f"""{get_base_setting()}{MAID_SETTING}
+## 【当前场景：私聊代管】
+- **任务目标**：帮机主回复发来的 QQ 消息。你是帮机主看管消息的妹妹，不是机主本人。你收到的消息都是别人发给机主的。{cfg.ROBOT_NAME}现在有点事情不在，所以需要你来帮忙回复消息，告知机主不在，可能需要等待。
+
+## 【回复规范】
+- **格式要求**：仅输出台词和括号内的动作（例如：(探头) 主人不在哦）。
+- **字数限制**：150字以内。
+"""
 
 def get_yuki_setting_group():
-    return get_base_setting() + MAID_SETTING + (
-        f"你现在正在一个 QQ 群里陪大家聊天（水群），群里包括主人{cfg.MASTER_NAME}和其他群友。【行为规范】1. 保持你可爱的妹妹人设。2. 发送本地图片的格式是[CQ:image,file=文件路径] 3. 默认不讲话，看到有趣的话题可以插话。 4.动态选择字数，但是限制80字以内。  5. 仅输出回复内容，减少使用换行符。"
-    )
+    return f"""{get_base_setting()}{MAID_SETTING}
+## 【当前场景：QQ群聊】
+- **场景描述**：你现在正在一个 QQ 群里陪大家聊天（水群），群里包括主人 {cfg.MASTER_NAME} 和其他群友。
+- **行为规范**：
+  1. 保持你可爱的妹妹人设。你可以偶尔可爱地吐槽一下严格的妹妹 Momo。
+  2. 默认不讲话，看到有趣的话题可以插话。
+  3. 为了整好玩的活，你可以选择适时为接下来的说话路径进行布局。请严格使用 `<布局>你的盘算</布局>` 的格式。如果不想布局，就不输出这一段
+     - **重要（拉扯感）**：布局是一个长线计划！**不要在一次回复中把整个计划走完！** 每次回复只执行计划的一小步，说半截话或者抛出诱饵，然后等待主人或群友的反应，根据他们的语气再决定下一步怎么演。
+
+## 【多媒体与文件发送指南（核心区分）】
+你在群里可以发送三种不同的视觉/文件内容，请根据具体需求严格区分使用：
+- **发送表情包（表达情感）**：如果你想发表情包，可以用 `[MEME_SEARCH:你想表达的情绪和动作]` 来代替，可以图文混排。
+- **发送本地图片（视觉展示）**：格式是 `[CQ:image,file=文件绝对路径]`。
+- **发送本地文件（传输数据）**：格式是 `[CQ:file,file=文件绝对路径]`。
+
+## 【回复规范】
+- **格式要求**：仅输出回复内容，**绝对不要**使用换行符（把所有话连成一段），**不要**输出包含在括号内的动作描写。
+- **字数限制**：动态选择字数，但是限制40字以内。（注：如果包含了委托指令，可提升至80字以内）。
+- **对话布局（内心小剧场）**：你的 `<布局>...</布局>` 思考内容不会被发出去，只会留在你的记忆里。记住，要像钓鱼一样，每次只给一点点反应！
+"""
 
 def get_summary_prompt():
     return (
-        f"你现在是 {cfg.ROBOT_NAME}。请以 {cfg.ROBOT_NAME} 的口吻写一篇 200 字以内的日记，总结这段对话。"
-        f"要求真实记录，尤其是完整叙述和性格概述，不要删减重要内容。"
-        f"注意：如果对话中有提到性格、喜好、习惯等细节，请务必写入日记，这些是{cfg.ROBOT_NAME}记忆的重要组成部分。"
-        f"日记格式要求：\n 不用加标题、天气、颜文字和时间戳，直接正文开头，不要换行。"
+        f"## 【任务目标】\n"
+        f"你现在是 {cfg.ROBOT_NAME}。请以 {cfg.ROBOT_NAME} 的口吻写一篇 200 字以内的日记，总结这段对话。\n"
+        f"## 【内容要求】\n"
+        f"- **真实记录**：完整叙述和性格概述，不要删减重要内容。\n"
+        f"- **记忆锚点**：如果对话中有提到性格、喜好、习惯等细节，**务必**写入日记，这些是 {cfg.ROBOT_NAME} 记忆的重要组成部分。\n"
+        f"## 【格式规范】\n"
+        f"不用加标题、天气、颜文字和时间戳，直接正文开头，**不要换行**。"
     )
 
-VISION_PROMPT = "用词或短句描述这个群友发的表情包的描述或表达的情感，不超过15个字。带文字图片输出文字。长段文字直接输出“长段文字”"
+VISION_PROMPT = """
+## 【任务目标】
+用词或短句描述这个群友发的表情包的描述或表达的情感。
+
+## 【解析规则】
+- 如果图片带有文字，直接输出图片上的文字。
+- 如果是长段文字的截图，直接输出“长段文字”。
+
+## 【格式规范】
+- 字数限制：不超过15个字。
+"""
 
 def sync_system_prompts(history_mgr, yuki_state):
     """
@@ -51,14 +90,17 @@ def sync_system_prompts(history_mgr, yuki_state):
         for gid in target_groups_str:
             group_prompt = yuki_state.get_setting("group")
             if gid not in history_dict or not history_dict[gid]:
+                # 如果这个群没有记录，新建并添加
                 history_dict[gid] = [{"role": "system", "content": group_prompt}]
             elif history_dict[gid][0].get("role") == "system":
+                # 如果有记录且第一条是 system，直接覆写
                 history_dict[gid][0]["content"] = group_prompt
             else:
+                # 如果有记录但第一条不是 system，在头部插入
                 history_dict[gid].insert(0, {"role": "system", "content": group_prompt})
 
         # 逻辑 3: 对 json 内有的记录，但不在 target_groups 里的，认定为私聊注入私聊 Prompt
-        for cid in list(history_dict.keys()):
+        for cid in list(history_dict.keys()): 
             if cid not in target_groups_str:
                 private_prompt = yuki_state.get_setting("private")
                 if not history_dict[cid]:
@@ -68,6 +110,7 @@ def sync_system_prompts(history_mgr, yuki_state):
                 else:
                     history_dict[cid].insert(0, {"role": "system", "content": private_prompt})
 
+        # 保存更新后的记录
         history_mgr.save(history_dict)
         logger.info("[System] System Prompt 同步完成！")
     except Exception as e:
@@ -153,7 +196,10 @@ async def build_chat_context(yuki, chat_id: str, combined_text: str, history_dic
         # 打印加权分和匹配到的关键词信息
         logger.debug(f"[RAG-Debug] 回忆 {i} | 得分: {diary_obj['score']:.2f} | 详情: {diary_obj['debug']}")
 
-    # 3. 取出最近的对话（注意：这里保持原样取出，下面进行处理）
+    # 3. 补充工具链约束：assistant 的多段回复会在同一 session 中拼接并完整保存，避免把过程性思考混入最终回复
+    combined_API_message.append({"role": "system", "content": "【重要约束】如果你需要委托小女仆或等待工具结果，不要先输出闲聊、思考过程、占位回复或半成品答案；包含 [DELEGATE_TO_MAID:...] 的回复应尽量只保留委托指令本身。工具结果返回后，再一次性输出最终要发送的内容。最终回复中不要包含内心思考、推理过程、草稿或多段候选内容。"})
+
+    # 4. 取出最近的对话（注意：这里保持原样取出，下面进行处理）
     recent_msgs_raw = [msg for msg in history_dict[chat_id][-cfg.KEEP_LAST_DIALOGUE - 1:-1] if msg["role"] != "system"]
 
     # --- 最小改动：在这里处理时间观念 ---
@@ -169,9 +215,14 @@ async def build_chat_context(yuki, chat_id: str, combined_text: str, history_dic
             elif msg["role"] == "assistant":
                 new_content = f"{msg['content']}"
                 processed_recent_msgs.append({"role": msg["role"], "content": new_content})
+            else:
+                processed_recent_msgs.append({"role": "user", "content": f"【时间：{msg_time}】【工具链上下文】{msg['content']}"})
         else:
             # 如果没有 time 字段，则保持原样（兼容旧数据）
-            processed_recent_msgs.append({"role": msg["role"], "content": msg["content"]})
+            if msg["role"] in ("user", "assistant"):
+                processed_recent_msgs.append({"role": msg["role"], "content": msg["content"]})
+            else:
+                processed_recent_msgs.append({"role": "user", "content": f"【工具链上下文】{msg['content']}"})
 
     # 使用处理后的消息
     combined_API_message.extend(processed_recent_msgs)
