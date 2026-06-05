@@ -133,6 +133,12 @@ class YukiState:
         msgs = self.message_buffer.get(chat_id) or self.message_buffer.get(cid, [])
         self.message_buffer[chat_id] = []
         self.message_buffer[cid] = self.message_buffer[chat_id]
+        # 清理已完成的 buffer_tasks，防止内存泄漏
+        # 注意：只清理已完成的任务，避免在任务执行期间删除导致竞态条件
+        task = self.buffer_tasks.get(chat_id) or self.buffer_tasks.get(cid)
+        if task and task.done():
+            self.buffer_tasks.pop(chat_id, None)
+            self.buffer_tasks.pop(cid, None)
         return msgs
 
     # @staticmethod

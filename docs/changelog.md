@@ -27,6 +27,11 @@
   - `modules/QQNapcatListen/listen_main.py` 调整为输入适配层，通过 `configure_runtime()` 注入组件，消除对 `main.py` 的反向导入
   - `core/engine.py` 归并工具链上下文辅助逻辑，减少 `_chat_with_tools()` 内部嵌套职责
   - 更新 `docs/architecture.md`、`docs/development-plan.md`、`README.md` 同步目标架构状态
+  - 新增 `docs/api-reference.md`，提供核心模块、标准工具、LLM 客户端和配置管理的 API 接口文档
+  - 新增 `docs/deployment-guide.md`，提供环境要求、部署步骤、配置说明和监控维护指南
+  - 新增 `docs/troubleshooting.md`，提供启动问题、连接问题、API 调用问题和内存性能问题的排查指南
+  - 新增 `docs/module-interface.md`，提供各模块公共方法签名和使用示例
+  - 新增 `docs/contributing.md`，提供开发环境、代码规范、Git 工作流和测试规范指南
 
 ### 变更
 - **修复 RAG 初始化依赖兼容性**：
