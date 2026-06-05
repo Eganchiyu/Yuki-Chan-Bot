@@ -13,7 +13,7 @@ import config as cfg
 
 class MemoryAuditor:
     def __init__(self):
-        self.api_key = "sk-a23f33e1230b4ba7bba8621624bf4052"
+        self.api_key = "xxxxxxxxx"
         self.api_url = "https://api.deepseek.com/chat/completions"
         self.model = "deepseek-chat"  # 沿用你测试效果最好的模型
 
