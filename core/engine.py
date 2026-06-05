@@ -102,6 +102,12 @@ class YukiEngine:
                     tool_choice="auto",
                 )
                 tool_calls = response_message.get("tool_calls") or []
+                if tool_calls:
+                    tool_names = [
+                        call.get("function", {}).get("name", "")
+                        for call in tool_calls
+                    ]
+                    logger.info(f"[ToolChain] 模型请求工具调用 chat_id={chat_id} tools={tool_names}")
                 collect_reply(response_message.get("content"))
                 if not tool_calls:
                     answer = "\n".join(reply_parts)

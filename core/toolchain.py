@@ -5,6 +5,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Awaitable
 
+from config import cfg
 from utils.logger import get_logger
 
 logger = get_logger("toolchain")
@@ -115,6 +116,13 @@ class ToolCallManager:
         call_id = tool_call.get("id", f"call_{int(time.time() * 1000)}")
         handler = self.registry.get_handler(name)
 
+        logger.info(f"[ToolCall] 准备执行 chat_id={context.chat_id} name={name} args={arguments_text}")
+        delay_seconds = max(0.0, float(getattr(cfg, "TOOL_CALL_DELAY_SECONDS", 1.2)))
+        if delay_seconds > 0:
+            logger.info(f"[ToolCall] {name} 等待 {delay_seconds:.1f}s 后执行")
+            await asyncio.sleep(delay_seconds)
+
+        started_at = time.time()
         if not handler:
             result = ToolResult(name=name, success=False, content="工具未注册", error="handler_not_found")
         else:
@@ -129,6 +137,11 @@ class ToolCallManager:
                 logger.error(f"[ToolCall] {name} 执行失败: {e}")
                 result = ToolResult(name=name, success=False, content="工具执行异常", error=str(e))
 
+        elapsed = time.time() - started_at
+        logger.info(
+            f"[ToolCall] 执行完成 chat_id={context.chat_id} name={name} "
+            f"success={result.success} elapsed={elapsed:.2f}s"
+        )
         session = self.sessions.setdefault(context.chat_id, {"calls": [], "round": 0})
         session["calls"].append({"name": name, "success": result.success})
         return {

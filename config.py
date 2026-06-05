@@ -338,6 +338,11 @@ class TimingConfig:
         comment="防抖时间（秒）",
         section="timing"
     )
+    tool_call_delay_seconds: float = config_field(
+        1.2,
+        comment="工具调用前等待时间（秒），用于降低连续工具调用的机械感",
+        section="timing"
+    )
     request_timeout: RequestTimeoutConfig = config_field_factory(
         RequestTimeoutConfig,
         comment="请求超时配置",

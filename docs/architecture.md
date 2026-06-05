@@ -10,6 +10,7 @@
 - 小女仆自治系统（子代理）
 - 简化 LLM 客户端（含主备故障转移）
 - Function Call 工具链调用
+- 工具调用前拟人化等待与执行日志观测
 
 ---
 
@@ -26,8 +27,8 @@ YukiV6/
 │   ├── brain.py               # 状态管理：精力、活跃度、消息缓冲
 │   ├── engine.py              # 主引擎：LLM 决策、工具链调用、回复生成
 │   ├── session_pipeline.py    # 按 chat_id 串行运行的持久会话管道
-│   ├── toolchain.py           # Function Call 注册、状态和结果封装
-│   ├── tools.py               # 标准工具集合与 handler
+│   ├── toolchain.py           # Function Call 注册、状态、延迟执行和结果封装
+│   ├── tools.py               # 标准工具集合、schema 与 handler
 │   ├── history_manager.py     # 历史记录管理
 │   ├── maid.py                # 小女仆子代理系统
 │   └── prompts.py             # 提示词模板管理
@@ -185,7 +186,26 @@ maid_task_queue: asyncio.Queue     # 小女仆任务队列
 
 ---
 
-### 3.5 core/maid.py - 小女仆系统
+### 3.5 core/toolchain.py 与 core/tools.py - Function Call 工具链
+
+**职责**：
+- `FunctionRegistry` 负责注册工具 schema 与 handler
+- `ToolCallManager` 负责解析模型返回的 `tool_calls`、顺序执行工具、封装 OpenAI tool 消息
+- `ToolContext` 在多轮工具调用期间携带 `chat_id`、运行模式、当前历史、用户输入与引擎引用
+- `core/tools.py` 提供日记查询、定时任务、小女仆委托、主人私聊、浏览器搜索、QQ 文件发送、外部内容注入等标准工具
+
+**执行策略**：
+- 工具调用按顺序执行，避免共享状态并发写入
+- 工具调用前读取 `cfg.TOOL_CALL_DELAY_SECONDS`，默认等待 1.2 秒，降低连续工具调用的机械感
+- 记录模型请求的工具名、工具参数、执行耗时和成功状态，便于排查工具链问题
+- 工具结果统一转换为 JSON 字符串，作为 `role=tool` 消息回传给模型继续推理
+
+**配置项**：
+- `cfg.timing.tool_call_delay_seconds` / `cfg.TOOL_CALL_DELAY_SECONDS`：工具调用前等待时间，单位秒
+
+---
+
+### 3.6 core/maid.py - 小女仆系统
 
 **职责**：
 - 子代理任务执行
@@ -199,7 +219,7 @@ maid_task_queue: asyncio.Queue     # 小女仆任务队列
 
 ---
 
-### 3.6 modules/memory/rag.py - RAG 记忆系统
+### 3.7 modules/memory/rag.py - RAG 记忆系统
 
 **类**：`MemoryRAG`（单例）
 
@@ -222,7 +242,7 @@ maid_task_queue: asyncio.Queue     # 小女仆任务队列
 
 ---
 
-### 3.7 modules/QQNapcatListen/listen_main.py - 输入适配层
+### 3.8 modules/QQNapcatListen/listen_main.py - 输入适配层
 
 **职责**：
 - WebSocket 消息监听
@@ -240,7 +260,7 @@ maid_task_queue: asyncio.Queue     # 小女仆任务队列
 
 ---
 
-### 3.8 network/ - 网络通信层
+### 3.9 network/ - 网络通信层
 
 #### ws_connection.py - WebSocket 连接
 
@@ -273,7 +293,7 @@ maid_task_queue: asyncio.Queue     # 小女仆任务队列
 
 ---
 
-### 3.9 utils/llm_client.py - LLM 客户端
+### 3.10 utils/llm_client.py - LLM 客户端
 
 **职责**：
 - 发送 OpenAI 兼容格式的对话补全请求
@@ -296,7 +316,7 @@ maid_task_queue: asyncio.Queue     # 小女仆任务队列
 
 ---
 
-### 3.10 config.py - 配置管理
+### 3.11 config.py - 配置管理
 
 **职责**：
 - YAML 配置文件读写
@@ -320,6 +340,7 @@ cfg (全局单例)
 - 精力值系统配置
 - 注意力系统配置
 - 路径配置
+- 时间/超时配置（含工具调用前等待时间）
 
 ---
 

@@ -19,13 +19,22 @@
   - `config.py` 补齐旧版大写配置属性与 `_raw` 兼容字段，保持现有测试和旧调用路径可用
   - 同群消息处理改为按 `chat_id` 串行管道，运行中新消息只入队等待，不再取消当前处理任务
   - 工具链调用期间的可见回复、工具结果和新增用户消息会写入当前 session 上下文，避免消息流分叉
+  - 工具链新增模型请求、执行参数、执行耗时和 `search_diary` 参数日志，并在工具调用前加入可配置等待时间（默认 1.2 秒）
+  - 新增 `config.py` 中 `TimingConfig.tool_call_delay_seconds` 配置项，用于控制工具调用前等待时间
+  - `core/engine.py` 新增工具调用日志，记录模型请求的工具名称列表
   - 新增 `core/session_pipeline.py`，将持久会话管道从 `main.py` 抽离，明确按 `chat_id` 串行运行的会话泵职责
   - `main.py` 精简为组件初始化、运行时注入和程序入口编排
   - `modules/QQNapcatListen/listen_main.py` 调整为输入适配层，通过 `configure_runtime()` 注入组件，消除对 `main.py` 的反向导入
   - `core/engine.py` 归并工具链上下文辅助逻辑，减少 `_chat_with_tools()` 内部嵌套职责
-  - 更新 `docs/architecture.md` 同步目标架构状态
+  - 更新 `docs/architecture.md`、`docs/development-plan.md`、`README.md` 同步目标架构状态
 
 ### 变更
+- **修复 RAG 初始化依赖兼容性**：
+  - 补充 `onnxruntime` 作为 ChromaDB 必需运行依赖
+  - 收紧 `sentence-transformers`、`numpy`、`pandas`、`pyarrow`、`scikit-learn`、`opencv-python` 版本范围
+  - 同步更新 `pyproject.toml` 和 `requirements.txt` 依赖清单，保持一致
+  - 避免 Windows 环境下 `pyarrow` 原生扩展访问冲突导致启动静默退出
+
 - **main.py 消息处理管道化重构**：
   - 备份原始主程序到 `backup/main_backup_pipeline_20260604.py`
   - 新增 `MessagePipeline`，按阶段拆分消息入口、内容标准化、上下文准备、回复决策、记忆检索、回复生成、消息发送和收尾保存

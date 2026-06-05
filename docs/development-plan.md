@@ -17,9 +17,9 @@
 | main.py 初始化重构 | ✅ 已完成 | 高 | 提取 initialize_components() |
 | listen_main.py 简化 | ✅ 已完成 | 中 | 提取 start_background_tasks() |
 | 项目文档编写 | ✅ 已完成 | 中 | 架构文档、开发规划、更新日志 |
-| 项目公约制定 | 🔄 进行中 | 高 | Trae rules 和 skills |
-| Function Call Schema | ⏳ 待开始 | 高 | 定义 6 个 function 的 schema |
-| Function Handler 实现 | ⏳ 待开始 | 高 | 实现 6 个 function 的处理逻辑 |
+| 项目公约制定 | ✅ 已完成 | 高 | Trae rules 和 skills |
+| Function Call Schema | ✅ 已完成 | 高 | 定义 7 个 function 的 schema（search_diary、manage_timer_task、delegate_to_maid、send_master_private、browser_search、send_qq_file、inject_external_content） |
+| Function Handler 实现 | ✅ 已完成 | 高 | 实现 7 个 function 的处理逻辑 |
 | 主循环改造 | ⏳ 待开始 | 高 | 消息队列 + 主循环消费 |
 | 群聊隔离 | ⏳ 待开始 | 高 | 按 session_id 隔离上下文 |
 
@@ -31,22 +31,23 @@
 
 **目标**：实现标准化的 Function Call 工具链
 
-**待实现的 Functions**：
+**已实现的 Functions**：
 
-| Function | 描述 | 优先级 |
-|----------|------|--------|
-| `delegate_to_maid` | 委托复杂任务给小女仆 | 高 |
-| `search_memory` | 搜索长期记忆库 | 高 |
-| `write_note` | 写入小本本（日记/笔记） | 中 |
-| `create_scheduled_task` | 创建定时任务 | 中 |
-| `web_search` | 网络搜索 | 中 |
-| `send_file` | 发送文件 | 低 |
+| Function | 描述 | 状态 |
+|----------|------|------|
+| `search_diary` | 查询 Yuki 的日记/记忆，支持按日期和关键词检索 | ✅ 已完成 |
+| `manage_timer_task` | 创建、取消或列出定时任务 | ✅ 已完成 |
+| `delegate_to_maid` | 将重型任务委托给小女仆处理（支持能力边界判定） | ✅ 已完成 |
+| `send_master_private` | 向主人私聊发送私密信息 | ✅ 已完成 |
+| `browser_search` | 生成网络搜索入口 | ✅ 已完成 |
+| `send_qq_file` | 发送图片或语音文件 | ✅ 已完成 |
+| `inject_external_content` | 向当前对话注入外部系统提供的动态内容 | ✅ 已完成 |
 
 **实现步骤**：
-1. 定义 Function Schema（JSON Schema）
-2. 实现 Handler 函数
-3. 注册到 FunctionRegistry
-4. 集成到 LLM 请求流程
+1. 定义 Function Schema（JSON Schema） ✅
+2. 实现 Handler 函数 ✅
+3. 注册到 FunctionRegistry ✅
+4. 集成到 LLM 请求流程 ✅
 5. 测试 Function Call 触发和执行
 
 ### 2.2 主循环改造
@@ -240,10 +241,10 @@ brain/
 
 ## 六、里程碑
 
-### 里程碑 1：Function Call 系统（当前）
+### 里程碑 1：Function Call 系统（已完成）
 - [x] FunctionRegistry 实现
-- [ ] Function Schema 定义
-- [ ] Function Handler 实现
+- [x] Function Schema 定义（7 个标准工具）
+- [x] Function Handler 实现（7 个标准工具）
 - [ ] 集成测试
 
 ### 里程碑 2：主循环改造

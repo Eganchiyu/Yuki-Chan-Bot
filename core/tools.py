@@ -13,6 +13,9 @@ logger = get_logger("tools")
 
 async def search_diary_tool(context, date_str=None, keyword=None):
     """查询 Yuki 日记。"""
+    logger.info(
+        f"[ToolCall][search_diary] chat_id={context.chat_id} date_str={date_str} keyword={keyword}"
+    )
     if not date_str and not keyword:
         return ToolResult(
             name="search_diary",

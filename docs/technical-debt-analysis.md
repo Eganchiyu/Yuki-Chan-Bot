@@ -1,7 +1,7 @@
 # YukiV6 技术债分析报告
 
 **分析日期**：2026-06-02  
-**分析范围**：项目全量代码（core/、modules/、network/、providers/、utils/、scripts/、tests/、配置文件）  
+**分析范围**：项目全量代码（core/、modules/、network/、utils/、scripts/、tests/、配置文件）  
 **分析方法**：静态代码审查 + 架构评估 + 依赖审计  
 
 ---
@@ -39,18 +39,18 @@
 
 ## 一、执行摘要
 
-YukiV6 是一个基于 Python 异步架构的 QQ 智能助手系统，功能丰富，但在快速迭代过程中积累了一定的技术债。本次分析共识别出 **6 大类、28 项** 技术债问题。
+YukiV6 是一个基于 Python 异步架构的 QQ 智能助手系统，功能丰富，但在快速迭代过程中积累了一定的技术债。本次分析共识别出 **6 大类、30 项** 技术债问题。
 
 **关键发现**：
 
 | 维度 | 风险等级 | 核心问题 |
 |------|---------|---------|
 | 代码质量 | 🟡 中 | ~153 行死代码、6 组重复代码、5 处裸 `except:`、78 处过度宽泛异常捕获 |
-| 架构设计 | 🔴 高 | 全局变量耦合、循环导入、主函数臃肿（400+ 行）、同步阻塞混入异步 |
+| 架构设计 | 🟢 低 | ✅ 已部分修复：全局变量耦合、循环导入、主函数臃肿问题已通过 session_pipeline 和 configure_runtime() 改善 |
 | 功能完整性 | 🟡 中 | 4 项标记为未完成的开发计划，语音合成功能已注释弃用 |
 | 文档覆盖 | 🟢 低 | 架构文档和开发规划较完整，但缺少 API 文档和模块接口文档 |
 | 测试覆盖 | 🔴 高 | 核心模块测试覆盖率为 0%，唯一的测试文件无断言，属于手动脚本 |
-| 依赖管理 | 🟡 中 | requirements.txt 与 pyproject.toml 不一致，缺少锁定文件管理 |
+| 依赖管理 | 🟢 低 | ✅ 已修复：requirements.txt 与 pyproject.toml 已同步更新 |
 
 **技术债总量估算**：约 **15-20 人天** 的修复工作量（按优先级 P0-P3 分阶段执行）。
 
@@ -73,21 +73,23 @@ YukiV6 是一个基于 Python 异步架构的 QQ 智能助手系统，功能丰�
 | TD-11 | 代码质量 | ~80 个函数缺少类型提示 | 中 | core/, config.py, init.py | 按模块逐步补充 |
 | TD-12 | 代码质量 | 硬编码用户 QQ 号 | 中 | listen_main.py:152 | 提取为配置项 |
 | TD-13 | 代码质量 | 不可达代码（maid.py 重复 return） | 低 | core/maid.py:427-429 | 删除重复行 |
-| TD-14 | 架构缺陷 | main.py 全局变量过多，模块间强耦合 | 高 | main.py, listen_main.py | 依赖注入改造 |
-| TD-15 | 架构缺陷 | init.py ↔ main.py 循环导入 | 高 | init.py, main.py | 重构初始化流程 |
-| TD-16 | 架构缺陷 | listen_main.py 从 main.py 导入 8 个全局变量 | 高 | listen_main.py | 通过参数传入或上下文对象 |
-| TD-17 | 架构缺陷 | main_process() 函数 200+ 行，职责过多 | 高 | main.py | 拆分为独立子函数 |
+| TD-14 | 架构缺陷 | main.py 全局变量过多，模块间强耦合 | 中 | main.py, listen_main.py | ✅ 已部分修复：通过 configure_runtime() 注入组件 |
+| TD-15 | 架构缺陷 | init.py ↔ main.py 循环导入 | 中 | init.py, main.py | ✅ 已部分修复：通过 configure_runtime() 消除反向导入 |
+| TD-16 | 架构缺陷 | listen_main.py 从 main.py 导入 8 个全局变量 | 中 | listen_main.py | ✅ 已修复：通过 configure_runtime() 注入组件 |
+| TD-17 | 架构缺陷 | main_process() 函数 200+ 行，职责过多 | 中 | main.py | ✅ 已修复：拆分为 session_pipeline.py |
 | TD-18 | 架构缺陷 | requests.get 同步阻塞调用（在注释代码中） | 中 | core/engine.py | 已注释，清理即可 |
 | TD-19 | 架构缺陷 | threading.Lock 用于异步上下文 | 中 | core/history_manager.py | 替换为 asyncio.Lock |
 | TD-20 | 架构缺陷 | 单一 JSON 文件存储所有聊天历史 | 中 | core/history_manager.py | 考虑按 chat_id 分文件 |
-| TD-21 | 架构缺陷 | 单例模式实现不一致 | 低 | MemoryRAG, Config, ProviderRegistry | 统一使用装饰器或基类 |
+| TD-21 | 架构缺陷 | 单例模式实现不一致 | 低 | MemoryRAG, Config | 统一使用装饰器或基类 |
 | TD-22 | 未完成功能 | GPT-SoVITS 语音合成（已注释弃用） | 低 | core/engine.py | 彻底删除注释代码 |
-| TD-23 | 未完成功能 | Function Call Schema 定义（待开始） | 中 | docs/development-plan.md | 按计划推进 |
+| TD-23 | 未完成功能 | Function Call Schema 定义（待开始） | 中 | docs/development-plan.md | ✅ 已完成：定义 7 个标准工具 schema |
 | TD-24 | 未完成功能 | 小女仆代码结构重构（README 标记） | 中 | core/maid.py | 按计划推进 |
 | TD-25 | 未完成功能 | 生物遗忘曲线（README 标记） | 低 | 待定 | 按计划推进 |
 | TD-26 | 测试覆盖 | 核心模块测试覆盖率为 0% | 高 | 全项目 | 逐步补充 pytest 测试 |
 | TD-27 | 测试覆盖 | 唯一测试文件无断言，为手动脚本 | 高 | tests/ | 改写为 pytest 用例 |
-| TD-28 | 依赖管理 | requirements.txt 与 pyproject.toml 不一致 | 中 | 根目录 | 统一为 pyproject.toml 管理 |
+| TD-28 | 依赖管理 | requirements.txt 与 pyproject.toml 不一致 | 中 | 根目录 | ✅ 已修复：同步更新依赖清单 |
+| TD-29 | 代码质量 | 工具链配置项硬编码默认值 | 低 | core/toolchain.py | 提取为配置项 |
+| TD-30 | 代码质量 | 工具调用延迟等待时间硬编码 | 低 | core/toolchain.py | ✅ 已修复：使用 cfg.TOOL_CALL_DELAY_SECONDS |
 
 ---
 
@@ -198,7 +200,7 @@ YukiV6 是一个基于 Python 异步架构的 QQ 智能助手系统，功能丰�
 | `modules/stickers/manager.py` | 6 | _localize_image, structured_analysis, _update_meme_status |
 | `network/ws_sender.py` | 3 | send, send_ai_voice |
 | `network/ws_connection.py` | 2 | listen, send_request |
-| `providers/*.py` | 4 | fallback, openai_compatible, registry |
+| `utils/llm_client.py` | 3 | chat_completion_raw, llm_chat, vision_chat |
 | `modules/vision/*.py` | 4 | processor, cache |
 
 **建议**：在关键路径中指定具体异常类型：
@@ -222,7 +224,7 @@ YukiV6 是一个基于 Python 异步架构的 QQ 智能助手系统，功能丰�
 
 | 模式 | 使用场景 | 示例 |
 |------|---------|------|
-| `logger.error()` | 核心模块 | `core/engine.py`, `providers/` |
+| `logger.error()` | 核心模块 | `core/engine.py`, `utils/llm_client.py` |
 | `print()` | 脚本工具 | `scripts/`, `setup.py` |
 | 返回错误字符串 | maid 工具函数 | `core/maid.py` 的工具函数 |
 
@@ -240,8 +242,8 @@ YukiV6 是一个基于 Python 异步架构的 QQ 智能助手系统，功能丰�
 - **完全没有类型提示**：约 80 个（67%）
 
 **做得较好的模块**：
-- `providers/base.py` — 抽象基类，全部有类型提示
-- `providers/openai_compatible.py` — 方法都有类型提示
+- `core/toolchain.py` — 数据类和注册中心，全部有类型提示
+- `utils/llm_client.py` — LLM 客户端函数，参数有类型提示
 - `modules/stickers/manager.py` — 大部分方法有类型提示
 
 **完全没有类型提示的模块**：
@@ -255,7 +257,7 @@ YukiV6 是一个基于 Python 异步架构的 QQ 智能助手系统，功能丰�
 | [init.py](file:///d:/Projects/YukiV6/init.py) | 全部 3 个函数 |
 | [config.py](file:///d:/Projects/YukiV6/config.py) | 大量 `@property` 无返回类型 |
 
-**建议**：按模块逐步补充，优先覆盖 `core/` 和 `providers/` 的公共接口。
+**建议**：按模块逐步补充，优先覆盖 `core/` 和 `utils/` 的公共接口。
 
 ---
 
@@ -498,7 +500,6 @@ async def start_main_process():
 | changelog.md | docs/ | ✅ 完整 | 版本记录规范，覆盖 v0.1.0 至未发布版本 |
 | project_rules.md | .trae/rules/ | ✅ 完整 | 代码规范、Git 规范、测试规范、安全规范 |
 | refactoring_principles.md | .trae/rules/ | ✅ 完整 | 重构原则与实施规范 |
-| providers/README.md | providers/ | ✅ 完整 | Provider 系统使用说明 |
 | configs/README.md | configs/ | ✅ 完整 | 配置系统说明 |
 
 ### 缺失文档
@@ -541,12 +542,14 @@ def run_tests():
 | `core/engine.py` | ❌ 无 | — |
 | `core/brain.py` | ❌ 无 | — |
 | `core/maid.py` (search_diary_fast) | ⚠️ 有 | 手动脚本，无断言 |
+| `core/toolchain.py` | ❌ 无 | — |
+| `core/tools.py` | ❌ 无 | — |
 | `core/history_manager.py` | ❌ 无 | — |
 | `core/prompts.py` | ❌ 无 | — |
 | `modules/memory/rag.py` | ❌ 无 | — |
 | `modules/stickers/manager.py` | ❌ 无 | — |
 | `modules/vision/processor.py` | ❌ 无 | — |
-| `providers/*.py` | ❌ 无 | — |
+| `utils/llm_client.py` | ❌ 无 | — |
 | `network/*.py` | ❌ 无 | — |
 | `config.py` | ⚠️ 有 | 手写脚本，有断言（scripts/） |
 
