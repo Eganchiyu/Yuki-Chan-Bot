@@ -35,6 +35,12 @@ class MessageSender:
         cq_image = f"[CQ:image,file=file:///{abs_path}]"
         await self.send(chat_id, cq_image, mode=mode)
 
+    async def send_local_file(self, chat_id, local_path, mode="private"):
+        """发送本地普通文件。"""
+        abs_path = os.path.abspath(local_path)
+        cq_file = f"[CQ:file,file=file:///{abs_path}]"
+        await self.send(chat_id, cq_file, mode=mode)
+
     async def send_local_voice(self, chat_id, local_path, mode="group"):
         """发送本地生成的语音文件"""
         abs_path = os.path.abspath(local_path)

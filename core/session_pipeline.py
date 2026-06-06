@@ -23,7 +23,7 @@ class SessionPipeline:
         self.memory_rag = components["memory_rag"]
         self.engine = components["engine"]
         self.group_active_state = group_active_state
-        self.real_time_debounce_time = cfg.DEBOUNCE_TIME
+        self.debounce_time_by_chat = {}
         self.stages = [
             self.prepare_message_batch,
             self.normalize_incoming_content,
@@ -35,29 +35,55 @@ class SessionPipeline:
             self.finalize_conversation,
         ]
 
-    def wake_quickly(self):
-        """被直接点名时缩短当前会话防抖时间。"""
-        self.real_time_debounce_time = 3
+    def wake_quickly(self, chat_id):
+        """被直接点名时缩短当前群聊防抖时间。"""
+        self.debounce_time_by_chat[str(chat_id)] = 3
+
+    async def enqueue_message(
+        self,
+        chat_id,
+        mode,
+        message_obj=None,
+        debounce_flag=True,
+        force_reply=None,
+        ice_break=False,
+    ):
+        """统一写入会话缓冲，并确保同一 chat_id 只有一个管道任务。"""
+        cid = str(chat_id)
+        if message_obj:
+            self.yuki.message_buffer.setdefault(cid, [])
+            self.yuki.message_buffer[cid].append(message_obj)
+
+        current_task = self.yuki.buffer_tasks.get(cid)
+        if current_task and not current_task.done():
+            logger.info(f"[Pipeline] {cid} 管道运行中，新事件已入队等待合并处理。")
+            return current_task
+
+        task = asyncio.create_task(
+            self.process_loop(cid, mode, debounce_flag, force_reply, ice_break)
+        )
+        self.yuki.buffer_tasks[cid] = task
+        return task
 
     async def process_loop(self, chat_id, mode, debounce_flag=True, force_reply=None, ice_break=False):
         """持续消费同一 chat_id 的缓冲消息，直到当前缓冲为空。"""
         cid = str(chat_id)
         try:
             while True:
-                await self.run_once(chat_id, mode, debounce_flag, force_reply, ice_break)
+                await self.run_once(cid, mode, debounce_flag, force_reply, ice_break)
                 debounce_flag = False
                 force_reply = None
                 ice_break = False  # 破冰只在第一轮执行
 
                 if mode == "group" and not self.group_active_state.get(cid, True):
                     break
-                if not self.yuki.message_buffer.get(chat_id):
+                if not self.yuki.message_buffer.get(cid):
                     break
                 logger.info(f"[Pipeline] {cid} 检测到处理期间新增消息，准备合并进入下一轮。")
         finally:
             current_task = asyncio.current_task()
-            if self.yuki.buffer_tasks.get(chat_id) is current_task:
-                self.yuki.buffer_tasks.pop(chat_id, None)
+            if self.yuki.buffer_tasks.get(cid) is current_task:
+                self.yuki.buffer_tasks.pop(cid, None)
 
     async def run_once(self, chat_id, mode, debounce_flag=True, force_reply=None, ice_break=False):
         """执行一次消息处理，任一阶段标记 stop 后终止本轮。"""
@@ -91,7 +117,8 @@ class SessionPipeline:
             return context
 
         if context["debounce_flag"]:
-            await asyncio.sleep(self.real_time_debounce_time)
+            debounce_time = self.debounce_time_by_chat.pop(str(chat_id), cfg.DEBOUNCE_TIME)
+            await asyncio.sleep(debounce_time)
         else:
             await asyncio.sleep(0.5)
 
@@ -101,13 +128,11 @@ class SessionPipeline:
             context["stop"] = True
             return context
 
-        if chat_id not in self.yuki.message_buffer:
-            self.yuki.message_buffer[chat_id] = []
-        if str(chat_id) not in self.yuki.message_buffer:
-            self.yuki.message_buffer[str(chat_id)] = self.yuki.message_buffer[chat_id]
-        self.real_time_debounce_time = cfg.DEBOUNCE_TIME
+        cid = str(chat_id)
+        if cid not in self.yuki.message_buffer:
+            self.yuki.message_buffer[cid] = []
 
-        message_objs = self.yuki.pop_buffer(chat_id)
+        message_objs = self.yuki.pop_buffer(cid)
         if not message_objs and not context["force_reply"]:
             context["stop"] = True
             return context

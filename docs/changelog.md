@@ -13,12 +13,16 @@
 - 新增 `tests/test_toolchain.py`，覆盖 `ToolSpec`、`FunctionRegistry` 和 `ToolCallManager` 的最小 smoke test
 - 新增 `docs/toolchain-usage.md`，整理 `core/toolchain.py` 与 `core/tools.py` 的调用流程、标准工具清单、扩展步骤和排查建议
 - 破冰流程主管道集成测试：新增 `tests/test_ice_break_pipeline.py`，覆盖纯函数、提示词注入、管道阶段、监控集成和端到端传播共 12 个 smoke test
+- 工具链新增 Tavily 网络搜索适配，支持通过 `TAVILY_API_KEY` 环境变量调用实时网页搜索
+- 工具链定时任务升级为精确定时唤醒，到点后通过主管道触发 Yuki 回复
 
 ### 变更
 - 工具链注册机制改为 `ToolSpec` 单一声明源，统一维护工具 schema 与 handler，减少字符串映射漂移
 - 收紧 `ToolContext` 运行时依赖，工具通过 `context.sender` 与 `context.yuki` 访问必要对象，不再直接依赖完整 `YukiEngine`
 - 简化 `ToolCallManager` 状态管理，移除未使用的 session 追踪状态，并改为读取 `cfg.timing.tool_call_delay_seconds`
 - 调整工具链多轮调用输出行为：工具调用轮次中的模型阶段性文本会实时发送，并从最终聚合回复中移除，避免最后统一释放导致重复或延迟输出
+- 优化 QQ 文件发送工具，支持图片、语音和普通文件自动识别，并从群聊 prompt 中移除手写本地 CQ 文件码说明
+- 小女仆委托统一保留 function-call 工具路径，移除 prompt 中的标签式委托说明
 - **破冰流程主管道化重构**：
   - `ice_break_monitor` 不再直接调用独立的 `break_ice()`，改为通过 `process_callback` 触发主管道 `process_loop(ice_break=True)`
   - `SessionPipeline` 全链路支持 `ice_break` 上下文标记：`prepare_message_batch` 跳过防抖并构建合成输入、`normalize_incoming_content` 跳过消息规范化、`decide_reply_action` 跳过决策强制回复、`finalize_conversation` 递增破冰失败计数
@@ -29,6 +33,9 @@
 
 ### 修复
 - 修复 `prompts.py` 中 f-string 内中文引号导致的语法错误
+- 修复后台定时、破冰和小女仆回调可能绕过普通消息缓冲入口的问题，统一经 `SessionPipeline.enqueue_message()` 串行调度
+- 修复点名缩短防抖使用全局状态的问题，改为按 `chat_id` 隔离防抖时间
+- 修正生物钟与活跃度衰减注释，使说明与代码实际时间一致，并复用生物钟权重计算逻辑
 
 ### 移除
 - 移除 `YukiEngine.break_ice()` 独立破冰方法（约 55 行）

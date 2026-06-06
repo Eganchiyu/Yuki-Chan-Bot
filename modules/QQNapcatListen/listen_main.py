@@ -49,8 +49,8 @@ def handle_group_switch(group_id, gid_str, user_id, raw_msg):
         if user_id == cfg.TARGET_QQ:
             group_active_state[gid_str] = False
             save_group_state(group_active_state)
-            yuki.message_buffer[group_id] = []
-            task = yuki.buffer_tasks.get(group_id)
+            yuki.message_buffer[gid_str] = []
+            task = yuki.buffer_tasks.get(gid_str)
             if task and not task.done():
                 task.cancel()
             asyncio.create_task(
@@ -152,21 +152,17 @@ async def feed_message(chat_id, content, mode, raw_message="", sender_name="", u
         history_manager.append_chat(chat_id, "assistant", "(已发送帮助文档图片)")
         return
 
-    if chat_id not in yuki.message_buffer:
-        yuki.message_buffer[chat_id] = []
+    if cfg.ROBOT_NAME.lower() in raw_message.lower():
+        session_pipeline.wake_quickly(cid_str)
+
     if not is_bot or (user_id and user_id in cfg.TARGET_WHITELIST):
-        yuki.message_buffer[chat_id].append({
+        message_obj = {
             "name": sender_name,
             "content": content,
             "raw_text": raw_message,
             "is_bot": is_bot,
-        })
+        }
+    else:
+        message_obj = None
 
-    if cfg.ROBOT_NAME.lower() in raw_message.lower():
-        session_pipeline.wake_quickly()
-
-    current_task = yuki.buffer_tasks.get(chat_id)
-    if current_task and not current_task.done():
-        logger.info(f"[Pipeline] {cid_str} 管道运行中，新消息已入队等待合并处理。")
-        return
-    yuki.buffer_tasks[chat_id] = asyncio.create_task(session_pipeline.process_loop(chat_id, mode))
+    await session_pipeline.enqueue_message(cid_str, mode, message_obj=message_obj)

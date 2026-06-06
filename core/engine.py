@@ -10,7 +10,7 @@ import time
 from typing import Any
 
 from config import cfg
-from core.maid import MaidCapabilityBoundary, build_maid_report, build_maid_task, maid_evolution_loop
+from core.maid import build_maid_report, maid_evolution_loop
 from core.prompts import get_base_setting, get_summary_prompt, build_chat_context
 from core.toolchain import FunctionRegistry, ToolCallManager, ToolContext, ToolRuntime
 from core.tools import TOOL_SPECS
@@ -87,6 +87,7 @@ class YukiEngine:
             history_dict=history_dict,
             combined_text=combined_text,
             runtime=ToolRuntime(sender=self.sender, yuki_state=self.yuki),
+            metadata={"process_callback": self.process_callback},
         )
         self.tool_manager.start_session(str(chat_id), combined_text)
         tool_messages = list(messages)
@@ -184,19 +185,6 @@ class YukiEngine:
             Yuki_Answer = re.sub(r'<布局>.*?</布局>', '', Yuki_Answer, flags=re.DOTALL).strip()
             Yuki_Answer = re.sub(r'\n+', ' ', Yuki_Answer).strip()
 
-            delegate_match = re.search(r'\[DELEGATE_TO_MAID:(.+?)\]', Yuki_Answer, re.DOTALL)
-            if delegate_match:
-                task_desc = delegate_match.group(1).strip()
-                # 移除标签，干净回复发给用户
-                Yuki_Answer = re.sub(r'\[DELEGATE_TO_MAID:.+?\]', '', Yuki_Answer, flags=re.DOTALL).strip()
-
-                # 扔进小女仆队列（非阻塞）
-                boundary = MaidCapabilityBoundary.judge(task_desc)
-                if boundary["allowed"]:
-                    await self.yuki.maid_task_queue.put(build_maid_task(task_desc, chat_id, mode, source="delegate_tag"))
-                    logger.info(f"📤 已委托小女仆：{task_desc}")
-                else:
-                    Yuki_Answer += f"\n（这个任务小女仆不建议做：{boundary['reason']}。{boundary['suggestion']}）"
             # === 新增：拦截表情包搜索请求 ===
             meme_match = re.search(r'\[MEME_SEARCH:(.+?)\]', Yuki_Answer, re.DOTALL)
             if meme_match and getattr(self, 'sticker_manager', None):

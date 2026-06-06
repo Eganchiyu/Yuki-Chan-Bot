@@ -35,6 +35,7 @@ def build_context():
         history_dict={},
         combined_text="测试工具调用",
         runtime=runtime,
+        metadata={},
     )
 
 
@@ -149,5 +150,56 @@ def test_execute_tool_calls_keep_order():
         )
         assert [message["tool_call_id"] for message in messages] == ["call_1", "call_2"]
         assert [message["name"] for message in messages] == ["sample", "another"]
+
+    asyncio.run(run())
+
+
+def test_timer_task_triggers_pipeline_callback():
+    async def run():
+        from core.tools import manage_timer_task_tool
+
+        calls = []
+
+        async def callback(chat_id, mode, **kwargs):
+            calls.append({"chat_id": chat_id, "mode": mode, **kwargs})
+
+        context = build_context()
+        context.metadata["process_callback"] = callback
+        result = await manage_timer_task_tool(
+            context,
+            title="提醒喝水",
+            delay_seconds=0,
+            message="该喝水了",
+        )
+        await asyncio.sleep(0.05)
+
+        assert result.success is True
+        assert calls
+        assert calls[0]["chat_id"] == "test_chat"
+        assert calls[0]["message_obj"]["content"] == "【定时任务到点】该喝水了"
+        assert calls[0]["debounce_flag"] is False
+        assert calls[0]["force_reply"] is True
+
+    asyncio.run(run())
+
+
+def test_send_qq_file_auto_detects_plain_file(tmp_path):
+    async def run():
+        from core.tools import send_qq_file_tool
+
+        sent_files = []
+        file_path = tmp_path / "report.txt"
+        file_path.write_text("hello", encoding="utf-8")
+
+        async def send_local_file(chat_id, local_path, mode="private"):
+            sent_files.append((chat_id, local_path, mode))
+
+        context = build_context()
+        context.runtime.sender = SimpleNamespace(send_local_file=send_local_file)
+        result = await send_qq_file_tool(context, str(file_path))
+
+        assert result.success is True
+        assert result.data["file_type"] == "file"
+        assert sent_files[0][0] == "test_chat"
 
     asyncio.run(run())

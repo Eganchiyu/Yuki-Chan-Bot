@@ -54,9 +54,9 @@ class YukiState:
         return
 
     async def decay_heartbeat(self, decay_level = cfg.DECAY_LEVEL) -> None:
-        """核心：每5分钟执行一次的恒定半衰降温"""
+        """核心：每10分钟执行一次的恒定半衰降温"""
         while True:
-            await asyncio.sleep(600)  # 恒定 5 分钟 (300秒)
+            await asyncio.sleep(600)  # 恒定 10 分钟
             async with self.lock:
                 if not self.group_activity:
                     continue
@@ -171,81 +171,42 @@ class YukiState:
     #     # 最终映射到 [0.2, 1.5] 之间
     #     return max(0.2, min(weight, 1.5))
     @staticmethod
-    def get_smooth_time_weight() -> float:
-        """
-        优化后的生物钟模型：分段基准 + 高斯活跃峰
-        解决清晨不醒、下午太累、深夜早退的问题
-        """
-
-        now = datetime.datetime.now()
-        t = now.hour + now.minute / 60.0
-
-        # 1. 定义基础背景 (Base Line) - 优化后的睡眠模型
+    def _calculate_smooth_time_weight(t) -> float:
+        """按给定小时计算生物钟权重。"""
         if 0 <= t < 7.8:
             if t < 1.0:
-                # 快速入睡：0点到2点迅速下滑
+                # 0:00 到 1:00 快速入睡
                 base = 0.7 - (t / 1.0) * 0.45
             elif 1.0 <= t < 7.0:
-                # 深睡稳态：维持极低权重 (0.25)
+                # 1:00 到 7:00 深睡稳态
                 base = 0.25
             else:
-                # 黎明回升：5点到7.2点从小幅回升，准备迎接晨间高峰
+                # 7:00 到 7:48 黎明回升
                 base = 0.25 + ((t - 7.0) / 0.8) * 0.45
         elif t >= 23.8:
-            # 23点后快速收尾入睡
+            # 23:48 后快速收尾入睡
             base = 0.9 - (t - 23.8) * 0.8
         else:
             # 白天标准基准
             base = 0.9
 
-        # 2. 活跃峰值函数 (Gaussian Peaks)
         def peak(time, mu, sig, amp):
             return amp * math.exp(-((time - mu) ** 2) / (2 * sig ** 2))
 
-        # --- 活跃点注入 ---
-        # 晨间苏醒: 8点峰值，sigma缩窄到0.4让爆发力更集中
         morning = peak(t, 8.0, 0.6, 0.5)
-        # 午后高峰: 12.8点
         lunch = peak(t, 12.8, 0.8, 0.4)
-        # 晚间活跃: 20.0点，sigma较宽(1.0)模拟长夜畅谈
         evening = peak(t, 20.0, 1.5, 0.4)
 
-        # 3. 融合结果并限幅
         weight = base + morning + lunch + evening
         return max(0.2, min(weight, 1.5))
 
     @staticmethod
+    def get_smooth_time_weight() -> float:
+        """生物钟模型：分段基准 + 高斯活跃峰。"""
+        now = datetime.datetime.now()
+        t = now.hour + now.minute / 60.0
+        return YukiState._calculate_smooth_time_weight(t)
+
+    @staticmethod
     def get_smooth_time_weight_test(t) -> float:
-        # 1. 定义基础背景 (Base Line) - 优化后的睡眠模型
-        if 0 <= t < 7.8:
-            if t < 1.0:
-                # 快速入睡：0点到2点迅速下滑
-                base = 0.7 - (t / 1.0) * 0.45
-            elif 1.0 <= t < 7.0:
-                # 深睡稳态：维持极低权重 (0.25)
-                base = 0.25
-            else:
-                # 黎明回升：5点到7.2点从小幅回升，准备迎接晨间高峰
-                base = 0.25 + ((t - 7.0) / 0.8) * 0.45
-        elif t >= 23.8:
-            # 23点后快速收尾入睡
-            base = 0.9 - (t - 23.8) * 0.8
-        else:
-            # 白天标准基准
-            base = 0.9
-
-        # 2. 活跃峰值函数 (Gaussian Peaks)
-        def peak(time, mu, sig, amp):
-            return amp * math.exp(-((time - mu) ** 2) / (2 * sig ** 2))
-
-        # --- 活跃点注入 ---
-        # 晨间苏醒: 8点峰值，sigma缩窄到0.4让爆发力更集中
-        morning = peak(t, 8.0, 0.6, 0.5)
-        # 午后高峰: 12.8点
-        lunch = peak(t, 12.8, 0.8, 0.4)
-        # 晚间活跃: 20.0点，sigma较宽(1.0)模拟长夜畅谈
-        evening = peak(t, 20.0, 1.5, 0.4)
-
-        # 3. 融合结果并限幅
-        weight = base + morning + lunch + evening
-        return max(0.2, min(weight, 1.5))
+        return YukiState._calculate_smooth_time_weight(t)
