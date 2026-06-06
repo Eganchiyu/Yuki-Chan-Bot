@@ -1,0 +1,68 @@
+name: 提问/讨论
+description: 提出问题或发起讨论
+labels: ["question"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        如果你在使用过程中遇到问题或想发起讨论，请在此提交。
+
+  - type: textarea
+    id: content
+    attributes:
+      label: 问题/讨论内容
+      description: 详细描述你的问题或想讨论的内容
+      placeholder: 请详细描述...
+    validations:
+      required: true
+
+  - type: dropdown
+    id: category
+    attributes:
+      label: 类型
+      description: 选择问题/讨论的类型
+      options:
+        - 使用疑问
+        - 部署相关
+        - 配置相关
+        - 架构讨论
+        - 开发相关
+        - 其他
+    validations:
+      required: true
+
+  - type: dropdown
+    id: module
+    attributes:
+      label: 相关模块
+      description: 涉及的模块
+      multiple: true
+      options:
+        - core (核心引擎)
+        - modules (功能模块)
+        - providers (模型提供商)
+        - network (网络通信)
+        - configs (配置)
+        - memory (记忆系统)
+        - message (消息处理)
+        - vision (视觉处理)
+        - stickers (贴纸管理)
+        - utils (工具函数)
+        - docs (文档)
+        - 不确定
+
+  - type: textarea
+    id: context
+    attributes:
+      label: 上下文信息
+      description: 提供相关的上下文信息（如配置、环境、代码片段等）
+      render: shell
+      placeholder: |
+        相关配置或代码...
+
+  - type: textarea
+    id: additional
+    attributes:
+      label: 补充信息
+      description: 其他你认为有用的信息
+      placeholder: 添加任何其他相关信息...

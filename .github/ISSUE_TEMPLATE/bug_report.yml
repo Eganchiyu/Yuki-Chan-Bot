@@ -1,0 +1,115 @@
+name: Bug 报告
+description: 提交一个 Bug 报告，帮助我们改进项目
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        感谢你提交 Bug 报告。请尽可能详细地填写以下信息，以便我们快速定位和修复问题。
+
+  - type: textarea
+    id: description
+    attributes:
+      label: 问题描述
+      description: 清晰、简洁地描述遇到的问题
+      placeholder: 描述你遇到的问题...
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: 复现步骤
+      description: 提供详细的复现步骤
+      placeholder: |
+        1. 执行 '...'
+        2. 发送消息 '...'
+        3. 观察到错误 '...'
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: 期望行为
+      description: 描述你期望的正确行为
+      placeholder: 描述你期望发生什么...
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: 实际行为
+      description: 描述实际发生的行为
+      placeholder: 描述实际发生了什么...
+    validations:
+      required: true
+
+  - type: dropdown
+    id: module
+    attributes:
+      label: 相关模块
+      description: 问题涉及的模块
+      multiple: true
+      options:
+        - core (核心引擎)
+        - modules (功能模块)
+        - providers (模型提供商)
+        - network (网络通信)
+        - configs (配置)
+        - memory (记忆系统)
+        - message (消息处理)
+        - vision (视觉处理)
+        - stickers (贴纸管理)
+        - utils (工具函数)
+        - 不确定
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: 错误日志
+      description: 粘贴相关的错误日志或堆栈信息
+      render: shell
+      placeholder: |
+        请粘贴错误日志...
+
+  - type: input
+    id: version
+    attributes:
+      label: 项目版本
+      description: 你使用的项目版本或 commit hash
+      placeholder: 例如: v1.0.0 或 abc1234
+
+  - type: input
+    id: python-version
+    attributes:
+      label: Python 版本
+      description: 你的 Python 版本
+      placeholder: 例如: 3.11.5
+
+  - type: input
+    id: os
+    attributes:
+      label: 操作系统
+      description: 你的操作系统和版本
+      placeholder: 例如: Windows 11 / Ubuntu 22.04 / macOS 14
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: 运行环境
+      description: 其他相关的环境信息（如部署方式、使用的模型提供商等）
+      placeholder: |
+        - 部署方式: Docker / 直接运行
+        - 模型提供商: DeepSeek / OpenAI / ...
+        - 消息平台: QQ NapCat / ...
+
+  - type: textarea
+    id: additional
+    attributes:
+      label: 补充信息
+      description: 其他你认为有助于解决问题的信息（如截图、配置片段等）
+      placeholder: 添加任何其他相关信息...

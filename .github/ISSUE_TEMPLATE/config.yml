@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 查看文档
+    url: https://github.com/Eganchiyu/Yuki-Chan-Bot/tree/main/docs/
+    about: 在提交 Issue 前，请先查看项目文档
