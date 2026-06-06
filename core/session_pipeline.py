@@ -39,14 +39,15 @@ class SessionPipeline:
         """被直接点名时缩短当前会话防抖时间。"""
         self.real_time_debounce_time = 3
 
-    async def process_loop(self, chat_id, mode, debounce_flag=True, force_reply=None):
+    async def process_loop(self, chat_id, mode, debounce_flag=True, force_reply=None, ice_break=False):
         """持续消费同一 chat_id 的缓冲消息，直到当前缓冲为空。"""
         cid = str(chat_id)
         try:
             while True:
-                await self.run_once(chat_id, mode, debounce_flag, force_reply)
+                await self.run_once(chat_id, mode, debounce_flag, force_reply, ice_break)
                 debounce_flag = False
                 force_reply = None
+                ice_break = False  # 破冰只在第一轮执行
 
                 if mode == "group" and not self.group_active_state.get(cid, True):
                     break
@@ -58,13 +59,14 @@ class SessionPipeline:
             if self.yuki.buffer_tasks.get(chat_id) is current_task:
                 self.yuki.buffer_tasks.pop(chat_id, None)
 
-    async def run_once(self, chat_id, mode, debounce_flag=True, force_reply=None):
+    async def run_once(self, chat_id, mode, debounce_flag=True, force_reply=None, ice_break=False):
         """执行一次消息处理，任一阶段标记 stop 后终止本轮。"""
         context = {
             "chat_id": chat_id,
             "mode": mode,
             "debounce_flag": debounce_flag,
             "force_reply": force_reply,
+            "ice_break": ice_break,
         }
         for stage in self.stages:
             context = await stage(context)
@@ -76,6 +78,17 @@ class SessionPipeline:
         """防抖、静音拦截、读取消息缓冲。"""
         chat_id = context["chat_id"]
         mode = context["mode"]
+
+        # 破冰模式：跳过防抖和缓冲区读取，构建合成输入
+        if context.get("ice_break"):
+            recent_msgs = self.history_manager.load().get(str(chat_id), [])[-5:]
+            context_text = "".join([m['content'] for m in recent_msgs if m.get("role") != "system"])
+            context["combined_text"] = context_text or "（群聊安静中）"
+            context["message_objs"] = []
+            context["first_time"] = time.time()
+            await self.yuki.boost_activity(chat_id)
+            logger.info(f"[IceBreak] {chat_id} 跳过防抖，注入破冰上下文")
+            return context
 
         if context["debounce_flag"]:
             await asyncio.sleep(self.real_time_debounce_time)
@@ -106,6 +119,10 @@ class SessionPipeline:
 
     async def normalize_incoming_content(self, context):
         """合并消息、理解图片、解析 CQ 码，生成用户输入文本。"""
+        # 破冰模式已在 prepare_message_batch 中设置 combined_text，直接跳过
+        if context.get("ice_break"):
+            return context
+
         chat_id = context["chat_id"]
         message_objs = context["message_objs"]
         all_contents = [m["content"] for m in message_objs]
@@ -164,6 +181,10 @@ class SessionPipeline:
 
     async def decide_reply_action(self, context):
         """群聊中判断是否继续回复；潜水时保留用户上下文。"""
+        # 破冰模式强制回复，跳过决策
+        if context.get("ice_break"):
+            return context
+
         chat_id = context["chat_id"]
         mode = context["mode"]
         history_dict = context["history_dict"]
@@ -205,6 +226,7 @@ class SessionPipeline:
             context["history_dict"],
             context["mode"],
             context["relevant_diaries"],
+            ice_break=context.get("ice_break", False),
         )
         logger.info(f"{cfg.ROBOT_NAME.title()}打字完成！")
 
@@ -259,4 +281,11 @@ class SessionPipeline:
             history_dict[chat_id] = summarized_list
             self.history_manager.save(history_dict)
             logger.info(f"[{chat_id}] 日记写入完成，全量历史已同步。")
+
+        # 破冰模式：递增失败计数（下次收到非 bot 消息时由 feed_message 重置）
+        if context.get("ice_break"):
+            async with self.yuki.lock:
+                self.yuki.ice_break_fail_count[chat_id] = self.yuki.ice_break_fail_count.get(chat_id, 0) + 1
+            logger.info(f"[IceBreak] {chat_id} 破冰计数递增至 {self.yuki.ice_break_fail_count[chat_id]}")
+
         return context

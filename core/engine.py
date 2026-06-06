@@ -11,7 +11,6 @@ from typing import Any
 
 from config import cfg
 from core.maid import MaidCapabilityBoundary, build_maid_report, build_maid_task, maid_evolution_loop
-from core.prompts import build_ice_break_prompt
 from core.prompts import get_base_setting, get_summary_prompt, build_chat_context
 from core.toolchain import FunctionRegistry, ToolCallManager, ToolContext
 from core.tools import TOOL_HANDLERS, TOOL_SCHEMAS
@@ -149,14 +148,15 @@ class YukiEngine:
             self.tool_manager.finish_session(str(chat_id))
 
     async def api_reply(self, chat_id: str, combined_text: str, history_dict: dict, mode,
-                        relevant_diaries: list[Any]) -> str:
+                        relevant_diaries: list[Any], ice_break: bool = False) -> str:
         # 总构建发送Deepseek补全的信息
         combined_API_message = await build_chat_context(self.yuki,
                                                         chat_id,
                                                         combined_text,
                                                         history_dict,
                                                         mode,
-                                                        relevant_diaries
+                                                        relevant_diaries,
+                                                        ice_break=ice_break
                                                         )
 
         await asyncio.sleep(0.2)
@@ -437,67 +437,13 @@ class YukiEngine:
                         logger.info(f"[IceBreak] {cid} 连续两次破冰无果，进入自闭模式，等待群友先开口。")
 
             for cid in pending_ice_break:
-                logger.info(f"[IceBreak] 目标群 {cid} 触发冷场唤醒")
-                asyncio.create_task(self.break_ice(cid))
+                logger.info(f"[IceBreak] 目标群 {cid} 触发冷场唤醒，走主管道")
+                if self.process_callback is not None:
+                    asyncio.create_task(self.process_callback(cid, "group", debounce_flag=False, force_reply=True, ice_break=True))
+                else:
+                    logger.warning(f"[IceBreak] process_callback 未设置，无法触发破冰")
 
 
-
-
-    async def break_ice(self, chat_id: str) -> str:
-        # 1. 异步加载历史 (假设 load 是同步的，我们用线程池跑它)
-        # 如果 history.load 很快，可以暂时保留同步，但 save 必须小心
-        history_dict = self.history.load()
-
-        if chat_id not in history_dict:
-            return None
-
-        # 2. 构造 Query 逻辑 (保持你的原汁原味)
-        recent_msgs = history_dict[chat_id][-5:]
-        context_text = "".join([m['content'] for m in recent_msgs if m['role'] != 'system'])
-        now_hour = datetime.datetime.now().hour
-        query = f"{context_text}"
-
-        dynamic_top_k = 15 if len(query) > 50 else 10
-
-        # 3. RAG 检索
-        relevant_diaries = self.rag.search_diaries(query, chat_id=chat_id, top_k=dynamic_top_k)
-
-        prompt = build_ice_break_prompt(chat_id, relevant_diaries, history_dict)
-
-        logger.info(f"[System] {cfg.ROBOT_NAME.title()} 正在破冰... (Query: {query})")
-        try:
-            # 4. API 调用
-            Yuki_Answer = await llm_chat(
-                messages=prompt,
-                model=cfg.LLM_MODEL,
-                temperature=0.8,
-                top_p=0.9,
-                frequency_penalty=0.2,
-                max_tokens=60
-            )
-
-            # 清理与记录(隐藏布局内容和可能存在的结尾语句)
-            Yuki_Answer = re.sub(r'\s*FINISHED\s*$', '', Yuki_Answer, flags=re.IGNORECASE)
-            Yuki_Answer = re.sub(r'<布局>.*?</布局>', '', Yuki_Answer, flags=re.DOTALL).strip()
-            Yuki_Answer = re.sub(r'\n+', ' ', Yuki_Answer).strip()
-            # 5. 持久化数据 (注意：在异步中尽量减少频繁 save)
-            self.history.append_to_log(chat_id, "Yuki", Yuki_Answer)
-            history_dict[chat_id].append({"role": "assistant", "content": Yuki_Answer})
-            self.history.save(history_dict)
-
-            # 6. 消耗精力
-            async with self.yuki.lock:
-                self.yuki.consume_energy(chat_id)
-                current_energy = self.yuki.energy[chat_id]
-                # 破冰失败计数
-                self.yuki.ice_break_fail_count[chat_id] = self.yuki.ice_break_fail_count.get(chat_id, 0) + 1
-
-            logger.info(f"[System] 破冰成功！发送给 {chat_id} (剩余精力: {current_energy:.1f})")
-            await self.sender.send(chat_id, Yuki_Answer, mode="group")
-
-        except Exception as e:
-            logger.error(f"Deepseek 破冰调用失败: {e}")
-            return f"API 调用失败"
 
 # core/engine.py 末尾新增（或替换原来的 maid_worker）
 

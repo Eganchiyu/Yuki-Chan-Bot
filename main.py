@@ -81,12 +81,12 @@ def warmup_groups(yuki, history_manager):
     logger.debug(f"已预载 {len(yuki.last_message_time)} 个群组到巡检名单")
 
 
-async def main_process(chat_id, mode, debounce_flag=True, force_reply=None):
+async def main_process(chat_id, mode, debounce_flag=True, force_reply=None, ice_break=False):
     """兼容旧入口：把处理请求交给按 chat_id 串行运行的会话泵。"""
     if session_pipeline is None:
         logger.error("[Pipeline] session_pipeline 尚未初始化，无法处理消息。")
         return
-    await session_pipeline.process_loop(chat_id, mode, debounce_flag, force_reply)
+    await session_pipeline.process_loop(chat_id, mode, debounce_flag, force_reply, ice_break)
 
 
 # ==================== 资源清理 ====================

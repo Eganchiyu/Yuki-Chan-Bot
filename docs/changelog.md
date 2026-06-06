@@ -10,16 +10,23 @@
 ## [未发布]
 
 ### 新增
-- 无
+- 破冰流程主管道集成测试：新增 `tests/test_ice_break_pipeline.py`，覆盖纯函数、提示词注入、管道阶段、监控集成和端到端传播共 12 个 smoke test
 
 ### 变更
-- 无
+- **破冰流程主管道化重构**：
+  - `ice_break_monitor` 不再直接调用独立的 `break_ice()`，改为通过 `process_callback` 触发主管道 `process_loop(ice_break=True)`
+  - `SessionPipeline` 全链路支持 `ice_break` 上下文标记：`prepare_message_batch` 跳过防抖并构建合成输入、`normalize_incoming_content` 跳过消息规范化、`decide_reply_action` 跳过决策强制回复、`finalize_conversation` 递增破冰失败计数
+  - `build_chat_context` 新增 `ice_break` 参数，破冰模式下注入专用指令到系统消息中
+  - 新增 `get_ice_break_instructions()` 纯函数，替代原 `build_ice_break_prompt()` 的指令构建逻辑
+  - `main_process` 和 `process_loop` 新增 `ice_break` 参数透传
+  - 破冰回复现在享受完整的工具链能力（表情包搜索、小女仆委托、RAG 记忆检索等）
 
 ### 修复
-- 无
+- 修复 `prompts.py` 中 f-string 内中文引号导致的语法错误
 
 ### 移除
-- 无
+- 移除 `YukiEngine.break_ice()` 独立破冰方法（约 55 行）
+- 移除 `build_ice_break_prompt()` 函数（已被 `get_ice_break_instructions` + `build_chat_context` 替代）
 
 ---
 

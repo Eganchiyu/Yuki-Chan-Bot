@@ -118,64 +118,24 @@ def sync_system_prompts(history_mgr, yuki_state):
 
 import datetime
 
-def build_ice_break_prompt(chat_id, relevant_diaries: list, history_dict: dict):
-    """
-    构建专用的破冰 Prompt (保留原始提示词逻辑)
-    :param chat_id:群聊群号
-    :param relevant_diaries: RAG 检索回来的字典列表
-    :param history_dict: 原始历史字典
-    """
-    # 1. 获取当前时间感
+def get_ice_break_instructions() -> str:
+    """返回破冰模式的专用指令，注入到 system prompt 中。"""
     now = datetime.datetime.now()
     time_desc = "深夜" if 1 <= now.hour <= 5 else "早上" if 6 <= now.hour <= 9 else "午后" if 13 <= now.hour <= 16 else "晚上"
-
-    # 3. 构造基础人设指令
-    base_setting = get_yuki_setting_group()
-
-    # 4. 组装提示词块 (严格保留你的原始内容)
-    active_instruction = (
+    return (
         f"\n\n--- 破冰模式指令 ---\n"
         f"当前环境：群聊安静中，大家已经有一段时间没说话了。\n"
         f"当前时间：{now.strftime('%Y-%m-%d %H:%M')}({time_desc})\n\n"
-    )
-    instructions = (
         f"【任务要求】\n"
-        f"1. 请根据上方的“最近历史记录”和下方的“日记内容”，选择一个有趣的切入点自然地开口。\n"
+        f"1. 请根据上方的'最近历史记录'和下方的'日记内容'，选择一个有趣的切入点自然地开口。\n"
         f"2. 减少使用客套开场白。\n"
-        f"3. 语气要像个真实的女孩子，可以是一个突然的感慨、一个随意的分享，或者对之前某个话题的‘后知后觉’。\n"
+        f"3. 语气要像个真实的女孩子，可以是一个突然的感慨、一个随意的分享，或者对之前某个话题的'后知后觉'。\n"
         f"4. 限制在 30-60 字以内\n"
     )
 
-    # 5. 构建 Final Messages
-    # 将指令和记忆全部注入 System 角色，作为 Yuki 的“潜意识”
-    messages = [
-        {"role": "system", "content": base_setting + active_instruction},
-    ]
-
-    recent_history = [msg for msg in history_dict.get(chat_id, [])[-3:] if msg["role"] != "system"]
-
-    if recent_history:
-        messages.extend(recent_history)
-
-    messages = messages + [{"role": "system", "content": instructions}]
-
-    for diary_obj in reversed(relevant_diaries):
-        content = diary_obj['content'].replace('\n', ' ')
-        messages.append({"role": "system", "content": f"【回忆】{content}"})
-        logger.debug(f"【回忆】{content}")
-
-    # 7. 放置触发指令 (User 角色放在最后效果最好)
-    messages.append({"role": "user", "content": (
-        f"群聊安静中，大家已经有一段时间没说话了。\n"
-        f"当前时间：{now.strftime('%Y-%m-%d %H:%M')}({time_desc})\n\n"
-        f"(你看着安静的群聊，忽然想起了什么，决定开口说一句话...)"
-    )})
-
-    return messages
-
 
 async def build_chat_context(yuki, chat_id: str, combined_text: str, history_dict: dict, mode,
-                             relevant_diaries):
+                             relevant_diaries, ice_break: bool = False):
     # 这里的 diary 现在是字典，我们要取出 ['content']
     for i, diary_obj in enumerate(reversed(relevant_diaries), 1):
         preview = diary_obj['content'].replace('\n', ' ')  # 提取文本内容
@@ -198,6 +158,10 @@ async def build_chat_context(yuki, chat_id: str, combined_text: str, history_dic
 
     # 3. 补充工具链约束：assistant 的多段回复会在同一 session 中拼接并完整保存，避免把过程性思考混入最终回复
     combined_API_message.append({"role": "system", "content": "【重要约束】如果你需要委托小女仆或等待工具结果，不要先输出闲聊、思考过程、占位回复或半成品答案；包含 [DELEGATE_TO_MAID:...] 的回复应尽量只保留委托指令本身。工具结果返回后，再一次性输出最终要发送的内容。最终回复中不要包含内心思考、推理过程、草稿或多段候选内容。"})
+
+    # 3.5 破冰模式：注入专用指令
+    if ice_break:
+        combined_API_message.append({"role": "system", "content": get_ice_break_instructions()})
 
     # 4. 取出最近的对话（注意：这里保持原样取出，下面进行处理）
     recent_msgs_raw = [msg for msg in history_dict[chat_id][-cfg.KEEP_LAST_DIALOGUE - 1:-1] if msg["role"] != "system"]
