@@ -10,9 +10,15 @@
 ## [未发布]
 
 ### 新增
+- 新增 `tests/test_toolchain.py`，覆盖 `ToolSpec`、`FunctionRegistry` 和 `ToolCallManager` 的最小 smoke test
+- 新增 `docs/toolchain-usage.md`，整理 `core/toolchain.py` 与 `core/tools.py` 的调用流程、标准工具清单、扩展步骤和排查建议
 - 破冰流程主管道集成测试：新增 `tests/test_ice_break_pipeline.py`，覆盖纯函数、提示词注入、管道阶段、监控集成和端到端传播共 12 个 smoke test
 
 ### 变更
+- 工具链注册机制改为 `ToolSpec` 单一声明源，统一维护工具 schema 与 handler，减少字符串映射漂移
+- 收紧 `ToolContext` 运行时依赖，工具通过 `context.sender` 与 `context.yuki` 访问必要对象，不再直接依赖完整 `YukiEngine`
+- 简化 `ToolCallManager` 状态管理，移除未使用的 session 追踪状态，并改为读取 `cfg.timing.tool_call_delay_seconds`
+- 调整工具链多轮调用输出行为：工具调用轮次中的模型阶段性文本会实时发送，并从最终聚合回复中移除，避免最后统一释放导致重复或延迟输出
 - **破冰流程主管道化重构**：
   - `ice_break_monitor` 不再直接调用独立的 `break_ice()`，改为通过 `process_callback` 触发主管道 `process_loop(ice_break=True)`
   - `SessionPipeline` 全链路支持 `ice_break` 上下文标记：`prepare_message_batch` 跳过防抖并构建合成输入、`normalize_incoming_content` 跳过消息规范化、`decide_reply_action` 跳过决策强制回复、`finalize_conversation` 递增破冰失败计数

@@ -318,6 +318,14 @@ git config init.defaultBranch main
 - 使用 isort 排序导入
 - 使用 flake8 检查代码风格
 
+### 8.4 Python 运行环境
+
+运行项目脚本、测试、lint 或 typecheck 前，必须先在 PowerShell 中启用 Conda 环境：
+
+```powershell
+conda activate ai_env
+```
+
 ---
 
 ## 九、协作规范

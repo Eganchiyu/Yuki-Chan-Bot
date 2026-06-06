@@ -189,10 +189,10 @@ maid_task_queue: asyncio.Queue     # 小女仆任务队列
 ### 3.5 core/toolchain.py 与 core/tools.py - Function Call 工具链
 
 **职责**：
-- `FunctionRegistry` 负责注册工具 schema 与 handler
+- `FunctionRegistry` 负责注册 `ToolSpec` 并向 LLM 提供 schema
 - `ToolCallManager` 负责解析模型返回的 `tool_calls`、顺序执行工具、封装 OpenAI tool 消息
-- `ToolContext` 在多轮工具调用期间携带 `chat_id`、运行模式、当前历史、用户输入与引擎引用
-- `core/tools.py` 提供日记查询、定时任务、小女仆委托、主人私聊、浏览器搜索、QQ 文件发送、外部内容注入等标准工具
+- `ToolContext` 在多轮工具调用期间携带 `chat_id`、运行模式、当前历史、用户输入与最小运行时依赖
+- `core/tools.py` 通过 `TOOL_SPECS` 统一声明日记查询、定时任务、小女仆委托、主人私聊、浏览器搜索、QQ 文件发送、外部内容注入等标准工具
 
 **执行策略**：
 - 工具调用按顺序执行，避免共享状态并发写入

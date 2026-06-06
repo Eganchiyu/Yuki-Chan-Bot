@@ -12,8 +12,8 @@ from typing import Any
 from config import cfg
 from core.maid import MaidCapabilityBoundary, build_maid_report, build_maid_task, maid_evolution_loop
 from core.prompts import get_base_setting, get_summary_prompt, build_chat_context
-from core.toolchain import FunctionRegistry, ToolCallManager, ToolContext
-from core.tools import TOOL_HANDLERS, TOOL_SCHEMAS
+from core.toolchain import FunctionRegistry, ToolCallManager, ToolContext, ToolRuntime
+from core.tools import TOOL_SPECS
 from utils.llm_client import llm_chat, llm_chat_raw
 from utils.logger import get_logger
 
@@ -30,7 +30,7 @@ class YukiEngine:
         self.process_callback = None  # 预留回调接口
         self.sticker_manager = None
         self.tool_registry = FunctionRegistry()
-        self.tool_registry.scan_and_register(TOOL_SCHEMAS, TOOL_HANDLERS)
+        self.tool_registry.scan_and_register(TOOL_SPECS)
         self.tool_manager = ToolCallManager(self.tool_registry)
 
     @staticmethod
@@ -69,6 +69,16 @@ class YukiEngine:
         self._append_session_message(history_dict, chat_id, "user", pending_text, is_pending_during_tool=True)
         tool_messages.append({"role": "user", "content": f"【工具调用期间新增消息】{pending_text}"})
 
+    async def _send_tool_thought(self, chat_id, mode, content, sent_thoughts):
+        """实时发送工具链中模型产生的阶段性文本。"""
+        clean_content = self._clean_visible_reply(content)
+        if not clean_content or clean_content in sent_thoughts:
+            return ""
+        await self.sender.send(chat_id, clean_content, mode=mode)
+        sent_thoughts.add(clean_content)
+        logger.info(f"[ToolChain] 实时发送阶段性文本 chat_id={chat_id}: {clean_content}")
+        return clean_content
+
     async def _chat_with_tools(self, chat_id, combined_text, history_dict, mode, messages):
         """执行支持多轮工具调用的 LLM 对话。"""
         context = ToolContext(
@@ -76,16 +86,11 @@ class YukiEngine:
             mode=mode,
             history_dict=history_dict,
             combined_text=combined_text,
-            engine=self,
+            runtime=ToolRuntime(sender=self.sender, yuki_state=self.yuki),
         )
         self.tool_manager.start_session(str(chat_id), combined_text)
         tool_messages = list(messages)
-        reply_parts = []
-
-        def collect_reply(content):
-            clean_content = self._clean_visible_reply(content)
-            if clean_content and (not reply_parts or reply_parts[-1] != clean_content):
-                reply_parts.append(clean_content)
+        sent_thoughts = set()
 
         try:
             for _ in range(self.tool_manager.max_rounds):
@@ -107,20 +112,27 @@ class YukiEngine:
                         for call in tool_calls
                     ]
                     logger.info(f"[ToolChain] 模型请求工具调用 chat_id={chat_id} tools={tool_names}")
-                collect_reply(response_message.get("content"))
-                if not tool_calls:
-                    answer = "\n".join(reply_parts)
+
+                    sent_content = await self._send_tool_thought(
+                        chat_id,
+                        mode,
+                        response_message.get("content"),
+                        sent_thoughts,
+                    )
+                    if sent_content:
+                        self._append_session_message(
+                            history_dict,
+                            chat_id,
+                            "assistant",
+                            sent_content,
+                            is_tool_thought=True,
+                            sent_realtime=True,
+                        )
+                else:
+                    answer = self._clean_visible_reply(response_message.get("content"))
                     return answer, answer
 
                 tool_messages.append(response_message)
-                if response_message.get("content"):
-                    self._append_session_message(
-                        history_dict,
-                        chat_id,
-                        "assistant",
-                        response_message.get("content"),
-                        is_tool_thought=True,
-                    )
                 tool_result_messages = await self.tool_manager.execute_tool_calls(tool_calls, context)
                 for tool_result_message in tool_result_messages:
                     self._append_session_message(
@@ -141,8 +153,7 @@ class YukiEngine:
                 top_p=0.8,
                 max_tokens=220,
             )
-            collect_reply(fallback)
-            fallback = "\n".join(reply_parts)
+            fallback = self._clean_visible_reply(fallback)
             return fallback, fallback
         finally:
             self.tool_manager.finish_session(str(chat_id))

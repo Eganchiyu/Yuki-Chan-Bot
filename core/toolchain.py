@@ -3,7 +3,7 @@ import asyncio
 import json
 import time
 from dataclasses import dataclass, field
-from typing import Any, Callable, Awaitable
+from typing import Any, Awaitable, Callable
 
 from config import cfg
 from utils.logger import get_logger
@@ -14,11 +14,11 @@ logger = get_logger("toolchain")
 @dataclass
 class ToolResult:
     """工具调用的标准结果封装。"""
-    name: str
     success: bool
     content: str
     data: Any = None
     error: str = ""
+    name: str = ""
 
     def to_message_content(self) -> str:
         payload = {
@@ -31,60 +31,86 @@ class ToolResult:
 
 
 @dataclass
+class ToolRuntime:
+    """工具可访问的运行时依赖，避免直接暴露完整 Engine。"""
+    sender: Any
+    yuki_state: Any
+
+
+@dataclass
 class ToolContext:
     """工具调用上下文，保持多轮工具调用期间的会话状态。"""
     chat_id: str
     mode: str
     history_dict: dict
     combined_text: str
-    engine: Any
+    runtime: ToolRuntime
     metadata: dict = field(default_factory=dict)
+
+    @property
+    def sender(self):
+        return self.runtime.sender
+
+    @property
+    def yuki(self):
+        return self.runtime.yuki_state
+
+
+@dataclass
+class ToolSpec:
+    """单个 function tool 的声明，统一维护 schema 与 handler。"""
+    name: str
+    description: str
+    parameters: dict
+    handler: Callable[..., Awaitable[ToolResult]]
+
+    def to_schema(self) -> dict:
+        return {
+            "type": "function",
+            "function": {
+                "name": self.name,
+                "description": self.description,
+                "parameters": self.parameters,
+            },
+        }
 
 
 class FunctionRegistry:
-    """Function Call 注册中心：扫描、注册、提供 tools 列表。"""
+    """Function Call 注册中心：注册、注销、提供 tools 列表。"""
 
     def __init__(self):
-        self._functions = {}
-        self._handlers = {}
+        self._tools: dict[str, ToolSpec] = {}
 
-    def register(self, schema: dict, handler: Callable[..., Awaitable[ToolResult]]):
+    def register(self, spec: ToolSpec):
         """注册一个 function tool。"""
-        name = schema["function"]["name"]
-        self._functions[name] = schema
-        self._handlers[name] = handler
-        logger.info(f"[FunctionRegistry] 注册 function: {name}")
+        self._tools[spec.name] = spec
+        logger.info(f"[FunctionRegistry] 注册 function: {spec.name}")
 
     def unregister(self, name: str):
         """注销一个 function tool。"""
-        if name in self._functions:
-            del self._functions[name]
-            del self._handlers[name]
+        if name in self._tools:
+            del self._tools[name]
             logger.info(f"[FunctionRegistry] 注销 function: {name}")
 
     def get_tools(self) -> list:
-        """获取所有已注册的 tools 列表。"""
-        return list(self._functions.values())
+        """获取所有已注册的 tools schema 列表。"""
+        return [spec.to_schema() for spec in self._tools.values()]
 
     def get_handler(self, name: str):
         """获取指定 function 的执行函数。"""
-        return self._handlers.get(name)
+        spec = self._tools.get(name)
+        return spec.handler if spec else None
 
     def list_functions(self) -> list:
         """列出所有已注册的 function 名称。"""
-        return list(self._functions.keys())
+        return list(self._tools.keys())
 
-    def scan_and_register(self, tools_list: list, handlers_dict: dict):
-        """批量扫描并注册 tools（先清空再扫描）。"""
-        self._functions.clear()
-        self._handlers.clear()
+    def scan_and_register(self, tool_specs: list[ToolSpec]):
+        """批量注册 tools（先清空再扫描）。"""
+        self._tools.clear()
         logger.info("[FunctionRegistry] 已清空所有注册")
-        for tool in tools_list:
-            name = tool["function"]["name"]
-            if name in handlers_dict:
-                self.register(tool, handlers_dict[name])
-            else:
-                logger.warning(f"[FunctionRegistry] tool {name} 缺少 handler，跳过注册")
+        for spec in tool_specs:
+            self.register(spec)
 
 
 class ToolCallManager:
@@ -93,20 +119,16 @@ class ToolCallManager:
     def __init__(self, registry: FunctionRegistry, max_rounds: int = 4):
         self.registry = registry
         self.max_rounds = max_rounds
-        self.sessions = {}
 
     def start_session(self, chat_id: str, user_text: str):
-        """记录一次工具调用会话。"""
-        self.sessions[chat_id] = {
-            "started_at": time.time(),
-            "user_text": user_text,
-            "round": 0,
-            "calls": [],
-        }
+        """保留会话入口，当前仅用于兼容调用点。"""
 
     def finish_session(self, chat_id: str):
-        """结束一次工具调用会话。"""
-        self.sessions.pop(chat_id, None)
+        """保留会话出口，当前无需维护额外状态。"""
+
+    @staticmethod
+    def _delay_seconds() -> float:
+        return max(0.0, float(cfg.timing.tool_call_delay_seconds))
 
     async def execute_tool_call(self, tool_call: dict, context: ToolContext) -> dict:
         """执行单个 tool call，并返回 OpenAI tool 消息。"""
@@ -117,7 +139,7 @@ class ToolCallManager:
         handler = self.registry.get_handler(name)
 
         logger.info(f"[ToolCall] 准备执行 chat_id={context.chat_id} name={name} args={arguments_text}")
-        delay_seconds = max(0.0, float(getattr(cfg, "TOOL_CALL_DELAY_SECONDS", 1.2)))
+        delay_seconds = self._delay_seconds()
         if delay_seconds > 0:
             logger.info(f"[ToolCall] {name} 等待 {delay_seconds:.1f}s 后执行")
             await asyncio.sleep(delay_seconds)
@@ -129,6 +151,7 @@ class ToolCallManager:
             try:
                 args = json.loads(arguments_text) if isinstance(arguments_text, str) else arguments_text
                 result = await handler(context, **(args or {}))
+                result.name = result.name or name
             except json.JSONDecodeError as e:
                 result = ToolResult(name=name, success=False, content="工具参数不是合法 JSON", error=str(e))
             except TypeError as e:
@@ -142,8 +165,6 @@ class ToolCallManager:
             f"[ToolCall] 执行完成 chat_id={context.chat_id} name={name} "
             f"success={result.success} elapsed={elapsed:.2f}s"
         )
-        session = self.sessions.setdefault(context.chat_id, {"calls": [], "round": 0})
-        session["calls"].append({"name": name, "success": result.success})
         return {
             "role": "tool",
             "tool_call_id": call_id,
@@ -156,5 +177,4 @@ class ToolCallManager:
         messages = []
         for tool_call in tool_calls:
             messages.append(await self.execute_tool_call(tool_call, context))
-        self.sessions.setdefault(context.chat_id, {"calls": [], "round": 0})["round"] += 1
         return messages
