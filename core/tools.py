@@ -16,6 +16,9 @@ logger = get_logger("tools")
 _TIMER_TASKS_KEY = "__timer_tasks__"
 _TIMER_HANDLES_KEY = "__timer_handles__"
 _TAVILY_SEARCH_URL = "https://api.tavily.com/search"
+_AMAP_AROUND_URL = "https://restapi.amap.com/v5/place/around"
+_AMAP_TEXT_URL = "https://restapi.amap.com/v5/place/text"
+_AMAP_GEOCODE_URL = "https://restapi.amap.com/v3/geocode/geo"
 
 
 def _timer_store(context):
@@ -189,6 +192,77 @@ async def send_master_private_tool(context, message):
     return ToolResult(success=True, content="已私聊发送给主人。")
 
 
+async def amap_search_tool(context, keywords, search_type="text", location=None, address=None, city=None, radius=3000, page_size=10):
+    """高德地图统一搜索：text=关键词搜索, around=周边搜索(需坐标), geocode=地名转坐标。"""
+    api_key = os.getenv("AMAP_API_KEY")
+    if not api_key:
+        return ToolResult(success=False, content="未配置 AMAP_API_KEY，无法调用高德地图服务。", error="missing_amap_api_key")
+
+    timeout = aiohttp.ClientTimeout(total=15)
+
+    if search_type == "geocode":
+        if not address:
+            return ToolResult(success=False, content="缺少地址信息", error="missing_address")
+        params = {"key": api_key, "address": address}
+        if city:
+            params["city"] = city
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.get(_AMAP_GEOCODE_URL, params=params) as response:
+                data = await response.json(content_type=None)
+        if data.get("status") != "1":
+            return ToolResult(success=False, content=f"高德地图返回错误：{data.get('info', '未知错误')}", data=data, error=data.get("infocode", "amap_error"))
+        geocodes = data.get("geocodes") or []
+        if not geocodes:
+            return ToolResult(success=False, content="未找到该地址的坐标信息。", error="no_geocode_result")
+        results = [{"name": g.get("formatted_address"), "location": g.get("location"), "city": g.get("city"), "district": g.get("district")} for g in geocodes[:5]]
+        return ToolResult(success=True, content=f"已定位到 {len(results)} 个地址", data={"results": results})
+
+    if not keywords:
+        return ToolResult(success=False, content="缺少搜索关键词", error="missing_keywords")
+
+    if search_type == "around":
+        if not location:
+            return ToolResult(success=False, content="周边搜索需要中心点坐标（经度,纬度）", error="missing_location")
+        params = {
+            "key": api_key, "keywords": keywords, "location": location,
+            "radius": max(100, min(int(radius), 50000)),
+            "page_size": max(1, min(int(page_size), 25)),
+            "page_num": 1, "show_fields": "business",
+        }
+        url = _AMAP_AROUND_URL
+    else:
+        params = {
+            "key": api_key, "keywords": keywords,
+            "page_size": max(1, min(int(page_size), 25)),
+            "page_num": 1, "show_fields": "business",
+        }
+        if city:
+            params["region"] = city
+        url = _AMAP_TEXT_URL
+
+    async with aiohttp.ClientSession(timeout=timeout) as session:
+        async with session.get(url, params=params) as response:
+            data = await response.json(content_type=None)
+            if response.status >= 400:
+                return ToolResult(success=False, content="高德地图请求失败。", data=data, error=f"http_{response.status}")
+
+    if data.get("status") != "1":
+        return ToolResult(success=False, content=f"高德地图返回错误：{data.get('info', '未知错误')}", data=data, error=data.get("infocode", "amap_error"))
+
+    pois = []
+    for poi in (data.get("pois") or []):
+        biz = poi.get("business") or {}
+        pois.append({
+            "name": poi.get("name"), "address": poi.get("address"),
+            "location": poi.get("location"), "type": poi.get("type"),
+            "distance": poi.get("distance"), "city": poi.get("cityname"),
+            "tel": biz.get("tel"), "rating": biz.get("rating"), "cost": biz.get("cost"),
+        })
+    count = data.get("count", len(pois))
+    summary = f"共找到 {count} 个地点" if count else "未找到相关地点"
+    return ToolResult(success=True, content=summary, data={"count": count, "pois": pois})
+
+
 async def browser_search_tool(context, query, max_results=5, search_depth="basic"):
     """调用 Tavily 搜索服务，返回可供 LLM 总结的网页结果。"""
     if not query:
@@ -340,6 +414,23 @@ TOOL_SPECS = [
             "required": ["query"],
         },
         handler=browser_search_tool,
+    ),
+    ToolSpec(
+        name="amap_search",
+        description="高德地图搜索工具。search_type='text' 按关键词搜索地点(可选city)；'around' 按坐标搜周边(需location)；'geocode' 把地名转经纬度(需address)。",
+        parameters={
+            "type": "object",
+            "properties": {
+                "keywords": {"type": "string", "description": "搜索关键词，如'餐厅'、'加油站'、'肯德基'"},
+                "search_type": {"type": "string", "enum": ["text", "around", "geocode"], "description": "搜索类型：text=关键词搜索, around=周边搜索, geocode=地名转坐标"},
+                "location": {"type": "string", "description": "中心点坐标，around 模式必填，格式：经度,纬度"},
+                "address": {"type": "string", "description": "地名或地址，geocode 模式必填"},
+                "city": {"type": "string", "description": "限定城市，如'北京'，提高 text/geocode 精度"},
+                "radius": {"type": "integer", "description": "搜索半径(米)，around 模式使用，默认 3000"},
+                "page_size": {"type": "integer", "description": "返回结果数量，1-25，默认 10"},
+            },
+        },
+        handler=amap_search_tool,
     ),
     ToolSpec(
         name="send_qq_file",
