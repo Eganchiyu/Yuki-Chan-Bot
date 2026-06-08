@@ -10,6 +10,9 @@
 ## [未发布]
 
 ### 新增
+- 新增 `scripts/03_RAG_Tools/backfill_memory_candidates.py`，支持从日记备份中离线 dry-run/断点续跑提取结构化长期记忆候选
+- 增强 `scripts/03_RAG_Tools/export_memory.py`，导出全量记忆时同步生成日记数量、重复项、长度、时间范围和 metadata 标准字段统计
+- 新增 `MemoryRAG.save_memory()` 标准化记忆写入接口，支持 `type/status/confidence/importance/supersedes/source_ids` 等 Hy-Memory Lite 元数据
 - 新增 `tests/test_toolchain.py`，覆盖 `ToolSpec`、`FunctionRegistry` 和 `ToolCallManager` 的最小 smoke test
 - 新增 `docs/toolchain-usage.md`，整理 `core/toolchain.py` 与 `core/tools.py` 的调用流程、标准工具清单、扩展步骤和排查建议
 - 破冰流程主管道集成测试：新增 `tests/test_ice_break_pipeline.py`，覆盖纯函数、提示词注入、管道阶段、监控集成和端到端传播共 12 个 smoke test

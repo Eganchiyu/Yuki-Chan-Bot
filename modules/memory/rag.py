@@ -58,31 +58,32 @@ class MemoryRAG:
         self.name_blacklist = self._load_blacklist()
         logger.info("[RAG] 屏蔽词库已完成热重载")
 
-    def save_diary(self, content, chat_id=None, people=None, emotion=None):
-        """保存日记到向量库，包含自动去重逻辑"""
-
-        # 1. 24小时内内容级去重检查
-        where_filter = {}
-        if chat_id is not None:
-            where_filter["chat_id"] = str(chat_id)
-
-        # 检查最近24小时内是否已有完全相同的内容
-        time_threshold = datetime.datetime.now().timestamp() - 86400
-        where_filter["timestamp"] = {"$gte": time_threshold}
-
-        try:
-            existing = self.collection.get(where=where_filter)
-            if existing and 'documents' in existing and existing['documents']:
-                if content in existing['documents']:
-                    logger.info("[RAG] 检测到24小时内重复内容，跳过保存")
-                    return
-        except Exception as e:
-            logger.warning(f"[RAG] 去重检查跳过: {e}")
-
-        # 2. 正常保存逻辑
-        embedding = self.model.encode(content).tolist()
-        doc_id = f"diary_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}_{hash(content) % 10000:04d}"
-        metadata = {"timestamp": datetime.datetime.now().timestamp()}
+    @staticmethod
+    def _build_memory_metadata(
+        memory_type="summary",
+        chat_id=None,
+        people=None,
+        emotion=None,
+        subject=None,
+        status="active",
+        confidence=1.0,
+        importance=3,
+        supersedes=None,
+        source_ids=None,
+        extra_metadata=None,
+    ):
+        """构造兼容 Chroma 的标准记忆 metadata。"""
+        now = datetime.datetime.now().timestamp()
+        metadata = {
+            "type": memory_type,
+            "status": status,
+            "confidence": float(confidence),
+            "importance": int(importance),
+            "timestamp": now,
+            "created_at": now,
+            "updated_at": now,
+            "access_count": 0,
+        }
 
         if chat_id is not None:
             metadata["chat_id"] = str(chat_id)
@@ -90,6 +91,70 @@ class MemoryRAG:
             metadata["people"] = json.dumps(people, ensure_ascii=False)
         if emotion:
             metadata["emotion"] = emotion
+        if subject:
+            metadata["subject"] = str(subject)
+        if supersedes:
+            metadata["supersedes"] = str(supersedes)
+        if source_ids:
+            metadata["source_ids"] = json.dumps(source_ids, ensure_ascii=False)
+
+        if extra_metadata:
+            for key, value in extra_metadata.items():
+                if value is None:
+                    continue
+                if isinstance(value, (str, int, float, bool)):
+                    metadata[key] = value
+                else:
+                    metadata[key] = json.dumps(value, ensure_ascii=False)
+        return metadata
+
+    def save_memory(
+        self,
+        content,
+        memory_type="summary",
+        chat_id=None,
+        people=None,
+        emotion=None,
+        subject=None,
+        status="active",
+        confidence=1.0,
+        importance=3,
+        supersedes=None,
+        source_ids=None,
+        extra_metadata=None,
+    ):
+        """保存标准化长期记忆，兼容日记、事实、画像等多类型。"""
+        if not content or not content.strip():
+            return None
+
+        where_filter = {"timestamp": {"$gte": datetime.datetime.now().timestamp() - 86400}}
+        if chat_id is not None:
+            where_filter["chat_id"] = str(chat_id)
+
+        try:
+            existing = self.collection.get(where=where_filter)
+            if existing and 'documents' in existing and existing['documents']:
+                if content in existing['documents']:
+                    logger.info("[RAG] 检测到24小时内重复内容，跳过保存")
+                    return None
+        except Exception as e:
+            logger.warning(f"[RAG] 去重检查跳过: {e}")
+
+        embedding = self.model.encode(content).tolist()
+        doc_id = f"mem_{memory_type}_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}_{hash(content) % 10000:04d}"
+        metadata = self._build_memory_metadata(
+            memory_type=memory_type,
+            chat_id=chat_id,
+            people=people,
+            emotion=emotion,
+            subject=subject,
+            status=status,
+            confidence=confidence,
+            importance=importance,
+            supersedes=supersedes,
+            source_ids=source_ids,
+            extra_metadata=extra_metadata,
+        )
 
         self.collection.add(
             documents=[content],
@@ -97,7 +162,19 @@ class MemoryRAG:
             metadatas=[metadata],
             ids=[doc_id]
         )
-        logger.info(f"[RAG] 日记已存入 (chat_id={chat_id}): {content[:50]}...")
+        logger.info(f"[RAG] 记忆已存入 type={memory_type} chat_id={chat_id}: {content[:50]}...")
+        return doc_id
+
+    def save_diary(self, content, chat_id=None, people=None, emotion=None):
+        """保存日记到向量库，包含自动去重逻辑"""
+        return self.save_memory(
+            content=content,
+            memory_type="summary",
+            chat_id=chat_id,
+            people=people,
+            emotion=emotion,
+            importance=3,
+        )
 
     def search_memory(self, query, chat_id=None, top_k=cfg.RETRIEVAL_TOP_K, threshold=1.0):
         """混合检索：支持当前群聊 + 手动录入的记忆"""
