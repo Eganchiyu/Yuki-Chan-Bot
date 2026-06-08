@@ -101,15 +101,16 @@ class PrettyFormatter(logging.Formatter):
 
 class ColoredConsoleFormatter(logging.Formatter):
     """
-    控制台日志格式：与文件日志相同的对齐结构，但带 ANSI 颜色。
+    控制台日志格式：带 ANSI 颜色的对齐结构。
 
     配色：
         时间      → 灰色
+        TRACE     → 深灰色
         DEBUG     → 灰色
         INFO      → 青色
         WARNING   → 黄色
         ERROR     → 红色
-        CRITICAL  → 加粗红色
+        CRITICAL  → 加粗红色背景
         位置      → 蓝色
         消息正文  → 默认终端色（白色）
     """
@@ -119,11 +120,12 @@ class ColoredConsoleFormatter(logging.Formatter):
     C_RESET = '\033[0m'
 
     LEVEL_COLORS = {
+        'TRACE': '\033[90m',
         'DEBUG': '\033[90m',
         'INFO': '\033[36m',
         'WARNING': '\033[33m',
         'ERROR': '\033[31m',
-        'CRITICAL': '\033[1;31m',
+        'CRITICAL': '\033[1;37;41m',
     }
 
     def formatTime(self, record, datefmt=None):
@@ -143,7 +145,7 @@ class ColoredConsoleFormatter(logging.Formatter):
         return (
             f"{c_time}[{asctime}]{c_reset} "
             f"{c_lvl}{level}{c_reset} "
-            f"{c_loc}{location}{c_reset} | "
+            f"{c_loc}{location}{c_reset} │ "
             f"{msg}"
         )
 

@@ -134,11 +134,11 @@ class MemoryRAG:
         """
         并行双池检索：语义池与关键词池并行提取，算法全透明调试版
         """
-        logger.debug(f"\n[RAG-Debug] 🔍 开启并行检索流: '{query_text}'")
+        logger.debug(f"\n[RAG] 开启并行检索流: '{query_text}'")
 
         total_count = self.collection.count()
         if total_count == 0:
-            logger.debug("[RAG-Debug] ❌ 数据库为空，取消检索")
+            logger.debug("[RAG] 数据库为空，取消检索")
             return []
 
         # 1. 准备：类型转换与关键词提取
@@ -154,10 +154,10 @@ class MemoryRAG:
             (kw, w) for kw, w in raw_keywords
             if kw.lower() not in self.name_blacklist
         ]
-        logger.debug(f"[RAG-Debug] 🎯 核心锚点词: {keywords_with_weight}")
+        logger.debug(f"[RAG] 核心锚点词: {keywords_with_weight}")
 
         # 2. 【并行池 A】向量语义池
-        logger.debug(f"[RAG-Debug] 🌊 正在提取语义池 (Top {n_results})...")
+        logger.debug(f"[RAG] 正在提取语义池 (Top {n_results})")
         query_embedding = self.model.encode(query_text).tolist()
         vector_results = self.collection.query(
             query_embeddings=[query_embedding],
@@ -166,7 +166,7 @@ class MemoryRAG:
         )
 
         # 3. 【并行池 B】全量关键词扫描池 (关键改动：使用 get 代替 query)
-        logger.debug(f"[RAG-Debug] 🎣 正在执行全量关键词扫描...")
+        logger.debug(f"[RAG] 正在执行全量关键词扫描")
         all_relevant_docs = self.collection.get(where=filter_cond)
 
         # 4. 合并与重置逻辑
@@ -207,7 +207,7 @@ class MemoryRAG:
                     kw_found_count += 1
 
         logger.debug(
-            f"[RAG-Debug] ⚖️ 池合并完成: 语义池注入 {len(combined_map) - kw_found_count} 条，关键词池打捞 {kw_found_count} 条")
+            f"[RAG] 池合并完成: 语义池 {len(combined_map) - kw_found_count} 条，关键词池打捞 {kw_found_count} 条")
 
         final_results = []
         for item in combined_map.values():
@@ -223,7 +223,7 @@ class MemoryRAG:
         # 6. 排序与截断
         final_results.sort(key=lambda x: x['score'], reverse=True)
 
-        logger.debug(f"[RAG-Debug] 📊 排序结果 (Top 3):")
+        logger.debug(f"[RAG] 排序结果 (Top 3):")
         for i, res in enumerate(final_results[:3]):
             logger.debug(f"   #{i + 1} 分数:{res['score']:.4f} | {res['debug']}")
 

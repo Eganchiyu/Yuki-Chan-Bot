@@ -116,20 +116,20 @@ def _do_cleanup():
     if _cleanup_done:
         return
     _cleanup_done = True
-    logger.info("[System] 正在清理资源...")
+    logger.info("[Main] 正在清理资源...")
     try:
         cfg._save_raw()
-        logger.info("[System] 配置已自动对齐保存")
+        logger.info("[Main] 配置已自动对齐保存")
     except Exception as e:
-        logger.error(f"[System] 保存配置时出错: {e}")
+        logger.error(f"[Main] 保存配置时出错: {e}")
     try:
         from utils.llm_client import close_global_session
         loop = asyncio.new_event_loop()
         loop.run_until_complete(close_global_session())
         loop.close()
-        logger.info("[System] 资源清理完成")
+        logger.info("[Main] 资源清理完成")
     except Exception as e:
-        logger.error(f"[System] 清理资源时出错: {e}")
+        logger.error(f"[Main] 清理资源时出错: {e}")
 
 
 # ==================== 主程序入口 ====================
@@ -156,17 +156,17 @@ if __name__ == "__main__":
         asyncio.run(napcat_listen(mode))
 
     except KeyboardInterrupt:
-        logger.info("[System] 收到中断信号，正在退出...")
+        logger.info("[Main] 收到中断信号，正在退出...")
         sys.exit(0)
 
     except (FileNotFoundError, ImportError, KeyError) as e:
         logger.error("=" * 50)
-        logger.error("启动失败：环境配置似乎不完整")
-        logger.error(f"具体错误: {e}")
+        logger.error("启动失败: 环境配置不完整")
+        logger.error(f"错误详情: {e}")
         logger.error("-" * 50)
-        logger.error("💡 建议操作：")
-        logger.error("   请运行 [ python setup.py ] 进行一键修复/配置。")
-        logger.error("   该脚本会自动安装依赖、生成配置文件并下载模型。")
+        logger.error("建议操作:")
+        logger.error("  请运行 [ python setup.py ] 进行一键修复/配置")
+        logger.error("  该脚本会自动安装依赖、生成配置文件并下载模型")
         logger.error("=" * 50 + "\n")
         sys.exit(1)
 

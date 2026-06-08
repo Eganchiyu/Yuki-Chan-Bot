@@ -38,7 +38,7 @@ async def start_background_tasks(mode: str):
     asyncio.create_task(engine.ice_break_monitor())
     from core.engine import maid_worker
     asyncio.create_task(maid_worker(engine, yuki, sender, history_manager))
-    logger.info("[System] 已启动后台辅助任务 (日记检查/破冰/精力衰减)")
+    logger.info("[NapCat] 已启动后台辅助任务 (日记检查/破冰/精力衰减)")
 
 
 def handle_group_switch(group_id, gid_str, user_id, raw_msg):
@@ -76,7 +76,7 @@ async def napcat_listen(mode: str):
     """NapCat 输入适配层：接收 QQ 消息并 feed 到会话管道。"""
     await start_background_tasks(mode)
 
-    logger.info(f"[System] 准备连接 NapCat 服务端 | 模式: {mode}")
+    logger.info(f"[NapCat] 准备连接服务端 | 模式: {mode}")
     while True:
         try:
             async for data in connector.listen():
@@ -106,7 +106,7 @@ async def napcat_listen(mode: str):
                     is_fake = name == cfg.MASTER_NAME and user_id != cfg.TARGET_QQ
                     if is_fake:
                         logger.warning(
-                            f"[System] 检测到疑似冒充消息，已替换发送者姓名。原始姓名: {name}, QQ: {user_id}"
+                            f"[NapCat] 检测到疑似冒充消息，已替换发送者姓名。原始姓名: {name}, QQ: {user_id}"
                         )
                         name = f"{name}(冒充)"
 
@@ -120,8 +120,8 @@ async def napcat_listen(mode: str):
                     )
 
         except Exception as e:
-            logger.error(f"监听主循环发生非预期崩溃: {e}")
-            logger.info("[System] 5 秒后将尝试重启监听进程...")
+            logger.error(f"[NapCat] 监听主循环崩溃: {e}")
+            logger.info("[NapCat] 5 秒后尝试重启监听进程")
             await asyncio.sleep(5)
 
 
@@ -139,7 +139,7 @@ async def feed_message(chat_id, content, mode, raw_message="", sender_name="", u
 
     if cid_str in yuki.ice_break_fail_count and not is_bot:
         if yuki.ice_break_fail_count[cid_str] > 0:
-            logger.info(f"[IceBreak] {cid_str} 收到新消息，重置破冰计数器。")
+            logger.info(f"[NapCat] {cid_str} 收到新消息，重置破冰计数器")
         yuki.ice_break_fail_count[cid_str] = 0
 
     yuki.last_message_time[cid_str] = time.time()
@@ -147,7 +147,7 @@ async def feed_message(chat_id, content, mode, raw_message="", sender_name="", u
 
     if raw_message in ["help", "/help", "yuki帮助", "yuki功能", "帮助", "功能"]:
         await sender.send_local_image(chat_id, "utils/yuki_help.png", mode=mode)
-        logger.info("[System] 已记录并发送帮助图")
+        logger.info("[NapCat] 已发送帮助图")
         history_manager.append_chat(chat_id, "user", f"(请求帮助文档: {content})")
         history_manager.append_chat(chat_id, "assistant", "(已发送帮助文档图片)")
         return

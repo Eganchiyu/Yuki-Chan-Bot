@@ -113,7 +113,7 @@ class SessionPipeline:
             context["message_objs"] = []
             context["first_time"] = time.time()
             await self.yuki.boost_activity(chat_id)
-            logger.info(f"[IceBreak] {chat_id} 跳过防抖，注入破冰上下文")
+            logger.info(f"[Pipeline] {chat_id} 跳过防抖，注入破冰上下文")
             return context
 
         if context["debounce_flag"]:
@@ -123,7 +123,7 @@ class SessionPipeline:
             await asyncio.sleep(0.5)
 
         if mode == "group" and not self.group_active_state.get(str(chat_id), True):
-            logger.info(f"[System] [{chat_id}] 协程醒来，但群已被静音，丢弃遗留消息并退出。")
+            logger.info(f"[Pipeline] {chat_id} 群已静音，丢弃消息并退出")
             self.yuki.pop_buffer(chat_id)
             context["stop"] = True
             return context
@@ -165,7 +165,7 @@ class SessionPipeline:
                 if is_meme and hasattr(self.engine, "sticker_manager"):
                     pass
                 elif not is_meme:
-                    logger.info("[System] 拦截到非表情包图片，仅作视觉理解，不入库学习。")
+                    logger.info("[Pipeline] 拦截到非表情包图片，仅作视觉理解，不入库学习")
 
             combined_text = modified_text
             for content in understood_contents:
@@ -173,7 +173,7 @@ class SessionPipeline:
 
         combined_text = await self.parser.parse_all_cq_codes(combined_text)
         combined_text = combined_text.replace("\n", "  ").strip()
-        logger.info(f"[{chat_id}] 收到消息{combined_text}")
+        logger.info(f"[Pipeline] [{chat_id}] 收到消息: {combined_text[:80]}")
         self.history_manager.append_to_log(chat_id, "User/Group", combined_text)
 
         context["combined_text"] = combined_text
@@ -181,7 +181,7 @@ class SessionPipeline:
 
     async def prepare_chat_context(self, context):
         """加载上下文，确保系统提示词存在，并追加当前用户消息。"""
-        logger.info("[System] 加载上下文信息...")
+        logger.info("[Pipeline] 加载上下文信息")
         history_dict = self.history_manager.load()
         chat_id = str(context["chat_id"])
         mode = context["mode"]
@@ -201,7 +201,7 @@ class SessionPipeline:
         context["chat_id"] = chat_id
         context["history_dict"] = history_dict
         context["current_time_str"] = current_time_str
-        logger.info("[System] 加载完成")
+        logger.info("[Pipeline] 上下文加载完成")
         return context
 
     async def decide_reply_action(self, context):
@@ -221,13 +221,13 @@ class SessionPipeline:
             force_reply=context["force_reply"],
         ):
             self.history_manager.save(history_dict)
-            logger.info(f"[System] {cfg.ROBOT_NAME.title()} 决定继续潜水...")
+            logger.info(f"[Pipeline] {cfg.ROBOT_NAME.title()} 决定继续潜水")
             context["stop"] = True
         return context
 
     async def retrieve_memories(self, context):
         """根据输入长度动态检索相关日记。"""
-        logger.info(f"[System] {cfg.ROBOT_NAME.title()} 正在回忆...")
+        logger.info(f"[Pipeline] {cfg.ROBOT_NAME.title()} 正在回忆")
         chat_id = context["chat_id"]
         combined_text = context["combined_text"]
         dynamic_top_k = 10 if len(combined_text) > 100 else 8
@@ -236,8 +236,8 @@ class SessionPipeline:
             chat_id=chat_id,
             top_k=dynamic_top_k,
         )
-        logger.info(f"[System] 检索到 {len(relevant_diaries)} 条相关日记:")
-        logger.info(f"检索完成，用时 {(time.time() - context['first_time']):.2f}")
+        logger.info(f"[Pipeline] 检索到 {len(relevant_diaries)} 条相关日记")
+        logger.info(f"[Pipeline] 检索完成，耗时 {(time.time() - context['first_time']):.2f}s")
 
         context["relevant_diaries"] = relevant_diaries
         return context
@@ -253,7 +253,7 @@ class SessionPipeline:
             context["relevant_diaries"],
             ice_break=context.get("ice_break", False),
         )
-        logger.info(f"{cfg.ROBOT_NAME.title()}打字完成！")
+        logger.info(f"[Pipeline] {cfg.ROBOT_NAME.title()} 回复生成完成")
 
         context["answer_raw"] = answer_raw
         context["answer_text"] = answer_text
@@ -269,7 +269,7 @@ class SessionPipeline:
 
         if mode == "group":
             self.yuki.consume_energy(chat_id)
-        logger.info(f"[System] {cfg.ROBOT_NAME.title()} 正在发送消息...(剩余精力: {self.yuki.energy[chat_id]:.1f})")
+        logger.info(f"[Pipeline] {cfg.ROBOT_NAME.title()} 正在发送消息 (精力: {self.yuki.energy[chat_id]:.1f})")
 
         if not voice:
             parts = re.split(r"(\[CQ:image,[^\]]*?sub_type=1\])", answer_text, flags=re.IGNORECASE)
@@ -282,7 +282,7 @@ class SessionPipeline:
         else:
             await self.sender.send(chat_id, voice, mode=mode)
 
-        logger.info(f"[System] 发送完成！全量内容：{answer_text}")
+        logger.info(f"[Pipeline] 发送完成，内容: {answer_text[:80]}")
         return context
 
     async def finalize_conversation(self, context):
@@ -291,7 +291,7 @@ class SessionPipeline:
         history_dict = context["history_dict"]
         answer_text = context["answer_text"]
 
-        logger.info(f"[System] {cfg.ROBOT_NAME.title()}正在保存上下文...")
+        logger.info(f"[Pipeline] {cfg.ROBOT_NAME.title()} 正在保存上下文")
         self.history_manager.append_to_log(chat_id, cfg.ROBOT_NAME.title(), answer_text)
         history_dict[chat_id].append({
             "role": "assistant",
@@ -299,18 +299,18 @@ class SessionPipeline:
             "time": context["current_time_str"],
         })
         self.history_manager.save(history_dict)
-        logger.info("[System] 保存完成")
+        logger.info("[Pipeline] 上下文保存完成")
 
         if len(history_dict[chat_id]) > cfg.DIARY_MAX_LENGTH:
             summarized_list = await self.engine.do_summarize(chat_id, history_dict[chat_id])
             history_dict[chat_id] = summarized_list
             self.history_manager.save(history_dict)
-            logger.info(f"[{chat_id}] 日记写入完成，全量历史已同步。")
+            logger.info(f"[Pipeline] [{chat_id}] 日记写入完成，历史已同步")
 
         # 破冰模式：递增失败计数（下次收到非 bot 消息时由 feed_message 重置）
         if context.get("ice_break"):
             async with self.yuki.lock:
                 self.yuki.ice_break_fail_count[chat_id] = self.yuki.ice_break_fail_count.get(chat_id, 0) + 1
-            logger.info(f"[IceBreak] {chat_id} 破冰计数递增至 {self.yuki.ice_break_fail_count[chat_id]}")
+            logger.info(f"[Pipeline] {chat_id} 破冰计数递增至 {self.yuki.ice_break_fail_count[chat_id]}")
 
         return context
