@@ -10,6 +10,15 @@
 ## [未发布]
 
 ### 新增
+- 更新 `docs/development-plan.md`，新增 Yuki-Memory 分阶段开发计划并标注当前程序运行状态
+- 增强 `scripts/03_RAG_Tools/backfill_memory_candidates.py`，支持 chat_id 过滤、随机抽样、时间排序、batch 进度、失败重试、错误 JSONL、统计报告，以及 `--base-url`/`--api-key`/`--model` 自定义 API 配置
+- 使用小米 MiMo `mimo-v2.5-pro` 完成 20 条小批量候选提取验证：20 条日记→87 条候选，类型分布 fact 36/event 27/relationship 11/profile 10/preference 2/todo 1，全部 low risk，0 失败
+- 新增 `scripts/03_RAG_Tools/review_memory_candidates.py`，支持候选自动审核、低价值过滤、同主体同类型相似去重，并输出 approved / needs_review / rejected / review_report
+- 新增 `scripts/03_RAG_Tools/import_memory_candidates.py`，支持将审核通过候选转换为 `MemoryRecord` 并 dry-run/真实导入 `yuki_memory` collection
+- 阶段 D/E 管线已用当前主群聊 650 条提取结果验证：2248 条候选审核为 approved 1779 / needs_review 336 / rejected 133，导入 dry-run 1779 条 0 失败
+- 新增 `modules/yuki_memory/` 第一阶段骨架，提供 `MemoryRecord`、`YukiMemoryStore` 和 `LegacyDiaryMigrator`，支持独立保存/检索标准记忆
+- 新增 `scripts/03_RAG_Tools/migrate_legacy_diaries_to_yuki_memory.py`，支持将旧日记备份 dry-run、limit、resume 迁移到 `yuki_memory` collection
+- 新增 `tests/test_yuki_memory_store.py`，覆盖 yuki-memory metadata、存储检索、旧日记转换和迁移脚本
 - 新增 `scripts/03_RAG_Tools/backfill_memory_candidates.py`，支持从日记备份中离线 dry-run/断点续跑提取结构化长期记忆候选
 - 增强 `scripts/03_RAG_Tools/export_memory.py`，导出全量记忆时同步生成日记数量、重复项、长度、时间范围和 metadata 标准字段统计
 - 新增 `MemoryRAG.save_memory()` 标准化记忆写入接口，支持 `type/status/confidence/importance/supersedes/source_ids` 等 Hy-Memory Lite 元数据

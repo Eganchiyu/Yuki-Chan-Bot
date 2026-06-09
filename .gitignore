@@ -43,7 +43,7 @@ data/
 *.sqlite3
 
 # 项目运行时目录
-yuki_memory/
+/yuki_memory/
 skills/
 core/skills
 logs/
