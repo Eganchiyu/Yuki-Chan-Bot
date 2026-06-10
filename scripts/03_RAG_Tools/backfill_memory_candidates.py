@@ -17,6 +17,24 @@ from config import cfg
 from utils.llm_client import chat_completion
 
 ALLOWED_TYPES = {"fact", "preference", "relationship", "todo", "event", "profile_candidate"}
+FATAL_LLM_ERROR_PATTERNS = {
+    "http 401",
+    "http 403",
+    "unauthorized",
+    "forbidden",
+    "invalid_api_key",
+    "invalid api key",
+    "api key expired",
+    "expired api key",
+    "key expired",
+    "apikey expired",
+    "authentication",
+}
+
+
+class FatalLLMError(Exception):
+    """需要立即停止批处理的 LLM 鉴权错误。"""
+
 
 EXTRACT_PROMPT = """你是 YukiV6 的长期记忆提取器。请从输入的日记中提取可长期使用的结构化记忆候选。
 
@@ -83,6 +101,11 @@ def load_processed_ids(output_file):
             except json.JSONDecodeError:
                 continue
     return processed
+
+
+def is_fatal_llm_error(error):
+    message = str(error or "").lower()
+    return any(pattern in message for pattern in FATAL_LLM_ERROR_PATTERNS)
 
 
 def normalize_llm_json(raw_text):
@@ -220,6 +243,8 @@ async def extract_record_with_retry(record, model=None, base_url=None, api_key=N
         try:
             return await extract_record(record, model=model, base_url=base_url, api_key=api_key)
         except Exception as exc:
+            if is_fatal_llm_error(exc):
+                raise FatalLLMError(str(exc)) from exc
             last_error = exc
             if attempt < retries:
                 await asyncio.sleep(min(2 ** attempt, 5))
@@ -245,6 +270,8 @@ def build_report(stats, args, started_at, finished_at):
         "batch_size": args.batch_size,
         "dry_run": args.dry_run,
         "retries": args.retries,
+        "max_consecutive_failures": args.max_consecutive_failures,
+        "stopped_reason": stats.get("stopped_reason", ""),
         "stats": dict(stats),
     }
 
@@ -276,16 +303,22 @@ async def run(args):
         "skipped": 0,
         "failed": 0,
         "candidates": 0,
+        "consecutive_failures": 0,
     })
+    stopped = False
 
     batch_size = max(1, int(args.batch_size or 1))
     with open(args.output, "a", encoding="utf-8") as f, open(args.error_output, "a", encoding="utf-8") as error_f:
         for batch_start in range(0, len(records), batch_size):
+            if stopped:
+                break
             batch = records[batch_start:batch_start + batch_size]
             batch_index = batch_start // batch_size + 1
             print(f"[Batch] 开始处理批次 {batch_index}，数量 {len(batch)}")
 
             for record in batch:
+                if stopped:
+                    break
                 source_id = record.get("id")
                 if source_id in processed:
                     stats["skipped"] += 1
@@ -316,9 +349,25 @@ async def run(args):
                         )
                 except Exception as e:
                     stats["failed"] += 1
+                    stats["consecutive_failures"] += 1
                     result["error"] = str(e)
                     write_jsonl_line(error_f, result)
+                    if isinstance(e, FatalLLMError):
+                        stats["stopped_reason"] = "fatal_llm_auth_error"
+                        stopped = True
+                        print(
+                            "[Stop] 检测到 LLM 鉴权失败或 API Key 过期，已立即暂停提取。"
+                            "请更换 API Key 后使用 --resume 继续。"
+                        )
+                    elif args.max_consecutive_failures and stats["consecutive_failures"] >= args.max_consecutive_failures:
+                        stats["stopped_reason"] = "max_consecutive_failures"
+                        stopped = True
+                        print(
+                            "[Stop] 连续 LLM 请求失败达到阈值，已暂停提取。"
+                            "请检查 API Key / base_url / 模型名或服务额度后使用 --resume 继续。"
+                        )
                 else:
+                    stats["consecutive_failures"] = 0
                     write_jsonl_line(f, result)
                     stats["candidates"] += len(result["memories"])
 
@@ -375,7 +424,13 @@ def main():
         help="处理顺序",
     )
     parser.add_argument("--batch-size", type=int, default=1, help="批处理大小，用于进度分段")
-    parser.add_argument("--retries", type=int, default=1, help="单条失败重试次数")
+    parser.add_argument("--retries", type=int, default=1, help="单条非鉴权失败重试次数")
+    parser.add_argument(
+        "--max-consecutive-failures",
+        type=int,
+        default=5,
+        help="连续非致命失败达到 N 次后暂停；0 表示不按连续失败暂停",
+    )
     parser.add_argument("--model", default=None, help="指定提取模型，默认使用 cfg.LLM_MODEL")
     parser.add_argument("--base-url", default=None, help="指定 API base URL，默认使用 cfg.LLM_BASE_URL")
     parser.add_argument("--api-key", default=None, help="指定 API key，默认使用 cfg.LLM_API_KEY")

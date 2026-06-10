@@ -53,6 +53,7 @@ normalize_llm_json = backfill_memory.normalize_llm_json
 sanitize_candidate = backfill_memory.sanitize_candidate
 select_records = backfill_memory.select_records
 build_report = backfill_memory.build_report
+is_fatal_llm_error = backfill_memory.is_fatal_llm_error
 flatten_candidates = review_memory.flatten_candidates
 apply_review = review_memory.apply_review
 split_reviewed = review_memory.split_reviewed
@@ -143,6 +144,13 @@ def test_normalize_llm_json_strips_markdown_fence():
     assert parsed == {"memories": []}
 
 
+def test_is_fatal_llm_error_detects_auth_errors_only():
+    assert is_fatal_llm_error("HTTP 401: invalid_api_key") is True
+    assert is_fatal_llm_error("HTTP 403: key expired") is True
+    assert is_fatal_llm_error("HTTP 429: rate limit exceeded") is False
+    assert is_fatal_llm_error("timeout while reading response") is False
+
+
 def test_select_records_filters_orders_samples_and_limits():
     records = [
         {"id": "a", "document": "早", "metadata": {"chat_id": "1", "timestamp": 100}},
@@ -170,6 +178,7 @@ def test_build_report_contains_stage_c_stats():
         batch_size=2,
         dry_run=True,
         retries=3,
+        max_consecutive_failures=5,
     )
 
     report = build_report({"processed": 5, "failed": 0}, args, "start", "end")
