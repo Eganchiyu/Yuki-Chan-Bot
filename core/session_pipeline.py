@@ -21,6 +21,7 @@ class SessionPipeline:
         self.yuki = components["yuki"]
         self.history_manager = components["history_manager"]
         self.memory_rag = components["memory_rag"]
+        self.yuki_memory_retriever = components.get("yuki_memory_retriever")
         self.engine = components["engine"]
         self.group_active_state = group_active_state
         self.debounce_time_by_chat = {}
@@ -236,10 +237,25 @@ class SessionPipeline:
             chat_id=chat_id,
             top_k=dynamic_top_k,
         )
+        structured_memory_context = None
+        if self.yuki_memory_retriever is not None:
+            structured_memory_context = self.yuki_memory_retriever.retrieve(
+                combined_text,
+                chat_id=chat_id,
+                top_k={"profiles": 2, "facts": 6, "summaries": 4},
+            )
         logger.info(f"[Pipeline] 检索到 {len(relevant_diaries)} 条相关日记")
+        if structured_memory_context:
+            logger.info(
+                "[Pipeline] 结构化记忆 profile=%s fact=%s summary=%s",
+                len(structured_memory_context.get("profiles", [])),
+                len(structured_memory_context.get("facts", [])),
+                len(structured_memory_context.get("summaries", [])),
+            )
         logger.info(f"[Pipeline] 检索完成，耗时 {(time.time() - context['first_time']):.2f}s")
 
         context["relevant_diaries"] = relevant_diaries
+        context["structured_memory_context"] = structured_memory_context
         return context
 
     async def generate_reply(self, context):
@@ -251,6 +267,7 @@ class SessionPipeline:
             context["history_dict"],
             context["mode"],
             context["relevant_diaries"],
+            structured_memory_context=context.get("structured_memory_context"),
             ice_break=context.get("ice_break", False),
         )
         logger.info(f"[Pipeline] {cfg.ROBOT_NAME.title()} 回复生成完成")

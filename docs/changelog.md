@@ -10,6 +10,10 @@
 ## [未发布]
 
 ### 新增
+- 新增 `modules/yuki_memory/retriever.py`，为主流程提供 Yuki-Memory 结构化上下文检索适配层，支持 profile/fact/summary 分层召回并失败回退旧 RAG
+- 新增 `build_structured_memory_prompt()`，在回复上下文中注入结构化长期记忆，同时保留旧 `MemoryRAG.search_diaries()` 回忆作为补充
+- 新增 `modules/yuki_memory/consolidator.py` 多层压缩整理器，支持原始对话→粗样本→重叠 buffer 摘要→结构化候选→短日记→可选写入 `yuki_memory` 的旁路管线
+- 新增 `scripts/03_RAG_Tools/consolidate_runtime_memory.py`，支持从聊天历史中对指定群聊 dry-run 多层整理，并可通过 `--base-url`/`--api-key`/`--model` 指定测试 LLM
 - 更新 `docs/development-plan.md`，新增 Yuki-Memory 分阶段开发计划并标注当前程序运行状态
 - 增强 `scripts/03_RAG_Tools/backfill_memory_candidates.py`，支持 chat_id 过滤、随机抽样、时间排序、batch 进度、失败重试、错误 JSONL、统计报告、`--base-url`/`--api-key`/`--model` 自定义 API 配置，以及鉴权/key 过期错误立即暂停与连续失败熔断
 - 使用小米 MiMo `mimo-v2.5-pro` 完成 20 条小批量候选提取验证：20 条日记→87 条候选，类型分布 fact 36/event 27/relationship 11/profile 10/preference 2/todo 1，全部 low risk，0 失败

@@ -160,7 +160,8 @@ class YukiEngine:
             self.tool_manager.finish_session(str(chat_id))
 
     async def api_reply(self, chat_id: str, combined_text: str, history_dict: dict, mode,
-                        relevant_diaries: list[Any], ice_break: bool = False) -> str:
+                        relevant_diaries: list[Any], structured_memory_context=None,
+                        ice_break: bool = False) -> str:
         # 总构建发送Deepseek补全的信息
         combined_API_message = await build_chat_context(self.yuki,
                                                         chat_id,
@@ -168,6 +169,7 @@ class YukiEngine:
                                                         history_dict,
                                                         mode,
                                                         relevant_diaries,
+                                                        structured_memory_context=structured_memory_context,
                                                         ice_break=ice_break
                                                         )
 

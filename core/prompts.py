@@ -131,8 +131,46 @@ def get_ice_break_instructions() -> str:
     )
 
 
+def _format_memory_item(item):
+    metadata = item.get("metadata", {}) or {}
+    memory_type = metadata.get("type") or metadata.get("candidate_type") or "summary"
+    subject = metadata.get("subject") or ""
+    importance = metadata.get("importance") or ""
+    content = str(item.get("content", "")).replace("\n", " ").strip()
+    prefix = f"[{memory_type}]"
+    if subject:
+        prefix += f"[{subject}]"
+    if importance:
+        prefix += f"[重要性:{importance}]"
+    return f"- {prefix} {content}"
+
+
+def build_structured_memory_prompt(structured_memory_context):
+    if not structured_memory_context:
+        return ""
+
+    sections = []
+    profiles = structured_memory_context.get("profiles") or []
+    facts = structured_memory_context.get("facts") or []
+    summaries = structured_memory_context.get("summaries") or []
+
+    if profiles:
+        sections.append("【长期画像/身份线索】\n" + "\n".join(_format_memory_item(item) for item in profiles[:2]))
+    if facts:
+        sections.append("【相关结构化记忆】\n" + "\n".join(_format_memory_item(item) for item in facts[:6]))
+    if summaries:
+        sections.append("【相关摘要回忆】\n" + "\n".join(_format_memory_item(item) for item in summaries[:4]))
+
+    if not sections:
+        return ""
+    return "\n\n".join([
+        "【Yuki-Memory 结构化上下文】以下是可参考的长期记忆。请自然使用，不要生硬复述；如果与当前对话无关，可以忽略。",
+        *sections,
+    ])
+
+
 async def build_chat_context(yuki, chat_id: str, combined_text: str, history_dict: dict, mode,
-                             relevant_diaries, ice_break: bool = False):
+                             relevant_diaries, structured_memory_context=None, ice_break: bool = False):
     # 这里的 diary 现在是字典，我们要取出 ['content']
     for i, diary_obj in enumerate(reversed(relevant_diaries), 1):
         preview = diary_obj['content'].replace('\n', ' ')  # 提取文本内容
@@ -143,7 +181,12 @@ async def build_chat_context(yuki, chat_id: str, combined_text: str, history_dic
         "role"] == "system" else yuki.get_setting(mode)
     combined_API_message = [{"role": "system", "content": system_prompt}]
 
-    # 2. 插入检索到的日记
+    structured_memory_prompt = build_structured_memory_prompt(structured_memory_context)
+    if structured_memory_prompt:
+        combined_API_message.append({"role": "system", "content": structured_memory_prompt})
+        logger.debug("[YukiMemory-Debug] 已注入结构化上下文")
+
+    # 2. 插入检索到的日记，作为旧 RAG 回退补充
     for diary_obj in reversed(relevant_diaries):
         content = diary_obj['content']  # 提取文本内容
         combined_API_message.append({"role": "system", "content": f"【回忆】{content}"})
