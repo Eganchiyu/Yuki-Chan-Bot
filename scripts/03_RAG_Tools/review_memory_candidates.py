@@ -83,7 +83,9 @@ def is_low_value_candidate(candidate):
     content = str(candidate.get("content", ""))
     memory_type = candidate.get("type")
     importance = int(candidate.get("importance", 1) or 1)
-    if memory_type == "event" and importance <= 2:
+    if memory_type == "event" and importance < 3:
+        return True
+    if memory_type == "event" and importance <= 3:
         return any(pattern in content for pattern in LOW_VALUE_PATTERNS)
     return False
 
@@ -96,6 +98,10 @@ def review_candidate(item, min_confidence=0.75, approve_profile_candidates=False
     memory_type = candidate.get("type")
     risk = candidate.get("risk", "medium")
     confidence = float(candidate.get("confidence", 0) or 0)
+    try:
+        importance = int(candidate.get("importance", 1) or 1)
+    except (TypeError, ValueError):
+        importance = 1
     time_scope = candidate.get("time_scope", "unknown")
 
     if not content or not subject or not evidence:
@@ -108,6 +114,8 @@ def review_candidate(item, min_confidence=0.75, approve_profile_candidates=False
         return "rejected", "low_confidence"
     if is_low_value_candidate(candidate):
         return "rejected", "low_value_event"
+    if memory_type in {"fact", "preference", "relationship"} and importance <= 1:
+        return "needs_review", "low_importance_structured_memory"
     if risk == "medium":
         return "needs_review", "medium_risk"
     if memory_type in NEEDS_REVIEW_TYPES:

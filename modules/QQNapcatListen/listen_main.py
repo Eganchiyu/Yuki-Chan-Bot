@@ -161,6 +161,7 @@ async def feed_message(chat_id, content, mode, raw_message="", sender_name="", u
             "content": content,
             "raw_text": raw_message,
             "is_bot": is_bot,
+            "user_id": user_id,  # 新增：发送者 QQ 号
         }
     else:
         message_obj = None

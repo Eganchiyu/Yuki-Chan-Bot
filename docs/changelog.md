@@ -10,6 +10,11 @@
 ## [未发布]
 
 ### 新增
+- 新增 `modules/debug/context_snapshot.py`、`modules/debug/webui_server.py` 和 `scripts/debug_tools/start_context_debug_webui.py`，提供本地只读 Context Debug WebUI、快照 API、自动刷新页面、上下文复制/导出与敏感字段脱敏
+- `SessionPipeline` 与 `YukiEngine.api_reply()` 接入轻量 debug snapshot，记录输入合并、回复决策、旧 RAG/Yuki-Memory 召回、完整 LLM messages 与 pipeline 阶段耗时，不改变主回复流程
+- 新增 `docs/context-debug-webui-plan.md`，规划用于实时观察 Yuki 状态、完整 LLM 构建上下文、旧 RAG 与 Yuki-Memory 召回结果的本地 Debug WebUI
+- 新增 `docs/yuki-memory-runtime-guide.md`，记录 Yuki-Memory 当前开发状态、操作手册、函数说明、离线处理流程和下一步计划
+- 新增 `docs/yuki-memory-plugin-guide.md`，记录 Yuki-Memory 插件接入方式、接口示例、扩展点和接入禁忌
 - 新增 `modules/yuki_memory/retriever.py`，为主流程提供 Yuki-Memory 结构化上下文检索适配层，支持 profile/fact/summary 分层召回并失败回退旧 RAG
 - 新增 `build_structured_memory_prompt()`，在回复上下文中注入结构化长期记忆，同时保留旧 `MemoryRAG.search_diaries()` 回忆作为补充
 - 新增 `modules/yuki_memory/consolidator.py` 多层压缩整理器，支持原始对话→粗样本→重叠 buffer 摘要→结构化候选→短日记→可选写入 `yuki_memory` 的旁路管线
@@ -34,7 +39,7 @@
 - 工具链定时任务升级为精确定时唤醒，到点后通过主管道触发 Yuki 回复
 
 ### 变更
-- 工具链注册机制改为 `ToolSpec` 单一声明源，统一维护工具 schema 与 handler，减少字符串映射漂移
+- 收紧 `review_memory_candidates.py` 审核规则：event importance<3 直接拒绝、importance<=3 需匹配低价值关键词；fact/preference/relationship importance<=1 归入 needs_review；全量审核 approved 从 9950 降至 4297，event 从 3614 降至 397
 - 收紧 `ToolContext` 运行时依赖，工具通过 `context.sender` 与 `context.yuki` 访问必要对象，不再直接依赖完整 `YukiEngine`
 - 简化 `ToolCallManager` 状态管理，移除未使用的 session 追踪状态，并改为读取 `cfg.timing.tool_call_delay_seconds`
 - 调整工具链多轮调用输出行为：工具调用轮次中的模型阶段性文本会实时发送，并从最终聚合回复中移除，避免最后统一释放导致重复或延迟输出

@@ -5,6 +5,7 @@ import re
 import time
 
 from config import cfg
+from modules.debug.context_snapshot import PIPELINE_STAGES, context_snapshot_store
 from utils.logger import get_logger
 
 logger = get_logger("session_pipeline")
@@ -35,6 +36,42 @@ class SessionPipeline:
             self.send_reply,
             self.finalize_conversation,
         ]
+
+    def _mark_stage(self, context, stage_name, status="done", error=None):
+        """轻量更新 Debug snapshot，不影响主管道。"""
+        snapshot_id = context.get("debug_snapshot_id")
+        if not snapshot_id:
+            return
+        latency = dict(context.get("debug_latency") or {})
+        started_at = context.get("debug_stage_started_at")
+        if started_at is not None:
+            latency[stage_name] = round(time.time() - started_at, 3)
+            latency["total"] = round(time.time() - context.get("debug_started_at", started_at), 3)
+        context["debug_latency"] = latency
+        errors = list(context.get("debug_errors") or [])
+        if error:
+            errors.append({"stage": stage_name, "error": str(error)})
+            context["debug_errors"] = errors
+        try:
+            context_snapshot_store.update(
+                snapshot_id,
+                stage=stage_name,
+                stage_status=status,
+                latency=latency,
+                errors=errors,
+            )
+        except Exception as exc:
+            logger.debug(f"[ContextDebug] 更新阶段快照失败: {exc}")
+
+    def _update_snapshot(self, context, **fields):
+        """安全更新 Debug snapshot。"""
+        snapshot_id = context.get("debug_snapshot_id")
+        if not snapshot_id:
+            return
+        try:
+            context_snapshot_store.update(snapshot_id, **fields)
+        except Exception as exc:
+            logger.debug(f"[ContextDebug] 更新快照失败: {exc}")
 
     def wake_quickly(self, chat_id):
         """被直接点名时缩短当前群聊防抖时间。"""
@@ -94,10 +131,32 @@ class SessionPipeline:
             "debounce_flag": debounce_flag,
             "force_reply": force_reply,
             "ice_break": ice_break,
+            "debug_started_at": time.time(),
+            "debug_latency": {},
+            "debug_errors": [],
         }
+        try:
+            context["debug_snapshot_id"] = context_snapshot_store.put({
+                "chat_id": str(chat_id),
+                "mode": mode,
+                "stage": "run_once",
+                "should_reply": None,
+                "tool_context": {"pipeline_stages": PIPELINE_STAGES},
+            })
+        except Exception as exc:
+            logger.debug(f"[ContextDebug] 创建快照失败: {exc}")
         for stage in self.stages:
-            context = await stage(context)
+            stage_name = stage.__name__
+            context["debug_stage_started_at"] = time.time()
+            self._mark_stage(context, stage_name, status="running")
+            try:
+                context = await stage(context)
+            except Exception as exc:
+                self._mark_stage(context, stage_name, status="error", error=exc)
+                raise
+            self._mark_stage(context, stage_name, status="done")
             if context.get("stop"):
+                self._update_snapshot(context, stage="stopped")
                 return context
         return context
 
@@ -151,6 +210,13 @@ class SessionPipeline:
 
         chat_id = context["chat_id"]
         message_objs = context["message_objs"]
+
+        # === 新增：更新用户昵称到QQ号的映射 ===
+        for m in message_objs:
+            if m.get("user_id") and m.get("name"):
+                self.yuki.user_mapping.update(chat_id, m["name"], m["user_id"])
+        # ========================================
+
         all_contents = [m["content"] for m in message_objs]
         combined_text = "\n".join(all_contents)
 
@@ -178,6 +244,7 @@ class SessionPipeline:
         self.history_manager.append_to_log(chat_id, "User/Group", combined_text)
 
         context["combined_text"] = combined_text
+        self._update_snapshot(context, combined_text=combined_text)
         return context
 
     async def prepare_chat_context(self, context):
@@ -202,6 +269,11 @@ class SessionPipeline:
         context["chat_id"] = chat_id
         context["history_dict"] = history_dict
         context["current_time_str"] = current_time_str
+        self._update_snapshot(
+            context,
+            current_time_str=current_time_str,
+            message_count=len(history_dict.get(chat_id, [])),
+        )
         logger.info("[Pipeline] 上下文加载完成")
         return context
 
@@ -224,6 +296,9 @@ class SessionPipeline:
             self.history_manager.save(history_dict)
             logger.info(f"[Pipeline] {cfg.ROBOT_NAME.title()} 决定继续潜水")
             context["stop"] = True
+            self._update_snapshot(context, should_reply=False)
+        else:
+            self._update_snapshot(context, should_reply=True)
         return context
 
     async def retrieve_memories(self, context):
@@ -256,6 +331,11 @@ class SessionPipeline:
 
         context["relevant_diaries"] = relevant_diaries
         context["structured_memory_context"] = structured_memory_context
+        self._update_snapshot(
+            context,
+            relevant_diaries=relevant_diaries,
+            structured_memory_context=structured_memory_context,
+        )
         return context
 
     async def generate_reply(self, context):
@@ -269,6 +349,7 @@ class SessionPipeline:
             context["relevant_diaries"],
             structured_memory_context=context.get("structured_memory_context"),
             ice_break=context.get("ice_break", False),
+            debug_snapshot_id=context.get("debug_snapshot_id"),
         )
         logger.info(f"[Pipeline] {cfg.ROBOT_NAME.title()} 回复生成完成")
 
@@ -317,6 +398,10 @@ class SessionPipeline:
         })
         self.history_manager.save(history_dict)
         logger.info("[Pipeline] 上下文保存完成")
+
+        # === 新增：递减用户映射表 TTL ===
+        self.yuki.user_mapping.tick(chat_id)
+        # =================================
 
         if len(history_dict[chat_id]) > cfg.DIARY_MAX_LENGTH:
             summarized_list = await self.engine.do_summarize(chat_id, history_dict[chat_id])

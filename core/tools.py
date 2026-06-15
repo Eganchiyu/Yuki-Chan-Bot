@@ -313,7 +313,7 @@ async def browser_search_tool(context, query, max_results=5, search_depth="basic
 
 
 async def send_qq_file_tool(context, file_path, file_type="auto", caption=None):
-    """发送本地图片、语音或文件。"""
+    """发送本地图片、语音或普通文件。"""
     if not file_path:
         return ToolResult(success=False, content="缺少文件路径", error="missing_file_path")
 
@@ -344,6 +344,66 @@ async def send_qq_file_tool(context, file_path, file_type="auto", caption=None):
     else:
         return ToolResult(success=False, content="不支持的文件类型", error="unsupported_file_type")
     return ToolResult(success=True, content="文件已发送。", data={"file_path": abs_path, "file_type": file_type})
+
+
+async def resolve_user_tool(context, name=None):
+    """根据昵称解析用户 QQ 号。用于需要指定目标用户的场景（如戳一戳、发送文件等）。"""
+    if not name:
+        return ToolResult(success=False, content="缺少用户昵称", error="missing_name")
+
+    user_id = context.yuki.user_mapping.resolve(context.chat_id, name)
+    if user_id:
+        return ToolResult(success=True, content=str(user_id), data={"name": name, "user_id": user_id})
+
+    # 返回当前群聊中已知的所有映射，帮助调试
+    all_mappings = context.yuki.user_mapping.get_all(context.chat_id)
+    return ToolResult(
+        success=False,
+        content=f"未找到用户 '{name}' 的 QQ 号。",
+        data={"searched": name, "known_users": all_mappings},
+        error="user_not_found",
+    )
+
+
+async def poke_tool(context, target=None, user_id=None):
+    """戳一戳指定用户。可以传入昵称（自动解析）或直接传入 QQ 号。"""
+    # 如果提供了昵称但没有 user_id，尝试解析
+    if target and not user_id:
+        resolved = context.yuki.user_mapping.resolve(context.chat_id, target)
+        if resolved:
+            user_id = resolved
+            logger.info(f"[Poke] 昵称 '{target}' 解析为 QQ: {user_id}")
+        else:
+            return ToolResult(
+                success=False,
+                content=f"未找到用户 '{target}'，可能他还没在群里说过话。",
+                error="user_not_found",
+            )
+
+    if not user_id:
+        return ToolResult(success=False, content="请指定戳一戳的目标用户（昵称或 QQ 号）。", error="missing_target")
+
+    # 调用 NapCat API 发送戳一戳
+    try:
+        napcat_url = os.getenv("NAPCAT_URL", "http://127.0.0.1:3000")
+        payload = {
+            "user_id": int(user_id),
+            "group_id": int(context.chat_id),
+        }
+        timeout = aiohttp.ClientTimeout(total=10)
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.post(f"{napcat_url}/send_poke", json=payload) as response:
+                if response.status == 200:
+                    data = await response.json(content_type=None)
+                    if data.get("status") == "ok":
+                        return ToolResult(success=True, content=f"已戳一戳 {target or user_id}~", data={"user_id": user_id})
+                    else:
+                        return ToolResult(success=False, content=f"戳一戳失败: {data.get('message', '未知错误')}", data=data, error="api_error")
+                else:
+                    return ToolResult(success=False, content=f"戳一戳请求失败，状态码: {response.status}", error=f"http_{response.status}")
+    except Exception as e:
+        logger.error(f"[Poke] 戳一戳异常: {e}")
+        return ToolResult(success=False, content=f"戳一戳失败: {str(e)}", error=str(e))
 
 
 TOOL_SPECS = [
@@ -434,7 +494,7 @@ TOOL_SPECS = [
     ),
     ToolSpec(
         name="send_qq_file",
-        description="发送本地图片、语音或普通文件；优先用此工具，不要直接在回复中手写 CQ 文件码。",
+        description="发送本地图片、语音或普通文件；优先用此工具，不要在回复中手写 CQ 文件码。",
         parameters={
             "type": "object",
             "properties": {
@@ -445,6 +505,30 @@ TOOL_SPECS = [
             "required": ["file_path"],
         },
         handler=send_qq_file_tool,
+    ),
+    ToolSpec(
+        name="resolve_user",
+        description="根据用户昵称解析 QQ 号。当需要对特定用户执行操作（如戳一戳）但只知道昵称时使用。",
+        parameters={
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "用户昵称或群名片"},
+            },
+            "required": ["name"],
+        },
+        handler=resolve_user_tool,
+    ),
+    ToolSpec(
+        name="poke",
+        description="戳一戳指定用户。可以传入昵称（自动解析）或直接传入 QQ 号。",
+        parameters={
+            "type": "object",
+            "properties": {
+                "target": {"type": "string", "description": "用户昵称或群名片"},
+                "user_id": {"type": "integer", "description": "用户 QQ 号（如果已知）"},
+            },
+        },
+        handler=poke_tool,
     ),
 ]
 

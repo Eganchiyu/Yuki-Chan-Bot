@@ -7,13 +7,14 @@ import random
 import re
 import requests
 import time
-from typing import Any
+from typing import Any, Optional
 
 from config import cfg
 from core.maid import build_maid_report, maid_evolution_loop
 from core.prompts import get_base_setting, get_summary_prompt, build_chat_context
 from core.toolchain import FunctionRegistry, ToolCallManager, ToolContext, ToolRuntime
 from core.tools import TOOL_SPECS
+from modules.debug.context_snapshot import context_snapshot_store
 from utils.llm_client import llm_chat, llm_chat_raw
 from utils.logger import get_logger
 
@@ -161,7 +162,7 @@ class YukiEngine:
 
     async def api_reply(self, chat_id: str, combined_text: str, history_dict: dict, mode,
                         relevant_diaries: list[Any], structured_memory_context=None,
-                        ice_break: bool = False) -> str:
+                        ice_break: bool = False, debug_snapshot_id: Optional[str] = None) -> str:
         # 总构建发送Deepseek补全的信息
         combined_API_message = await build_chat_context(self.yuki,
                                                         chat_id,
@@ -172,6 +173,19 @@ class YukiEngine:
                                                         structured_memory_context=structured_memory_context,
                                                         ice_break=ice_break
                                                         )
+        if debug_snapshot_id:
+            try:
+                context_snapshot_store.update(
+                    debug_snapshot_id,
+                    built_messages=combined_API_message,
+                    tool_context={
+                        "tools_enabled": True,
+                        "tool_count": len(self.tool_registry.get_tools()),
+                        "max_rounds": self.tool_manager.max_rounds,
+                    },
+                )
+            except Exception as exc:
+                logger.debug(f"[ContextDebug] 记录 LLM messages 失败: {exc}")
 
         await asyncio.sleep(0.2)
         # 发送对话补全到DeepSeek
