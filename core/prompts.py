@@ -1,3 +1,6 @@
+import re
+from difflib import SequenceMatcher
+
 from config import cfg
 from utils.logger import get_logger
 logger = get_logger("prompts")
@@ -42,6 +45,7 @@ def get_yuki_setting_group():
 ## 【多媒体与文件发送指南】
 - 表情包：表达情绪时使用 `[MEME_SEARCH:情绪和动作]`。
 - 本地图片、语音或普通文件：使用工具 `send_qq_file`，不要在最终回复中手写 `[CQ:image]` 或 `[CQ:file]`。
+- **工具使用原则**：Yuki会经常使用群聊工具来和群友互动，如戳一戳（poke）等功能，不需要先说话，直接操作即可。遇到需要搜索、查地图等重型任务才委托小女仆。
 
 ## 【回复规范】
 - **格式要求**：仅输出回复内容，**绝对不要**使用换行符（把所有话连成一段），**不要**输出包含在括号内的动作描写。
@@ -131,6 +135,53 @@ def get_ice_break_instructions() -> str:
     )
 
 
+def _normalize_for_dedup(text):
+    text = str(text or "").strip().lower()
+    text = re.sub(r"\s+", "", text)
+    text = re.sub(r"[，。！？、,.!?；;：:\"'（）()【】\[\]{}]", "", text)
+    text = re.sub(r"[""\u2018\u2019]", "", text)
+    return text
+
+
+def _dedupe_cross_type(items, max_items):
+    """跨类型按内容相似度去重，保留重要性最高、内容最长的条目。"""
+    if not items:
+        return []
+
+    norms = []
+    for item in items:
+        content_raw = str(item.get("content", "")).strip()
+        norms.append(_normalize_for_dedup(content_raw))
+
+    ranked = sorted(
+        range(len(items)),
+        key=lambda i: (
+            int((items[i].get("metadata", {}) or {}).get("importance", 1) or 1),
+            float((items[i].get("metadata", {}) or {}).get("confidence", 0) or 0),
+            len(str(items[i].get("content", ""))),
+        ),
+        reverse=True,
+    )
+
+    kept_indices = []
+    kept_norms = []
+    for idx in ranked:
+        norm = norms[idx]
+        if not norm:
+            continue
+        duplicate = False
+        for kept_norm in kept_norms:
+            if norm == kept_norm or SequenceMatcher(None, norm, kept_norm).ratio() >= 0.82:
+                duplicate = True
+                break
+        if not duplicate:
+            kept_indices.append(idx)
+            kept_norms.append(norm)
+        if len(kept_indices) >= max_items:
+            break
+    return [items[i] for i in kept_indices]
+
+
 def _format_memory_item(item):
     metadata = item.get("metadata", {}) or {}
     memory_type = metadata.get("type") or metadata.get("candidate_type") or "summary"
@@ -154,12 +205,16 @@ def build_structured_memory_prompt(structured_memory_context):
     facts = structured_memory_context.get("facts") or []
     summaries = structured_memory_context.get("summaries") or []
 
+    profiles = _dedupe_cross_type(profiles, 2)
+    facts = _dedupe_cross_type(facts, 6)
+    summaries = _dedupe_cross_type(summaries, 4)
+
     if profiles:
-        sections.append("【长期画像/身份线索】\n" + "\n".join(_format_memory_item(item) for item in profiles[:2]))
+        sections.append("【长期画像/身份线索】\n" + "\n".join(_format_memory_item(item) for item in profiles))
     if facts:
-        sections.append("【相关结构化记忆】\n" + "\n".join(_format_memory_item(item) for item in facts[:6]))
+        sections.append("【相关结构化记忆】\n" + "\n".join(_format_memory_item(item) for item in facts))
     if summaries:
-        sections.append("【相关摘要回忆】\n" + "\n".join(_format_memory_item(item) for item in summaries[:4]))
+        sections.append("【相关摘要回忆】\n" + "\n".join(_format_memory_item(item) for item in summaries))
 
     if not sections:
         return ""

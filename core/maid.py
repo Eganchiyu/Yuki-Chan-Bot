@@ -82,6 +82,27 @@ LOGS_DIR = "logs"
 for d in [SKILLS_DIR, WORKSPACE_DIR, TASKS_DIR, LOGS_DIR]:
     os.makedirs(d, exist_ok=True)
 
+
+def _clean_workspace():
+    """安全清理 workspace 目录：只删除文件，不删除目录本身（避免 Windows 权限问题）"""
+    if not os.path.exists(WORKSPACE_DIR):
+        return
+    deleted = 0
+    for root, dirs, files in os.walk(WORKSPACE_DIR, topdown=False):
+        for f in files:
+            try:
+                os.remove(os.path.join(root, f))
+                deleted += 1
+            except Exception as e:
+                logger.debug(f"[Maid] 删除文件失败: {f}, {e}")
+        # 删除子目录
+        for d in dirs:
+            try:
+                os.rmdir(os.path.join(root, d))
+            except:
+                pass
+    logger.info(f"[Maid] 临时草稿区已清空，删除 {deleted} 个文件")
+
 MAID_SYSTEM_PROMPT = f"""
 你是一个具备高度自主进化能力的 AI 智能体，代号：**小女仆**。
 你的上位机是Yuki，一个有点笨的AI智能体。她住在机主的电脑里，通过QQ和外界连通，你是她的内部帮手，可以操作本地电脑环境来帮助她。所以如果指令不清楚，可以直接返回告诉她。
@@ -114,16 +135,43 @@ MAID_SYSTEM_PROMPT = f"""
    - 'markdown_doc': 技能说明文档，第一行必须是 `# 技能名：一句话功能简介`，后续写明参数说明和调用示例，请详细介绍模块的功能和使用方法，以及模块处理边界能力，方便后续查阅和复用。
 5. `run_skill(name)`: 执行工作区或固化区的技能。
 6. `install_package(pkg)`: 安装缺失的 pip 包。
-7. `search_diary(date_str, keyword)`: 搜索 Yuki 的日记/记忆。
+7. `read_file(path, max_lines)`: 读取本地文本文件内容。
+   - 'path': 文件绝对路径或相对路径。
+   - 'max_lines': 可选，最大读取行数，默认 500。
+   - 支持格式：txt, md, json, csv, py, yaml 等文本文件。
+   - 二进制文件（图片、音视频、PDF 等）会返回错误提示。
+8. `search_diary(date_str, keyword)`: 搜索 Yuki 的日记/记忆。
    - 'date_str': 选填，日期字符串（如 "2026-05-20" 或 "2026-03"）。
    - 'keyword': 选填，需要全文匹配的关键词。
    - 规则：'date_str' 和 'keyword' 至少提供一个，未提供的填 null。
-   - 策略提示：为防止上下文超载，此工具每次最多只返回 8 条记录（按时间顺序排序）。如果返回提示“结果过多”，或者前 5 条里没有你想要的，**你可以多次调用此工具**，通过更换 `keyword` 或增加 `date_str` 来不断缩小搜索范围，直到找到精确目标。
-8. `finish(reason)`: 
+   - 策略提示：为防止上下文超载，此工具每次最多只返回 8 条记录（按时间顺序排序）。如果返回提示"结果过多"，或者前 5 条里没有你想要的，**你可以多次调用此工具**，通过更换 `keyword` 或增加 `date_str` 来不断缩小搜索范围，直到找到精确目标。
+9. `browser_search(query, max_results, search_depth)`: 网页搜索。
+   - 'query': 搜索关键词或问题（必填）。
+   - 'max_results': 返回结果数量，1-10，默认 5。
+   - 'search_depth': 搜索深度，'basic' 或 'advanced'，默认 'basic'。
+   - 用途：实时信息查询、新闻、技术文档、百科知识等。
+10. `amap_search(keywords, search_type, location, address, city, radius, page_size)`: 高德地图搜索。
+   - 'keywords': 搜索关键词（如"餐厅"、"加油站"）。
+   - 'search_type': 搜索类型 - 'text'(关键词搜索), 'around'(周边搜索), 'geocode'(地名转坐标)。
+   - 'location': 中心点坐标，around 模式必填，格式：经度,纬度。
+   - 'address': 地名或地址，geocode 模式必填。
+   - 'city': 限定城市，如"北京"，提高精度。
+   - 'radius': 搜索半径(米)，around 模式使用，默认 3000。
+   - 'page_size': 返回结果数量，1-25，默认 10。
+11. `manage_timer_task(title, due_time, delay_seconds, action, task_id, message)`: 定时任务管理。
+   - 'title': 任务标题（必填）。
+   - 'due_time': 到点时间，支持 YYYY-MM-DD HH:MM:SS 格式。
+   - 'delay_seconds': 相对延迟秒数。
+   - 'action': 操作类型 - 'create'(创建), 'cancel'(取消), 'list'(列出)。
+   - 'task_id': 取消指定任务时使用。
+   - 'message': 到点后的提醒内容。
+   - 注意：此工具返回指令，实际定时任务由 Yuki 执行。
+12. `finish(reason)`: 
    - **禁止盲目结束**：严禁在没有看到成功结果或输出的具体数据的情况下调用此工具。
    - **必须总结结果**：在 `reason` 中必须包含你获取到的实际数据（例如：'任务完成，CPU温度为 65.3°C'）。
    - **例外情况**：注意！如果给你的指令不清不楚，不确定性太大，可以直接调用来打回任务，并说明任务不明确。
    - **reason格式**：如果任务涉及文件书写操作，reason中应包含保存的文件的绝对路径。
+   - **定时任务指令**：如果使用了 manage_timer_task，reason 中应包含返回的指令，由 Yuki 执行定时任务。
 
 ### 输出格式限制
 你必须且只能输出合法的 JSON 格式，严禁包含任何正文说明。格式如下：
@@ -342,6 +390,201 @@ def read_skill(name):
         
     return result
 
+
+def read_file_content(file_path: str, max_lines: int = 500) -> str:
+    """
+    通用文件读取工具 - 供小女仆使用。
+    支持 txt, md, json, csv, py, yaml 等文本文件。
+
+    Args:
+        file_path: 文件绝对路径或相对路径
+        max_lines: 最大读取行数（防止大文件撑爆上下文）
+
+    Returns:
+        文件内容字符串，或错误信息
+    """
+    # 处理路径
+    abs_path = os.path.abspath(file_path)
+
+    if not os.path.exists(abs_path):
+        return f"错误：文件不存在 '{abs_path}'"
+
+    # 检查文件大小（限制 10MB）
+    file_size = os.path.getsize(abs_path)
+    if file_size > 10 * 1024 * 1024:
+        return f"错误：文件过大 ({file_size / 1024 / 1024:.1f} MB)，超过 10MB 限制"
+
+    # 检查是否是二进制文件
+    binary_extensions = {'.png', '.jpg', '.jpeg', '.gif', '.bmp', '.ico', '.webp',
+                        '.mp3', '.mp4', '.avi', '.wav', '.flac', '.ogg',
+                        '.zip', '.rar', '.7z', '.tar', '.gz',
+                        '.exe', '.dll', '.so', '.dylib',
+                        '.pdf', '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx'}
+
+    ext = os.path.splitext(abs_path)[1].lower()
+    if ext in binary_extensions:
+        return f"错误：'{abs_path}' 是二进制文件 ({ext})，无法直接读取。建议使用 OCR 或专门的解析工具。"
+
+    # 读取文件
+    try:
+        with open(abs_path, "r", encoding="utf-8") as f:
+            lines = f.readlines()
+
+        total_lines = len(lines)
+        if total_lines > max_lines:
+            content = "".join(lines[:max_lines])
+            content += f"\n\n... [截断] 共 {total_lines} 行，只显示前 {max_lines} 行"
+        else:
+            content = "".join(lines)
+
+        return f"=== 文件: {os.path.basename(abs_path)} ({total_lines} 行) ===\n{content}"
+
+    except UnicodeDecodeError:
+        return f"错误：'{abs_path}' 编码不是 UTF-8，无法读取"
+    except Exception as e:
+        return f"错误：读取文件失败 - {str(e)}"
+
+
+# === 新增工具：从 Yuki 移交过来的能力 ===
+
+async def manage_timer_task_maid(title=None, due_time=None, delay_seconds=None, action="create", task_id=None, message=None):
+    """
+    定时任务管理工具 - 供小女仆使用。
+    注意：此工具返回操作指令，实际执行由小女仆主循环处理。
+    """
+    # 小女仆不直接管理定时任务，返回指令让 Yuki 执行
+    return {
+        "action": action,
+        "title": title,
+        "due_time": due_time,
+        "delay_seconds": delay_seconds,
+        "task_id": task_id,
+        "message": message,
+        "note": "定时任务需要由 Yuki 执行，请在 finish 中返回此指令"
+    }
+
+
+async def browser_search_maid(query, max_results=5, search_depth="basic"):
+    """
+    网页搜索工具 - 供小女仆使用。
+    调用 Tavily 搜索服务，返回网页结果。
+    """
+    if not query:
+        return "错误：缺少搜索关键词"
+
+    api_key = os.getenv("TAVILY_API_KEY")
+    if not api_key:
+        url = f"https://www.bing.com/search?q={quote_plus(query)}"
+        return f"未配置 TAVILY_API_KEY，无法搜索。请访问：{url}"
+
+    _TAVILY_SEARCH_URL = "https://api.tavily.com/search"
+    payload = {
+        "api_key": api_key,
+        "query": query,
+        "search_depth": search_depth,
+        "max_results": max(1, min(int(max_results), 10)),
+        "include_answer": True,
+    }
+    timeout = aiohttp.ClientTimeout(total=30)
+    async with aiohttp.ClientSession(timeout=timeout) as session:
+        async with session.post(_TAVILY_SEARCH_URL, json=payload) as response:
+            data = await response.json(content_type=None)
+            if response.status >= 400:
+                return f"错误：Tavily 搜索请求失败 (HTTP {response.status})"
+
+    results = []
+    for item in data.get("results", []):
+        results.append({
+            "title": item.get("title"),
+            "url": item.get("url"),
+            "content": item.get("content"),
+            "score": item.get("score"),
+        })
+
+    answer = data.get("answer")
+    if answer:
+        return f"搜索结果摘要：{answer}\n\n详细结果：{json.dumps(results, ensure_ascii=False, indent=2)}"
+    else:
+        return f"已搜索到 {len(results)} 条结果：\n{json.dumps(results, ensure_ascii=False, indent=2)}"
+
+
+async def amap_search_maid(keywords, search_type="text", location=None, address=None, city=None, radius=3000, page_size=10):
+    """
+    高德地图搜索工具 - 供小女仆使用。
+    search_type: text=关键词搜索, around=周边搜索(需坐标), geocode=地名转坐标
+    """
+    api_key = os.getenv("AMAP_API_KEY")
+    if not api_key:
+        return "错误：未配置 AMAP_API_KEY，无法调用高德地图服务"
+
+    _AMAP_AROUND_URL = "https://restapi.amap.com/v5/place/around"
+    _AMAP_TEXT_URL = "https://restapi.amap.com/v5/place/text"
+    _AMAP_GEOCODE_URL = "https://restapi.amap.com/v3/geocode/geo"
+
+    timeout = aiohttp.ClientTimeout(total=15)
+
+    if search_type == "geocode":
+        if not address:
+            return "错误：geocode 模式需要 address 参数"
+        params = {"key": api_key, "address": address}
+        if city:
+            params["city"] = city
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.get(_AMAP_GEOCODE_URL, params=params) as response:
+                data = await response.json(content_type=None)
+        if data.get("status") != "1":
+            return f"错误：高德地图返回 - {data.get('info', '未知错误')}"
+        geocodes = data.get("geocodes") or []
+        if not geocodes:
+            return "未找到该地址的坐标信息"
+        results = [{"name": g.get("formatted_address"), "location": g.get("location"), "city": g.get("city"), "district": g.get("district")} for g in geocodes[:5]]
+        return f"已定位到 {len(results)} 个地址：\n{json.dumps(results, ensure_ascii=False, indent=2)}"
+
+    if not keywords:
+        return "错误：缺少搜索关键词"
+
+    if search_type == "around":
+        if not location:
+            return "错误：周边搜索需要中心点坐标（经度,纬度）"
+        params = {
+            "key": api_key, "keywords": keywords, "location": location,
+            "radius": max(100, min(int(radius), 50000)),
+            "page_size": max(1, min(int(page_size), 25)),
+            "page_num": 1, "show_fields": "business",
+        }
+        url = _AMAP_AROUND_URL
+    else:
+        params = {
+            "key": api_key, "keywords": keywords,
+            "page_size": max(1, min(int(page_size), 25)),
+            "page_num": 1, "show_fields": "business",
+        }
+        if city:
+            params["region"] = city
+        url = _AMAP_TEXT_URL
+
+    async with aiohttp.ClientSession(timeout=timeout) as session:
+        async with session.get(url, params=params) as response:
+            data = await response.json(content_type=None)
+            if response.status >= 400:
+                return f"错误：高德地图请求失败 (HTTP {response.status})"
+
+    if data.get("status") != "1":
+        return f"错误：高德地图返回 - {data.get('info', '未知错误')}"
+
+    pois = []
+    for poi in (data.get("pois") or []):
+        biz = poi.get("business") or {}
+        pois.append({
+            "name": poi.get("name"), "address": poi.get("address"),
+            "location": poi.get("location"), "type": poi.get("type"),
+            "distance": poi.get("distance"), "city": poi.get("cityname"),
+            "tel": biz.get("tel"), "rating": biz.get("rating"), "cost": biz.get("cost"),
+        })
+    count = data.get("count", len(pois))
+    summary = f"共找到 {count} 个地点" if count else "未找到相关地点"
+    return f"{summary}：\n{json.dumps(pois, ensure_ascii=False, indent=2)}"
+
 async def maid_evolution_loop(user_goal: str, chat_id: str = None):
     task_id = datetime.now().strftime("%Y%m%d_%H%M%S")
     today_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -408,21 +651,48 @@ async def maid_evolution_loop(user_goal: str, chat_id: str = None):
                 skill_name = args.get('name')
                 logger.info(f"[Maid] 正在查阅技能源码: {skill_name}")
                 res = read_skill(skill_name)
+            elif tool == "read_file":
+                file_path = args.get('path') or args.get('file_path')
+                max_lines = args.get('max_lines', 500)
+                logger.info(f"[Maid] 正在读取文件: {file_path}")
+                res = read_file_content(file_path, max_lines)
             elif tool == "search_diary":
                 date_str = args.get('date_str')
                 keyword = args.get('keyword')
                 logger.info(f"[Maid] 搜索日记: 日期={date_str} 关键词={keyword}")
                 res = search_diary_fast(date_str, keyword)
+            elif tool == "browser_search":
+                query = args.get('query')
+                max_results = args.get('max_results', 5)
+                search_depth = args.get('search_depth', 'basic')
+                logger.info(f"[Maid] 网页搜索: {query}")
+                res = await browser_search_maid(query, max_results, search_depth)
+            elif tool == "amap_search":
+                keywords = args.get('keywords')
+                search_type = args.get('search_type', 'text')
+                location = args.get('location')
+                address = args.get('address')
+                city = args.get('city')
+                radius = args.get('radius', 3000)
+                page_size = args.get('page_size', 10)
+                logger.info(f"[Maid] 高德地图搜索: {keywords} ({search_type})")
+                res = await amap_search_maid(keywords, search_type, location, address, city, radius, page_size)
+            elif tool == "manage_timer_task":
+                title = args.get('title')
+                due_time = args.get('due_time')
+                delay_seconds = args.get('delay_seconds')
+                action = args.get('action', 'create')
+                task_id = args.get('task_id')
+                message = args.get('message')
+                logger.info(f"[Maid] 定时任务: {action} - {title}")
+                res = await manage_timer_task_maid(title, due_time, delay_seconds, action, task_id, message)
             elif tool == "finish":
                 reason = args.get('reason', '任务完成')
                 logger.info(f"[Maid] 任务达成: {reason}")
 
                 # === 任务结束：清理战场 ===
                 try:
-                    if os.path.exists(WORKSPACE_DIR):
-                        shutil.rmtree(WORKSPACE_DIR)
-                        os.makedirs(WORKSPACE_DIR)
-                        logger.info("[Maid] 临时草稿区已清空")
+                    _clean_workspace()
                 except Exception as e:
                     logger.error(f"[Maid] 清理草稿区失败: {e}")
 
@@ -452,10 +722,7 @@ async def maid_evolution_loop(user_goal: str, chat_id: str = None):
 
     # 超时清理
     try:
-        if os.path.exists(WORKSPACE_DIR):
-            shutil.rmtree(WORKSPACE_DIR)
-            os.makedirs(WORKSPACE_DIR)
-            logger.info("[Maid] 临时草稿区已清空")
+        _clean_workspace()
     except Exception as e:
         logger.error(f"[Maid] 清理草稿区失败: {e}")
         

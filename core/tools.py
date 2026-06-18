@@ -2,6 +2,7 @@
 import asyncio
 import datetime
 import os
+import re
 from urllib.parse import quote_plus
 
 import aiohttp
@@ -366,7 +367,14 @@ async def resolve_user_tool(context, name=None):
 
 
 async def poke_tool(context, target=None, user_id=None):
-    """戳一戳指定用户。可以传入昵称（自动解析）或直接传入 QQ 号。"""
+    """
+    戳一戳指定用户。
+
+    调用链路：
+    1. 如果提供了昵称，从 user_mapping 解析 QQ 号
+    2. 调用 sender.send_poke() 发送 WebSocket 请求
+    3. 返回结果给 LLM
+    """
     # 如果提供了昵称但没有 user_id，尝试解析
     if target and not user_id:
         resolved = context.yuki.user_mapping.resolve(context.chat_id, target)
@@ -383,27 +391,91 @@ async def poke_tool(context, target=None, user_id=None):
     if not user_id:
         return ToolResult(success=False, content="请指定戳一戳的目标用户（昵称或 QQ 号）。", error="missing_target")
 
-    # 调用 NapCat API 发送戳一戳
+    # 调用 sender 的 send_poke 方法（通过 WebSocket 发送）
     try:
-        napcat_url = os.getenv("NAPCAT_URL", "http://127.0.0.1:3000")
-        payload = {
-            "user_id": int(user_id),
-            "group_id": int(context.chat_id),
-        }
-        timeout = aiohttp.ClientTimeout(total=10)
-        async with aiohttp.ClientSession(timeout=timeout) as session:
-            async with session.post(f"{napcat_url}/send_poke", json=payload) as response:
-                if response.status == 200:
-                    data = await response.json(content_type=None)
-                    if data.get("status") == "ok":
-                        return ToolResult(success=True, content=f"已戳一戳 {target or user_id}~", data={"user_id": user_id})
-                    else:
-                        return ToolResult(success=False, content=f"戳一戳失败: {data.get('message', '未知错误')}", data=data, error="api_error")
-                else:
-                    return ToolResult(success=False, content=f"戳一戳请求失败，状态码: {response.status}", error=f"http_{response.status}")
+        result = await context.sender.send_poke(user_id, context.chat_id)
+
+        if result and result.get("status") == "ok":
+            return ToolResult(
+                success=True,
+                content=f"已戳一戳 {target or user_id}~",
+                data={"user_id": user_id, "target": target}
+            )
+        else:
+            error_msg = result.get("message", "未知错误") if result else "请求超时"
+            return ToolResult(
+                success=False,
+                content=f"戳一戳失败: {error_msg}",
+                data=result,
+                error="api_error",
+            )
     except Exception as e:
         logger.error(f"[Poke] 戳一戳异常: {e}")
         return ToolResult(success=False, content=f"戳一戳失败: {str(e)}", error=str(e))
+
+
+async def download_file_tool(context, file_id=None, filename=None):
+    """
+    下载群聊/私聊中的文件到本地。
+
+    当收到文件消息时，消息中会包含 [文件:file_id=xxx] 标记。
+    使用此工具可以通过 file_id 下载文件到本地，然后可以委托小女仆分析文件内容。
+
+    Args:
+        file_id: 文件 ID（从消息中的 [文件:file_id=xxx] 获取）
+        filename: 保存的文件名（可选，默认使用原文件名）
+    """
+    if not file_id:
+        # 尝试从最近的消息中提取 file_id
+        recent_text = context.combined_text or ""
+        file_ids = re.findall(r'\[文件:file_id=([^\]]+)\]', recent_text)
+        if file_ids:
+            file_id = file_ids[0]
+            logger.info(f"[DownloadFile] 从消息中提取 file_id: {file_id}")
+        else:
+            return ToolResult(
+                success=False,
+                content="缺少文件 ID。请从消息中的 [文件:file_id=xxx] 获取。",
+                error="missing_file_id"
+            )
+
+    try:
+        result = await context.sender.download_file(file_id, filename)
+
+        if result.get("success"):
+            file_path = result.get("file_path")
+            saved_filename = result.get("filename")
+
+            if file_path:
+                return ToolResult(
+                    success=True,
+                    content=f"文件已下载: {saved_filename}",
+                    data={
+                        "file_path": file_path,
+                        "filename": saved_filename,
+                        "file_id": file_id,
+                    }
+                )
+            elif result.get("url"):
+                # 文件是 URL，需要额外下载
+                return ToolResult(
+                    success=True,
+                    content=f"文件 URL: {result['url']}",
+                    data={
+                        "url": result["url"],
+                        "filename": saved_filename,
+                        "file_id": file_id,
+                    }
+                )
+        else:
+            return ToolResult(
+                success=False,
+                content=f"下载文件失败: {result.get('error', '未知错误')}",
+                error=result.get("error", "download_failed")
+            )
+    except Exception as e:
+        logger.error(f"[DownloadFile] 下载文件异常: {e}")
+        return ToolResult(success=False, content=f"下载文件失败: {str(e)}", error=str(e))
 
 
 TOOL_SPECS = [
@@ -418,25 +490,6 @@ TOOL_SPECS = [
             },
         },
         handler=search_diary_tool,
-    ),
-    ToolSpec(
-        name="manage_timer_task",
-        description="为当前群聊/私聊创建、取消或列出精确定时任务；到点后会触发 Yuki 基于提醒内容回复。",
-        parameters={
-            "type": "object",
-            "properties": {
-                "title": {"type": "string", "description": "任务标题，取消时也可用标题匹配"},
-                "due_time": {
-                    "type": "string",
-                    "description": "到点时间，支持 YYYY-MM-DD HH:MM:SS、YYYY-MM-DD HH:MM 或 ISO 格式",
-                },
-                "delay_seconds": {"type": "number", "description": "相对延迟秒数，适合很短的提醒"},
-                "action": {"type": "string", "enum": ["create", "cancel", "list"]},
-                "task_id": {"type": "string", "description": "取消指定任务时使用"},
-                "message": {"type": "string", "description": "到点后注入给 Yuki 的提醒内容"},
-            },
-        },
-        handler=manage_timer_task_tool,
     ),
     ToolSpec(
         name="delegate_to_maid",
@@ -460,37 +513,6 @@ TOOL_SPECS = [
             "required": ["message"],
         },
         handler=send_master_private_tool,
-    ),
-    ToolSpec(
-        name="browser_search",
-        description="使用 Tavily 搜索实时网页信息，并返回摘要、来源链接和网页片段供 Yuki 作答。",
-        parameters={
-            "type": "object",
-            "properties": {
-                "query": {"type": "string", "description": "搜索关键词或问题"},
-                "max_results": {"type": "integer", "description": "返回结果数量，1 到 10"},
-                "search_depth": {"type": "string", "enum": ["basic", "advanced"]},
-            },
-            "required": ["query"],
-        },
-        handler=browser_search_tool,
-    ),
-    ToolSpec(
-        name="amap_search",
-        description="高德地图搜索工具。search_type='text' 按关键词搜索地点(可选city)；'around' 按坐标搜周边(需location)；'geocode' 把地名转经纬度(需address)。",
-        parameters={
-            "type": "object",
-            "properties": {
-                "keywords": {"type": "string", "description": "搜索关键词，如'餐厅'、'加油站'、'肯德基'"},
-                "search_type": {"type": "string", "enum": ["text", "around", "geocode"], "description": "搜索类型：text=关键词搜索, around=周边搜索, geocode=地名转坐标"},
-                "location": {"type": "string", "description": "中心点坐标，around 模式必填，格式：经度,纬度"},
-                "address": {"type": "string", "description": "地名或地址，geocode 模式必填"},
-                "city": {"type": "string", "description": "限定城市，如'北京'，提高 text/geocode 精度"},
-                "radius": {"type": "integer", "description": "搜索半径(米)，around 模式使用，默认 3000"},
-                "page_size": {"type": "integer", "description": "返回结果数量，1-25，默认 10"},
-            },
-        },
-        handler=amap_search_tool,
     ),
     ToolSpec(
         name="send_qq_file",
@@ -529,6 +551,18 @@ TOOL_SPECS = [
             },
         },
         handler=poke_tool,
+    ),
+    ToolSpec(
+        name="download_file",
+        description="下载群聊/私聊中的文件到本地。当收到文件消息（显示为 [文件:file_id=xxx]）时，使用此工具下载文件。下载后可以委托小女仆分析文件内容。",
+        parameters={
+            "type": "object",
+            "properties": {
+                "file_id": {"type": "string", "description": "文件 ID，从消息中的 [文件:file_id=xxx] 获取"},
+                "filename": {"type": "string", "description": "保存的文件名（可选，默认使用原文件名）"},
+            },
+        },
+        handler=download_file_tool,
     ),
 ]
 

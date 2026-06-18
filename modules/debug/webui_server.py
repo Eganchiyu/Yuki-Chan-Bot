@@ -1,6 +1,7 @@
 # modules/debug/webui_server.py
 import argparse
 import json
+import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, unquote, urlparse
 
@@ -91,6 +92,18 @@ def run_server(host="127.0.0.1", port=8777):
     server = ThreadingHTTPServer((host, port), ContextDebugRequestHandler)
     print(f"Yuki Context Debug WebUI: http://{host}:{port}/")
     server.serve_forever()
+
+
+def start_background_server(host="127.0.0.1", port=8777):
+    """在主程序进程内后台启动 Debug WebUI，共享内存 snapshot store。"""
+    thread = threading.Thread(
+        target=run_server,
+        kwargs={"host": host, "port": port},
+        name="context-debug-webui",
+        daemon=True,
+    )
+    thread.start()
+    return thread
 
 
 def main():

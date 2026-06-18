@@ -117,6 +117,7 @@ async def napcat_listen(mode: str):
                         raw_message=raw_msg,
                         sender_name=name,
                         user_id=int(user_id),
+                        message_id=data.get("message_id"),
                     )
 
         except Exception as e:
@@ -125,7 +126,7 @@ async def napcat_listen(mode: str):
             await asyncio.sleep(5)
 
 
-async def feed_message(chat_id, content, mode, raw_message="", sender_name="", user_id=None):
+async def feed_message(chat_id, content, mode, raw_message="", sender_name="", user_id=None, message_id=None):
     """将标准化后的消息放入对应 chat_id 的会话缓冲，并按需唤醒会话泵。"""
     cid_str = str(chat_id)
     is_bot = "BOT" in sender_name or "机器人" in sender_name
@@ -152,6 +153,11 @@ async def feed_message(chat_id, content, mode, raw_message="", sender_name="", u
         history_manager.append_chat(chat_id, "assistant", "(已发送帮助文档图片)")
         return
 
+    # ── /jm 指令拦截（暂时禁用）──
+    # from modules.jm_downloader import handle_jm_command
+    # if await handle_jm_command(chat_id, raw_message, sender, mode):
+    #     return
+
     if cfg.ROBOT_NAME.lower() in raw_message.lower():
         session_pipeline.wake_quickly(cid_str)
 
@@ -161,7 +167,8 @@ async def feed_message(chat_id, content, mode, raw_message="", sender_name="", u
             "content": content,
             "raw_text": raw_message,
             "is_bot": is_bot,
-            "user_id": user_id,  # 新增：发送者 QQ 号
+            "user_id": user_id,
+            "message_id": message_id,
         }
     else:
         message_obj = None

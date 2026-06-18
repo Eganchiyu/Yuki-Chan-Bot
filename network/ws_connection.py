@@ -96,7 +96,7 @@ class BotConnector:
                 await self.websocket.close()
                 self.websocket = None
 
-    async def send_request(self, action: str, params: dict, echo: str) -> Optional[Dict]:
+    async def send_request(self, action: str, params: dict, echo: str, timeout: float = 5.0) -> Optional[Dict]:
         try:
             ws = await self.ensure_connection()
 
@@ -110,7 +110,7 @@ class BotConnector:
 
             try:
                 # 2. 等待结果 (这里才需要 await)
-                return await asyncio.wait_for(future, timeout=5.0)
+                return await asyncio.wait_for(future, timeout=timeout)
             except asyncio.TimeoutError:
                 logger.warning(f"请求 {action} 超时 (echo: {echo})")
                 return None

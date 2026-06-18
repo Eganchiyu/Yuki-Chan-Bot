@@ -3,6 +3,9 @@ from typing import Dict
 from modules.message.GetMeta import MetaGetter
 from network.ws_connection import BotConnector
 from modules.message.CQProtocol import CQProtocol
+from utils.logger import get_logger
+
+logger = get_logger("cq_parser")
 
 class CQCodeParser:
     """
@@ -48,7 +51,7 @@ class CQCodeParser:
 
     async def parse_all_cq_codes(self, text: str) -> str:
         """
-        现在只负责替换 @ 和 回复，不再管图片逻辑。
+        负责替换 @、回复和其他 CQ 码。
         图片逻辑由 main.py 提前处理好。
         """
         text = await self.parse_Reply_CQ_codes(text)
