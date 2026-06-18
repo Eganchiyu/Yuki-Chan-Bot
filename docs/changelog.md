@@ -10,7 +10,13 @@
 ## [未发布]
 
 ### 新增
+- 新增 `config.py` 中 `StructuredMemoryConfig` 配置组，支持通过 `config.yaml` 控制结构化记忆开关和召回数量参数（`enabled`、`max_profiles`、`max_facts`、`max_summaries`），默认关闭
+
+### 变更
+- `YukiMemoryRetriever` 改为从 `cfg.structured_memory` 读取开关和召回数量，移除 `enabled` 参数硬编码
+- `SessionPipeline.retrieve_memories()` 移除重复的 `top_k` 硬编码，统一由 retriever 从配置读取
 - 新增 `modules/debug/context_snapshot.py`、`modules/debug/webui_server.py` 和 `scripts/debug_tools/start_context_debug_webui.py`，提供本地只读 Context Debug WebUI、快照 API、自动刷新页面、上下文复制/导出与敏感字段脱敏
+- Debug WebUI 支持通过 `YUKI_CONTEXT_DEBUG_WEBUI=1` 在主程序进程内后台启动，共享实时 snapshot store，避免独立进程无法读取主程序内存快照
 - `SessionPipeline` 与 `YukiEngine.api_reply()` 接入轻量 debug snapshot，记录输入合并、回复决策、旧 RAG/Yuki-Memory 召回、完整 LLM messages 与 pipeline 阶段耗时，不改变主回复流程
 - 新增 `docs/context-debug-webui-plan.md`，规划用于实时观察 Yuki 状态、完整 LLM 构建上下文、旧 RAG 与 Yuki-Memory 召回结果的本地 Debug WebUI
 - 新增 `docs/yuki-memory-runtime-guide.md`，记录 Yuki-Memory 当前开发状态、操作手册、函数说明、离线处理流程和下一步计划
@@ -27,6 +33,13 @@
 - 阶段 D/E 管线已用当前主群聊 650 条提取结果验证：2248 条候选审核为 approved 1779 / needs_review 336 / rejected 133，导入 dry-run 1779 条 0 失败
 - 阶段 C 主群聊结构化候选提取持续后台运行，当前 `chat_id=1057020972` 已输出 705 / 1955 条日记结果，错误 1 条；使用 `--resume` 和 `--max-consecutive-failures 5` 保证可暂停、可续跑、鉴权失败可停机提示
 - 新增 `modules/yuki_memory/` 第一阶段骨架，提供 `MemoryRecord`、`YukiMemoryStore` 和 `LegacyDiaryMigrator`，支持独立保存/检索标准记忆
+
+### 移除
+- 移除语音转写功能（`parse_Audio_CQ_codes`、`fetch_ptt_text` 调用），修复运行异常问题
+- 移除 `CQParser.sender` 延迟初始化依赖
+- 移除 `CQProtocol.extract_audio_file_ids` 方法
+- 移除 `session_pipeline.py` 中 `voice_message_id` 提取逻辑
+- 移除 `main.py` 中 `parser.sender = sender` 赋值
 - 新增 `scripts/03_RAG_Tools/migrate_legacy_diaries_to_yuki_memory.py`，支持将旧日记备份 dry-run、limit、resume 迁移到 `yuki_memory` collection
 - 新增 `tests/test_yuki_memory_store.py`，覆盖 yuki-memory metadata、存储检索、旧日记转换和迁移脚本
 - 新增 `scripts/03_RAG_Tools/backfill_memory_candidates.py`，支持从日记备份中离线 dry-run/断点续跑提取结构化长期记忆候选
@@ -40,6 +53,8 @@
 
 ### 变更
 - 收紧 `review_memory_candidates.py` 审核规则：event importance<3 直接拒绝、importance<=3 需匹配低价值关键词；fact/preference/relationship importance<=1 归入 needs_review；全量审核 approved 从 9950 降至 4297，event 从 3614 降至 397
+- 增强 `YukiMemoryRetriever._dedupe()`，按 (type, subject) 分组去重，每组只保留 importance/confidence/score 最优条目，避免同主体重复记忆污染上下文
+- 增强 `build_structured_memory_prompt()`，增加跨类型内容相似度去重（阈值 0.82），将重复表述压缩为单条最优记忆
 - 收紧 `ToolContext` 运行时依赖，工具通过 `context.sender` 与 `context.yuki` 访问必要对象，不再直接依赖完整 `YukiEngine`
 - 简化 `ToolCallManager` 状态管理，移除未使用的 session 追踪状态，并改为读取 `cfg.timing.tool_call_delay_seconds`
 - 调整工具链多轮调用输出行为：工具调用轮次中的模型阶段性文本会实时发送，并从最终聚合回复中移除，避免最后统一释放导致重复或延迟输出

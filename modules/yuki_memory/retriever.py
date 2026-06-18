@@ -1,5 +1,7 @@
+import re
 from typing import Any, Dict, List, Optional
 
+from config import cfg
 from modules.yuki_memory.store import YukiMemoryStore
 from utils.logger import get_logger
 
@@ -9,13 +11,13 @@ logger = get_logger("yuki_memory_retriever")
 class YukiMemoryRetriever:
     """主流程用的 Yuki-Memory 结构化上下文检索适配层。"""
 
-    def __init__(self, store: Optional[YukiMemoryStore] = None, enabled: bool = True):
+    def __init__(self, store: Optional[YukiMemoryStore] = None):
         self.store = store
-        self.enabled = enabled
+        self._cfg = cfg.structured_memory
 
     def retrieve(self, query: str, chat_id=None, top_k: Optional[Dict[str, int]] = None) -> Dict[str, Any]:
         """检索结构化记忆，失败时返回空上下文，交给旧 RAG 回退。"""
-        if not self.enabled or not query or not str(query).strip():
+        if not self._cfg.enabled or not query or not str(query).strip():
             return self._empty_context()
 
         try:
@@ -23,9 +25,9 @@ class YukiMemoryRetriever:
                 self.store = YukiMemoryStore()
 
             limits = {
-                "profiles": 2,
-                "facts": 6,
-                "summaries": 4,
+                "profiles": self._cfg.max_profiles,
+                "facts": self._cfg.max_facts,
+                "summaries": self._cfg.max_summaries,
             }
             if top_k:
                 limits.update(top_k)
@@ -67,13 +69,38 @@ class YukiMemoryRetriever:
 
     @staticmethod
     def _dedupe(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        seen = set()
-        result = []
+        """按 (type, subject) 去重合并，每个分组只保留最优条目。"""
+        groups = {}
         for item in items or []:
             metadata = item.get("metadata", {}) or {}
-            key = metadata.get("candidate_id") or metadata.get("source_diary_id") or item.get("content")
-            if key in seen:
+            memory_type = metadata.get("type") or metadata.get("candidate_type") or "unknown"
+            subject = re.sub(r"\s+", "", str(metadata.get("subject", "")).strip().lower())
+            content = str(item.get("content", "")).strip()
+            if not content:
                 continue
-            seen.add(key)
-            result.append(item)
-        return result
+
+            group_key = (memory_type, subject)
+            existing = groups.get(group_key)
+            if existing is None:
+                groups[group_key] = item
+                continue
+
+            existing_meta = existing.get("metadata", {}) or {}
+            existing_imp = int(existing_meta.get("importance", 1) or 1)
+            existing_conf = float(existing_meta.get("confidence", 0) or 0)
+            existing_score = float(existing.get("score", 0) or 0)
+            existing_len = len(str(existing.get("content", "")))
+
+            new_imp = int(metadata.get("importance", 1) or 1)
+            new_conf = float(metadata.get("confidence", 0) or 0)
+            new_score = float(item.get("score", 0) or 0)
+            new_len = len(content)
+
+            new_is_better = (
+                (new_imp, new_conf, new_score, new_len)
+                > (existing_imp, existing_conf, existing_score, existing_len)
+            )
+            if new_is_better:
+                groups[group_key] = item
+
+        return list(groups.values())

@@ -317,7 +317,6 @@ class SessionPipeline:
             structured_memory_context = self.yuki_memory_retriever.retrieve(
                 combined_text,
                 chat_id=chat_id,
-                top_k={"profiles": 2, "facts": 6, "summaries": 4},
             )
         logger.info(f"[Pipeline] 检索到 {len(relevant_diaries)} 条相关日记")
         if structured_memory_context:

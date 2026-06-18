@@ -47,7 +47,7 @@ def initialize_components():
 
     logger.info("[System] 开始初始化 Yuki-Memory 结构化检索器...")
     from modules.yuki_memory.retriever import YukiMemoryRetriever
-    yuki_memory_retriever = YukiMemoryRetriever(enabled=True)
+    yuki_memory_retriever = YukiMemoryRetriever()
 
     from modules.stickers.manager import StickerManager
     sticker_manager = StickerManager()
@@ -84,6 +84,23 @@ def warmup_groups(yuki, history_manager):
             f"初始欲望 {yuki.desire_to_start_topic.get(str(cid), 0)}%"
         )
     logger.debug(f"已预载 {len(yuki.last_message_time)} 个群组到巡检名单")
+
+
+def start_context_debug_webui_if_enabled():
+    """按环境变量在主进程内启动 Context Debug WebUI。"""
+    import os
+
+    enabled = os.getenv("YUKI_CONTEXT_DEBUG_WEBUI", "").strip().lower()
+    if enabled not in {"1", "true", "yes", "on"}:
+        return
+    host = os.getenv("YUKI_CONTEXT_DEBUG_HOST", "127.0.0.1")
+    port = int(os.getenv("YUKI_CONTEXT_DEBUG_PORT", "8777"))
+    try:
+        from modules.debug.webui_server import start_background_server
+        start_background_server(host=host, port=port)
+        logger.info(f"[ContextDebug] WebUI 已启动: http://{host}:{port}/")
+    except Exception as exc:
+        logger.error(f"[ContextDebug] WebUI 启动失败: {exc}")
 
 
 async def main_process(
@@ -151,6 +168,7 @@ if __name__ == "__main__":
         session_pipeline = SessionPipeline(components, group_active_state)
         components["engine"].process_callback = main_process
         configure_runtime(components, session_pipeline, group_active_state, logger)
+        start_context_debug_webui_if_enabled()
 
         choice = input("[System] 选择模式：1. 私聊模式  2. 群聊模式（默认）\n请输入数字: ").strip()
         mode = "private" if choice == "1" else "group"

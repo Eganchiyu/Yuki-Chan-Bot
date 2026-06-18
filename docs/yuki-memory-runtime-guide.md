@@ -504,7 +504,7 @@ fact/preference/relationship/event/todo 可正常转换
 
 ### 中期
 
-1. 增加配置开关，控制结构化上下文是否参与 prompt。
+1. ~~增加配置开关，控制结构化上下文是否参与 prompt。~~ ✅ 已通过 `config.py` 中 `StructuredMemoryConfig` 实现，默认关闭，可通过 `config.yaml` 的 `structured_memory.enabled` 控制。
 2. 实现每日/半日 runtime consolidation 调度器。
 3. 拉长 session context，减少频繁裁剪。
 4. 实现 cache-friendly prompt builder。
