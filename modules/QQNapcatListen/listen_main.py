@@ -1,6 +1,7 @@
 import asyncio
 import time
 
+import core.brain
 from config import cfg
 from init import save_group_state
 from modules.message.CQProtocol import smart_truncate
@@ -38,6 +39,15 @@ async def start_background_tasks(mode: str):
     asyncio.create_task(engine.ice_break_monitor())
     from core.engine import maid_worker
     asyncio.create_task(maid_worker(engine, yuki, sender, history_manager))
+
+    # QZone 社交监控（暂时关闭）
+    # try:
+    #     from modules.qzone.monitor import ensure_monitor_started
+    #     asyncio.create_task(ensure_monitor_started(connector, engine, getattr(engine, 'rag', None)))
+    #     logger.info("[NapCat] QZone 社交监控已启动")
+    # except Exception as e:
+    #     logger.warning(f"[NapCat] QZone 监控启动失败: {e}")
+
     logger.info("[NapCat] 已启动后台辅助任务 (日记检查/破冰/精力衰减)")
 
 
@@ -100,7 +110,9 @@ async def napcat_listen(mode: str):
                         continue
                     if not group_active_state.get(gid_str, True):
                         continue
-
+                    
+                    logger.debug(f"[NapCat] 收到原始消息: {data}")
+                    
                     sender_info = data.get("sender", {})
                     name = sender_info.get("card") or sender_info.get("nickname") or "路人"
                     is_fake = name == cfg.MASTER_NAME and user_id != cfg.TARGET_QQ

@@ -233,6 +233,11 @@ class StructuredMemoryConfig:
 @dataclass
 class RAGConfig:
     """RAG 记忆配置"""
+    enabled: bool = config_field(
+        True,
+        comment="RAG 日记检索开关（关闭后跳过日记检索，直接使用上下文对话）",
+        section="rag"
+    )
     retrieval_top_k: int = config_field(
         20,
         comment="检索返回的最大日记条数",
@@ -636,6 +641,11 @@ class Config:
     def KEEP_LAST_DIALOGUE(self) -> int:
         """保留近期对话条数"""
         return self.rag.keep_last_dialogue
+
+    @property
+    def RAG_ENABLED(self) -> bool:
+        """RAG 日记检索开关"""
+        return self.rag.enabled
 
     @property
     def RETRIEVAL_TOP_K(self) -> int:

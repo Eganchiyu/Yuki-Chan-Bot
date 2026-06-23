@@ -17,26 +17,28 @@ class CQCodeParser:
         self.protocol = CQProtocol()
         self.meta = MetaGetter(connector)
 
-    async def get_user_nickname(self, user_id: str) -> str:
+    async def get_user_nickname(self, group_id: str, user_id: str) -> str:
         """
-        调用CQMetaGetter获取用户昵称
-
+        获取群内昵称（优先 card，fallback nickname）
         """
-        if user_id in self.nickname_cache:
-            return self.nickname_cache[user_id]
+        cache_key = f"{group_id}_{user_id}"
+        if cache_key in self.nickname_cache:
+            return self.nickname_cache[cache_key]
         if user_id.lower() == "all":
             return "全体成员"
-        user_info = await self.meta.get_user_info(user_id)
-        if user_info and user_info.get("nickname"):
-            nickname = user_info["nickname"]
-            self.nickname_cache[user_id] = nickname
-            return nickname
+        member_info = await self.meta.get_group_member_info(group_id, user_id)
+        if member_info:
+            # 优先群名片，没有则用QQ昵称
+            nickname = member_info.get("card") or member_info.get("nickname")
+            if nickname:
+                self.nickname_cache[cache_key] = nickname
+                return nickname
         return f"用户{user_id}"
 
-    async def parse_At_CQ_codes(self, text: str) -> str:
+    async def parse_At_CQ_codes(self, text: str, group_id: str) -> str:
         uids = self.protocol.extract_at_uids(text)
         for uid in set(uids):
-            name = await self.get_user_nickname(uid)
+            name = await self.get_user_nickname(group_id, uid)
             text = self.protocol.replace_at_placeholder(text, uid, name)
         return text
 
@@ -49,13 +51,13 @@ class CQCodeParser:
             content = content.replace(f"[CQ:reply,id={mid}]", reply_data)
         return content
 
-    async def parse_all_cq_codes(self, text: str) -> str:
+    async def parse_all_cq_codes(self, text: str, group_id) -> str:
         """
         负责替换 @、回复和其他 CQ 码。
         图片逻辑由 main.py 提前处理好。
         """
         text = await self.parse_Reply_CQ_codes(text)
-        text = await self.parse_At_CQ_codes(text)
+        text = await self.parse_At_CQ_codes(text, group_id)
         text = self.protocol.replace_other_CQ_codes(text)
         return text
 

@@ -1,0 +1,46 @@
+{
+    'self_id': 3580583831,
+    'user_id': 737337230,
+    'time': 1782097108,
+    'message_id': 683029047,
+    'message_seq': 683029047,
+    'real_id': 683029047,
+    'real_seq': '158067',
+    'message_type': 'group',
+    'sender': {
+        'user_id': 737337230,
+        'nickname': '池宇健',
+        'card': '',
+        'role': 'member'
+    },
+    'raw_message': '[CQ:image,summary=&#91;动画表情&#93;,file=DE69A0F8092AB56B42DE8D5C87180AE8.jpg,sub_type=1,url=https://multimedia.nt.qq.com.cn/download?appid=1407&amp;fileid=EhTC_Hl2IhT6EvZnUrbDSewh9YAJARin3Dwg_woonNDHiO2ZlQMyBHByb2RQgL2jAVoQ0M7zSq08zbVIa1g622-RB3oCUA-CAQJuag&amp;rkey=CAMSMHHiqUa7H_cn8Fn1IT_SfheEf7GZ53xISsFf4xbVe_reOdADI_nHP_VObtC7j0yV6g,file_size=994855]',
+    'font': 14,
+    'sub_type': 'normal',
+    'message': [
+        {
+            'type': 'image',
+            'data': {
+                'summary': '[动画表情]',
+                'file': 'DE69A0F8092AB56B42DE8D5C87180AE8.jpg',
+                'sub_type': 1,
+                'url': 'https://multimedia.nt.qq.com.cn/download?appid=1407&fileid=EhTC_Hl2IhT6EvZnUrbDSewh9YAJARin3Dwg_woonNDHiO2ZlQMyBHByb2RQgL2jAVoQ0M7zSq08zbVIa1g622-RB3oCUA-CAQJuag&rkey=CAMSMHHiqUa7H_cn8Fn1IT_SfheEf7GZ53xISsFf4xbVe_reOdADI_nHP_VObtC7j0yV6g',
+                'file_size': '994855'
+            }
+        }
+    ],
+    'message_format': 'array',
+    'post_type': 'message',
+    'group_id': 1057020972,
+    'group_name': 'NcatBot 娱乐群'
+}
+
+[CQ:image,
+summary=&#91;动画表情&#93;,
+file=DE69A0F8092AB56B42DE8D5C87180AE8.jpg,
+sub_type=1,
+url=https://multimedia.nt.qq.com.cn/download?appid=1407&amp;fileid=EhTC_Hl2IhT6EvZnUrbDSewh9YAJARin3Dwg_woonNDHiO2ZlQMyBHByb2RQgL2jAVoQ0M7zSq08zbVIa1g622-RB3oCUA-CAQJuag&amp;rkey=CAMSMHHiqUa7H_cn8Fn1IT_SfheEf7GZ53xISsFf4xbVe_reOdADI_nHP_VObtC7j0yV6g,
+file_size=994855]
+
+{'self_id': 3580583831, 'user_id': 737337230, 'time': 1782097251, 'message_id': 1826539294, 'message_seq': 1826539294, 'real_id': 1826539294, 'real_seq': '158086', 'message_type': 'group', 'sender': {'user_id': 737337230, 'nickname': '池宇健', 'card': '', 'role': 'member'}, 'raw_message': '[CQ:image,file=BC02295AA51019A355447E33D43A4B02.jpg,sub_type=0,url=https://multimedia.nt.qq.com.cn/download?appid=1407&amp;fileid=EhTpJuw-G2GshLBfDzbjPLJXUAe51ximmUYg_woo7JSyzO2ZlQMyBHByb2RQgL2jAVoQfmspYBK7e5oSq77SGAcWi3oC_wqCAQJuag&amp;rkey=CAMSMHHiqUa7H_cn8Fn1IT_SfheEf7GZ53xISsFf4xbVe_reOdADI_nHP_VObtC7j0yV6g,file_size=1150118]', 'font': 14, 'sub_type': 'normal', 'message': [{'type': 'image', 'data': {'summary': '', 'file': 'BC02295AA51019A355447E33D43A4B02.jpg', 'sub_type': 0, 'url': 'https://multimedia.nt.qq.com.cn/download?appid=1407&fileid=EhTpJuw-G2GshLBfDzbjPLJXUAe51ximmUYg_woo7JSyzO2ZlQMyBHByb2RQgL2jAVoQfmspYBK7e5oSq77SGAcWi3oC_wqCAQJuag&rkey=CAMSMHHiqUa7H_cn8Fn1IT_SfheEf7GZ53xISsFf4xbVe_reOdADI_nHP_VObtC7j0yV6g', 'file_size': '1150118'}}], 'message_format': 'array', 'post_type': 'message', 'group_id': 1057020972, 'group_name': 'NcatBot 娱乐群'}
+
+[CQ:image,file=BC02295AA51019A355447E33D43A4B02.jpg,sub_type=0,url=https://multimedia.nt.qq.com.cn/download?appid=1407&amp;fileid=EhTpJuw-G2GshLBfDzbjPLJXUAe51ximmUYg_woo7JSyzO2ZlQMyBHByb2RQgL2jAVoQfmspYBK7e5oSq77SGAcWi3oC_wqCAQJuag&amp;rkey=CAMSMHHiqUa7H_cn8Fn1IT_SfheEf7GZ53xISsFf4xbVe_reOdADI_nHP_VObtC7j0yV6g,file_size=1150118]

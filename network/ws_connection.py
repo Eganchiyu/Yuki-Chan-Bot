@@ -1,6 +1,7 @@
 # ws_connection.py
 import json
 import asyncio
+import uuid
 import websockets
 from urllib.parse import urlparse, urlencode, parse_qs, urlunparse
 from typing import Optional, Dict
@@ -88,6 +89,16 @@ class BotConnector:
                 logger.error(f"[Network] 监听异常: {e}")
                 self.websocket = None
                 await asyncio.sleep(3)
+
+    async def get_cookies(self, domain: str = "user.qzone.qq.com") -> Optional[Dict]:
+        """通过 NapCat 获取指定域名的 Cookie（含 bkn）。"""
+        echo = f"cookies_{uuid.uuid4().hex[:8]}"
+        return await self.send_request("get_cookies", {"domain": domain}, echo)
+
+    async def get_login_info(self) -> Optional[Dict]:
+        """获取当前登录账号信息（user_id, nickname）。"""
+        echo = f"login_{uuid.uuid4().hex[:8]}"
+        return await self.send_request("get_login_info", {}, echo)
 
     async def close(self):
         """优雅关闭"""

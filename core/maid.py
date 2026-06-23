@@ -140,17 +140,22 @@ MAID_SYSTEM_PROMPT = f"""
    - 'max_lines': 可选，最大读取行数，默认 500。
    - 支持格式：txt, md, json, csv, py, yaml 等文本文件。
    - 二进制文件（图片、音视频、PDF 等）会返回错误提示。
-8. `search_diary(date_str, keyword)`: 搜索 Yuki 的日记/记忆。
+8. `list_directory(path, show_hidden)`: 列出目录内容。
+   - 'path': 目录绝对路径或相对路径，默认当前目录。
+   - 'show_hidden': 可选，是否显示隐藏文件（以.开头），默认 false。
+   - 返回：子目录列表、文件列表、大小、修改时间等信息。
+   - 用途：浏览文件系统结构，查找文件位置。
+9. `search_diary(date_str, keyword)`: 搜索 Yuki 的日记/记忆。
    - 'date_str': 选填，日期字符串（如 "2026-05-20" 或 "2026-03"）。
    - 'keyword': 选填，需要全文匹配的关键词。
    - 规则：'date_str' 和 'keyword' 至少提供一个，未提供的填 null。
    - 策略提示：为防止上下文超载，此工具每次最多只返回 8 条记录（按时间顺序排序）。如果返回提示"结果过多"，或者前 5 条里没有你想要的，**你可以多次调用此工具**，通过更换 `keyword` 或增加 `date_str` 来不断缩小搜索范围，直到找到精确目标。
-9. `browser_search(query, max_results, search_depth)`: 网页搜索。
+10. `browser_search(query, max_results, search_depth)`: 网页搜索。
    - 'query': 搜索关键词或问题（必填）。
    - 'max_results': 返回结果数量，1-10，默认 5。
    - 'search_depth': 搜索深度，'basic' 或 'advanced'，默认 'basic'。
    - 用途：实时信息查询、新闻、技术文档、百科知识等。
-10. `amap_search(keywords, search_type, location, address, city, radius, page_size)`: 高德地图搜索。
+11. `amap_search(keywords, search_type, location, address, city, radius, page_size)`: 高德地图搜索。
    - 'keywords': 搜索关键词（如"餐厅"、"加油站"）。
    - 'search_type': 搜索类型 - 'text'(关键词搜索), 'around'(周边搜索), 'geocode'(地名转坐标)。
    - 'location': 中心点坐标，around 模式必填，格式：经度,纬度。
@@ -158,7 +163,7 @@ MAID_SYSTEM_PROMPT = f"""
    - 'city': 限定城市，如"北京"，提高精度。
    - 'radius': 搜索半径(米)，around 模式使用，默认 3000。
    - 'page_size': 返回结果数量，1-25，默认 10。
-11. `manage_timer_task(title, due_time, delay_seconds, action, task_id, message)`: 定时任务管理。
+12. `manage_timer_task(title, due_time, delay_seconds, action, task_id, message)`: 定时任务管理。
    - 'title': 任务标题（必填）。
    - 'due_time': 到点时间，支持 YYYY-MM-DD HH:MM:SS 格式。
    - 'delay_seconds': 相对延迟秒数。
@@ -166,7 +171,7 @@ MAID_SYSTEM_PROMPT = f"""
    - 'task_id': 取消指定任务时使用。
    - 'message': 到点后的提醒内容。
    - 注意：此工具返回指令，实际定时任务由 Yuki 执行。
-12. `finish(reason)`: 
+13. `finish(reason)`: 
    - **禁止盲目结束**：严禁在没有看到成功结果或输出的具体数据的情况下调用此工具。
    - **必须总结结果**：在 `reason` 中必须包含你获取到的实际数据（例如：'任务完成，CPU温度为 65.3°C'）。
    - **例外情况**：注意！如果给你的指令不清不楚，不确定性太大，可以直接调用来打回任务，并说明任务不明确。
@@ -445,6 +450,98 @@ def read_file_content(file_path: str, max_lines: int = 500) -> str:
         return f"错误：读取文件失败 - {str(e)}"
 
 
+def list_directory_content(dir_path: str = ".", show_hidden: bool = False) -> str:
+    """
+    列出目录内容 - 供小女仆使用。
+    显示文件/子目录名称、大小、修改时间等信息。
+
+    Args:
+        dir_path: 目录路径，绝对路径或相对路径，默认当前目录
+        show_hidden: 是否显示隐藏文件（以.开头），默认 False
+
+    Returns:
+        目录内容字符串，或错误信息
+    """
+    abs_path = os.path.abspath(dir_path)
+
+    if not os.path.exists(abs_path):
+        return f"错误：路径不存在 '{abs_path}'"
+
+    if not os.path.isdir(abs_path):
+        return f"错误：'{abs_path}' 不是目录，而是文件。请使用 read_file 读取文件内容。"
+
+    try:
+        entries = os.listdir(abs_path)
+    except PermissionError:
+        return f"错误：没有权限访问 '{abs_path}'"
+    except Exception as e:
+        return f"错误：无法列出目录 - {str(e)}"
+
+    # 过滤隐藏文件
+    if not show_hidden:
+        entries = [e for e in entries if not e.startswith(".")]
+
+    if not entries:
+        return f"目录 '{abs_path}' 为空。"
+
+    # 分类：目录优先，然后文件
+    dirs = []
+    files = []
+    for name in entries:
+        full_path = os.path.join(abs_path, name)
+        try:
+            is_dir = os.path.isdir(full_path)
+            size = os.path.getsize(full_path)
+            mtime = os.path.getmtime(full_path)
+            mtime_str = datetime.fromtimestamp(mtime).strftime("%Y-%m-%d %H:%M")
+        except (OSError, PermissionError):
+            is_dir = False
+            size = 0
+            mtime_str = "未知"
+
+        entry = {
+            "name": name,
+            "is_dir": is_dir,
+            "size": size,
+            "mtime": mtime_str,
+        }
+        if is_dir:
+            dirs.append(entry)
+        else:
+            files.append(entry)
+
+    # 格式化输出
+    lines = [f"=== 目录: {abs_path} ==="]
+    lines.append(f"共 {len(dirs)} 个子目录, {len(files)} 个文件\n")
+
+    # 表头
+    lines.append(f"{'类型':<6} {'大小':>10} {'修改时间':<16} {'名称'}")
+    lines.append("-" * 60)
+
+    # 目录
+    for d in sorted(dirs, key=lambda x: x["name"]):
+        lines.append(f"{'[目录]':<6} {'-':>10} {d['mtime']:<16} {d['name']}/")
+
+    # 文件
+    for f in sorted(files, key=lambda x: x["name"]):
+        size_str = _format_file_size(f["size"])
+        lines.append(f"{'文件':<6} {size_str:>10} {f['mtime']:<16} {f['name']}")
+
+    return "\n".join(lines)
+
+
+def _format_file_size(size: int) -> str:
+    """格式化文件大小为人类可读格式"""
+    if size < 1024:
+        return f"{size}B"
+    elif size < 1024 * 1024:
+        return f"{size / 1024:.1f}KB"
+    elif size < 1024 * 1024 * 1024:
+        return f"{size / (1024 * 1024):.1f}MB"
+    else:
+        return f"{size / (1024 * 1024 * 1024):.1f}GB"
+
+
 # === 新增工具：从 Yuki 移交过来的能力 ===
 
 async def manage_timer_task_maid(title=None, due_time=None, delay_seconds=None, action="create", task_id=None, message=None):
@@ -656,6 +753,11 @@ async def maid_evolution_loop(user_goal: str, chat_id: str = None):
                 max_lines = args.get('max_lines', 500)
                 logger.info(f"[Maid] 正在读取文件: {file_path}")
                 res = read_file_content(file_path, max_lines)
+            elif tool == "list_directory":
+                dir_path = args.get('path') or args.get('dir_path') or "."
+                show_hidden = args.get('show_hidden', False)
+                logger.info(f"[Maid] 列出目录: {dir_path}")
+                res = list_directory_content(dir_path, show_hidden)
             elif tool == "search_diary":
                 date_str = args.get('date_str')
                 keyword = args.get('keyword')

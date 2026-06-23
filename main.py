@@ -36,7 +36,11 @@ def initialize_components():
     connector = BotConnector(cfg.NAPCAT_WS_URL, cfg.NAPCAT_WS_TOKEN)
     sender = MessageSender(connector)
     parser = CQCodeParser(connector)
-    meme_processor = MemeProcessor()
+
+    from modules.vision.image_store import ImageStore
+    image_store = ImageStore()
+    meme_processor = MemeProcessor(image_store=image_store)
+
     yuki = YukiState()
     history_manager = HistoryManager()
     sync_system_prompts(history_manager, yuki)
@@ -54,6 +58,7 @@ def initialize_components():
 
     engine = YukiEngine(memory_rag, history_manager, yuki, sender)
     engine.sticker_manager = sticker_manager
+    engine.image_store = image_store
 
     end_time = time.time()
     logger.info(f"[System] 初始化完成，耗时 {end_time - start_time:.1f} 秒")
@@ -63,6 +68,7 @@ def initialize_components():
         "sender": sender,
         "parser": parser,
         "meme_processor": meme_processor,
+        "image_store": image_store,
         "yuki": yuki,
         "history_manager": history_manager,
         "memory_rag": memory_rag,

@@ -17,11 +17,12 @@ logger = get_logger("vision_processor")
 
 
 class MemeProcessor:
-    def __init__(self):
+    def __init__(self, image_store=None):
         from utils.llm_client import vision_chat as _vision_chat
         self.cache = MemeCache()
         self.semaphore = asyncio.Semaphore(cfg.MAX_CONCURRENT_MEME)
         self._vision_chat = _vision_chat
+        self.image_store = image_store
 
     @staticmethod
     def get_image_hash(image_data):
@@ -121,11 +122,11 @@ class MemeProcessor:
                         message=text
                     )
 
-    async def understand_from_url(self, img_url):
+    async def understand_from_url(self, img_url, is_meme=False):
+        """理解图片，返回 {"description": str, "index": str|None}。is_meme=True 时跳过注册。"""
         if not cfg.VISION_MODEL:
             logger.info("未设置视觉模型，跳过图像识别")
-            # 如果没有配置视觉模型，直接返回占位符，不进行下载和API调用
-            return "[未知动画表情]"
+            return {"description": "未知图片/表情", "index": None}
 
         img_url = img_url.replace("&amp;", "&")
         cache_key = f"url:{img_url}"
@@ -133,7 +134,7 @@ class MemeProcessor:
         cached = self.cache.get(cache_key)
         if cached:
             logger.info(f"[MemeCache] 命中URL缓存: {cached}")
-            return f"[动画表情:{cached}]"
+            return {"description": cached, "index": None}
 
         try:
             logger.info("[Meme Understanding] 开始下载图片")
@@ -141,8 +142,14 @@ class MemeProcessor:
                 async with session.get(img_url, timeout=aiohttp.ClientTimeout(total=15)) as resp:
                     if resp.status != 200:
                         logger.error(f"[Meme Understanding] 下载失败，HTTP {resp.status}")
-                        return "[未知动画表情]"
+                        return {"description": "未知图片/表情", "index": None}
                     content = await resp.read()
+
+            # 只有非表情包的图片才注册到 ImageStore
+            img_index = None
+            if not is_meme and self.image_store and content:
+                ext = self._guess_ext(img_url)
+                img_index = self.image_store.register(content, url=img_url, ext=ext)
 
             img_hash = self.get_image_hash(content)
 
@@ -150,12 +157,12 @@ class MemeProcessor:
             cached = self.cache.get(img_hash)
             if cached:
                 logger.info(f"[MemeCache] 命中哈希缓存: {cached}")
-                return f"[动画表情:{cached}]"
+                return {"description": cached, "index": img_index}
 
             logger.info("[MemeCache] 开始压缩...")
             b64_data = self.compress_image(content)
             if not b64_data:
-                return "[未知动画表情]"
+                return {"description": "未知图片/表情", "index": img_index}
 
             logger.info("[Meme Understanding] 发送AI请求...")
             async with self.semaphore:
@@ -170,17 +177,31 @@ class MemeProcessor:
             self.cache.save()
             logger.info(f"[MemeCache] 已保存新结果: {clean_analysis}")
 
-            return f"[动画表情:{clean_analysis}]"
+            return {"description": clean_analysis, "index": img_index}
 
         except Exception as e:
             logger.error(f"[Meme ERROR] 理解表情失败: {e}")
-            return "[未知动画表情]"
+            return {"description": "未知图片/表情", "index": None}
+
+    @staticmethod
+    def _guess_ext(url: str) -> str:
+        """从 URL 猜测图片后缀。"""
+        clean = url.split('?')[0].split('#')[0]
+        if '.' in clean:
+            ext = '.' + clean.rsplit('.', 1)[-1].lower()
+            if ext in ('.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp'):
+                return ext
+        return ".jpg"
 
     @staticmethod
     def extract_urls_from_text(text):
         """提取文本中的图片URL，并标记是否为表情包"""
         images_info = []  # 用来存放字典的列表
         modified_text = text
+
+        logger.debug(f"[Meme]传入的数据：{text}")
+
+
 
         # 1. 找出所有的图片 CQ 码块
         image_blocks = re.findall(r'\[CQ:image,[^\]]*\]', text)
@@ -192,7 +213,7 @@ class MemeProcessor:
                 url = url_match.group(1)
 
                 # 兼容多种客户端的 subtype 拼写
-                is_meme = 'subType=1' in block or 'sub_type=1' in block or 'subtype=1' in block
+                is_meme = not("sub_type=0" in block)
 
                 # 把 URL 和 标志位 打包成字典存起来
                 images_info.append({

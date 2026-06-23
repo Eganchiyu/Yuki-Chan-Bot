@@ -49,6 +49,7 @@ core/skills
 logs/
 core/tasks
 *.log
+temp_images/
 
 # 配置文件目录：只保留 README.md，其他全部忽略
 configs/*

@@ -24,6 +24,7 @@ class SessionPipeline:
         self.memory_rag = components["memory_rag"]
         self.yuki_memory_retriever = components.get("yuki_memory_retriever")
         self.engine = components["engine"]
+        self.image_store = components.get("image_store")
         self.group_active_state = group_active_state
         self.debounce_time_by_chat = {}
         self.stages = [
@@ -217,8 +218,18 @@ class SessionPipeline:
                 self.yuki.user_mapping.update(chat_id, m["name"], m["user_id"])
         # ========================================
 
-        all_contents = [m["content"] for m in message_objs]
-        combined_text = "\n".join(all_contents)
+        # 合并同一用户连续消息，去掉重复的 "【"xxx"】说:" 前缀
+        merged_contents = []
+        prev_uid = None
+        for m in message_objs:
+            uid = m.get("user_id")
+            text = m["content"]
+            if uid and uid == prev_uid and text.startswith("【"):
+                # 同一用户连续消息，去掉前缀
+                text = re.sub(r'^【"[^"]*"】说:\s*', '', text)
+            merged_contents.append(text)
+            prev_uid = uid
+        combined_text = "\n".join(merged_contents)
 
         modified_text, images_info = self.meme_processor.extract_urls_from_text(combined_text)
         if images_info:
@@ -226,20 +237,25 @@ class SessionPipeline:
             for img in images_info:
                 url = img["url"]
                 is_meme = img["is_meme"]
-                result = await self.meme_processor.understand_from_url(url)
-                understood_contents.append(result)
+                result = await self.meme_processor.understand_from_url(url, is_meme=is_meme)
 
-                if is_meme and hasattr(self.engine, "sticker_manager"):
-                    pass
-                elif not is_meme:
-                    logger.info("[Pipeline] 拦截到非表情包图片，仅作视觉理解，不入库学习")
+                desc = result.get("description", "未知图片/表情") if isinstance(result, dict) else result
+                idx = result.get("index") if isinstance(result, dict) else None
+                idx_tag = f"[img:{idx}]" if idx else ""
+
+                if is_meme and desc:
+                    understood_contents.append(f"[表情:{desc}]{idx_tag}")
+                    logger.debug(f"[Pipeline_meme]收到[表情:{desc}]{idx_tag}")
+                elif not is_meme and desc:
+                    understood_contents.append(f"[图片:{desc}]{idx_tag}")
+                    logger.debug(f"[Pipeline_meme]收到[图片:{desc}]{idx_tag}")
 
             combined_text = modified_text
             for content in understood_contents:
                 combined_text = combined_text.replace("[图片占位符]", content, 1)
 
-        combined_text = await self.parser.parse_all_cq_codes(combined_text)
-        combined_text = combined_text.replace("\n", "  ").strip()
+        combined_text = await self.parser.parse_all_cq_codes(combined_text, chat_id)
+        combined_text = combined_text.replace("\n", " | ").strip()
         logger.info(f"[Pipeline] [{chat_id}] 收到消息: {combined_text[:80]}")
         self.history_manager.append_to_log(chat_id, "User/Group", combined_text)
 
@@ -303,6 +319,13 @@ class SessionPipeline:
 
     async def retrieve_memories(self, context):
         """根据输入长度动态检索相关日记。"""
+        # RAG 关闭时跳过检索，直接使用上下文
+        if not cfg.RAG_ENABLED:
+            logger.info(f"[Pipeline] RAG 已关闭，跳过日记检索，直接使用上下文")
+            context["relevant_diaries"] = []
+            context["structured_memory_context"] = None
+            return context
+
         logger.info(f"[Pipeline] {cfg.ROBOT_NAME.title()} 正在回忆")
         chat_id = context["chat_id"]
         combined_text = context["combined_text"]
@@ -401,6 +424,11 @@ class SessionPipeline:
         # === 新增：递减用户映射表 TTL ===
         self.yuki.user_mapping.tick(chat_id)
         # =================================
+
+        # === 新增：递增图片索引轮次，清理过期图片 ===
+        if self.image_store:
+            self.image_store.tick()
+        # ============================================
 
         if len(history_dict[chat_id]) > cfg.DIARY_MAX_LENGTH:
             summarized_list = await self.engine.do_summarize(chat_id, history_dict[chat_id])

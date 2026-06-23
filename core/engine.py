@@ -87,7 +87,7 @@ class YukiEngine:
             mode=mode,
             history_dict=history_dict,
             combined_text=combined_text,
-            runtime=ToolRuntime(sender=self.sender, yuki_state=self.yuki),
+            runtime=ToolRuntime(sender=self.sender, yuki_state=self.yuki, image_store=getattr(self, "image_store", None)),
             metadata={"process_callback": self.process_callback},
         )
         self.tool_manager.start_session(str(chat_id), combined_text)
@@ -201,12 +201,10 @@ class YukiEngine:
             Yuki_Answer = re.sub(r'<布局>.*?</布局>', '', Yuki_Answer, flags=re.DOTALL).strip()
             Yuki_Answer = re.sub(r'\n+', ' ', Yuki_Answer).strip()
 
-            # === 新增：拦截表情包搜索请求 ===
+            # === 拦截表情包搜索请求 ===
             meme_match = re.search(r'\[MEME_SEARCH:(.+?)\]', Yuki_Answer, re.DOTALL)
             if meme_match and getattr(self, 'sticker_manager', None):
                 search_query = meme_match.group(1).strip()
-                # 擦除文字中的标签
-                Yuki_Answer = re.sub(r'\[MEME_SEARCH:.+?\]', '', Yuki_Answer, flags=re.DOTALL).strip()
 
                 # 呼叫大管家：进行 RAG 检索 + 积热重排
                 best_meme_data = await self.sticker_manager.get_suitable_sticker(search_query, chat_id)
@@ -217,8 +215,12 @@ class YukiEngine:
                     # 记录这次发了啥，为后续捕捉正反馈做准备
                     self.yuki.last_sent_meme[chat_id] = best_meme_data['id']
 
-                    # 追加 CQ 码，subType=1 伪装成真实表情包
-                    Yuki_Answer += f"\n[CQ:image,file=file:///{image_path},sub_type=1]"
+                    # 原地替换：MEME_SEARCH 标签 -> CQ 码，保留位置信息
+                    cq_code = f"[CQ:image,file=file:///{image_path},sub_type=1]"
+                    Yuki_Answer = Yuki_Answer.replace(meme_match.group(0), cq_code, 1)
+                else:
+                    # 没找到合适的表情包，只删标签
+                    Yuki_Answer = re.sub(r'\[MEME_SEARCH:.+?\]', '', Yuki_Answer, flags=re.DOTALL).strip()
             # ==============================
             # # ==========================================
             # # 新增：截获文本并请求本地 GPT-SoVITS API
