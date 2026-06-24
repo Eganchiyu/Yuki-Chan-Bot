@@ -4,6 +4,8 @@ import asyncio
 import sys
 import time
 
+from sympy import true
+
 from config import cfg
 from core.brain import YukiState
 from core.engine import YukiEngine
@@ -91,9 +93,8 @@ def start_context_debug_webui_if_enabled():
     """按环境变量在主进程内启动 Context Debug WebUI。"""
     import os
 
-    enabled = os.getenv("YUKI_CONTEXT_DEBUG_WEBUI", "").strip().lower()
-    if enabled not in {"1", "true", "yes", "on"}:
-        return
+    # enabled = os.getenv("YUKI_CONTEXT_DEBUG_WEBUI", "").strip().lower()
+
     host = os.getenv("YUKI_CONTEXT_DEBUG_HOST", "127.0.0.1")
     port = int(os.getenv("YUKI_CONTEXT_DEBUG_PORT", "8777"))
     try:

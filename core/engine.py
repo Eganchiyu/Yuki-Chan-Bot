@@ -41,8 +41,7 @@ class YukiEngine:
             return ""
         clean_content = re.sub(r'\s*FINISHED\s*$', '', content, flags=re.IGNORECASE).strip()
         clean_content = re.sub(r'<布局>.*?</布局>', '', clean_content, flags=re.DOTALL).strip()
-        added_content = clean_content + "| (๑•̀ㅂ•́)و💻"
-        return added_content
+        return clean_content
 
     @staticmethod
     def _append_session_message(history_dict, chat_id, role, content, **extra):
@@ -77,7 +76,9 @@ class YukiEngine:
         clean_content = self._clean_visible_reply(content)
         if not clean_content or clean_content in sent_thoughts:
             return ""
-        await self.sender.send(chat_id, clean_content, mode=mode)
+        # 在工具调用回复后面添加表情符号
+        display_content = clean_content + " | (๑•̀ㅂ•́)و💻"
+        await self.sender.send(chat_id, display_content, mode=mode)
         sent_thoughts.add(clean_content)
         logger.info(f"[ToolChain] 实时发送阶段性文本 chat_id={chat_id}: {clean_content}")
         return clean_content
@@ -270,94 +271,119 @@ class YukiEngine:
             logger.error(f"[Engine] LLM 调用失败: {e}")
             return "API 接口调用失败", ""
 
-    async def decide_to_reply(self, history, message_objs, chat_id,force_reply = False):
-        """判断是否回复群聊"""
-        # 1. 更新并获取当前群聊的欲望值
+    async def decide_to_reply(self, history, message_objs, chat_id, force_reply=False, rag_interest=0.0):
+        """
+        [终极优化版] 纯规则 + 激素积分制判定引擎
+        零 Token 消耗，支持话题惯性衰减与主人特权。
+        """
+        cid = str(chat_id)
+
+        # ==========================================
+        # 1. 话题激素系统 (Hormone System) - 解决"好的"断层问题
+        # ==========================================
+        if not hasattr(self.yuki, 'topic_hormone'):
+            self.yuki.topic_hormone = {}
+
+        current_hormone = self.yuki.topic_hormone.get(cid, 0.0)
+        # 自然衰减 25% + 叠加当前 RAG 兴趣刺激 (假设 rag_interest 正常在 0.5~2.5 之间)
+        new_hormone = current_hormone * 0.75 + (rag_interest * 15)
+        new_hormone = min(new_hormone, 100.0)  # 封顶 100
+        self.yuki.topic_hormone[cid] = new_hormone
+
+        # ==========================================
+        # 2. 基础属性更新
+        # ==========================================
         current_e = self.yuki.update_energy(chat_id)
         self.yuki.update_desire_to_reply(chat_id)
-        desire = self.yuki.desire_to_start_topic.get(str(chat_id), 0)
+        desire = self.yuki.desire_to_start_topic.get(cid, 0)
 
+        # 强制开口出口
         if force_reply:
             return True
 
-        human_calling = any(
-            not m["is_bot"] and any(kw in m["raw_text"].lower() for kw in cfg.keywords)
-            for m in message_objs
-        )
+        # ==========================================
+        # 3. 消息特征解析
+        # ==========================================
+        human_calling = False
+        bot_calling_only = True
+        question_mark = False
+        is_master = False
 
-        # B. 检查是否【只有机器人】在艾特 Yuki（循环风险）
-        bot_calling_only = all(
-            m["is_bot"] for m in message_objs
-            if any(kw in m["raw_text"].lower() for kw in cfg.keywords)
-        )
+        # 主人身份标识池 (兼容你的设定和名字)
+        master_identifiers = [cfg.MASTER_NAME, "池宇健"]
+        master_qq_str = str(cfg.TARGET_QQ)
 
-        # 逻辑干预：
-        if human_calling:
-            logger.info(f"[Engine] 检测到人类关键召唤，{cfg.ROBOT_NAME.title()} 强制清醒")
-            return True
+        for m in message_objs:
+            raw_text = m.get("raw_text", "").lower()
+            if not m.get("is_bot"):
+                bot_calling_only = False
 
+            # 是否有人呼叫 Yuki
+            if any(kw in raw_text for kw in cfg.keywords):
+                if not m.get("is_bot"):
+                    human_calling = True
+
+            # 疑问句判定
+            if any(q in raw_text for q in ["?", "？", "吗", "呢", "怎么", "什么", "谁", "为什么"]):
+                question_mark = True
+
+            # 判断是否是主人发言 (匹配发送者 ID 或日志格式中的名字前缀)
+            if any(mid in raw_text for mid in master_identifiers) or master_qq_str in raw_text or m.get("user_id") == cfg.TARGET_QQ:
+                is_master = True
+
+        # ==========================================
+        # 4. 一票否决区
+        # ==========================================
         if bot_calling_only and any(any(kw in m["raw_text"].lower() for kw in cfg.keywords) for m in message_objs):
-            desire *= 0.7  # 你的核心诉求：欲望乘 0.7
-            logger.info(f"[Engine] 检测到 BOT 召唤 {cfg.ROBOT_NAME.title()}，防套娃降欲: {desire:.1f}%")
-
-        # --- 强干预层 ---
-        if desire >= 80:
-            logger.info(f"[Decision] {chat_id} 欲望爆表({desire:.1f}%)，强制回复")
-            return True
-        if desire <= 20:
-            logger.info(f"[Decision] {chat_id} 欲望低迷({desire:.1f}%)，跳过回复")
+            self.yuki.desire_to_start_topic[cid] *= 0.5
+            logger.info(f"[Decision] 触发防套娃机制: 纯 BOT 召唤，强行静默")
             return False
 
-        if current_e < cfg.MIN_ACTIVE_ENERGY:
-            logger.info(f"[Engine] {cfg.ROBOT_NAME.title()} 精力不足，潜水恢复中 (精力: {current_e:.1f})")
+        if current_e < cfg.MIN_ACTIVE_ENERGY and not (human_calling or is_master):
+            logger.info(f"[Decision] 精力不足({current_e:.1f})且无主人召唤，进入潜水")
             return False
 
-        try:
-            logger.info(f"[Engine] 正在构建判定消息 (精力: {current_e:.1f})")
-            recent_dialogue = [msg for msg in history if msg.get("role") != "system"][-10:]
+        # ==========================================
+        # 5. 多维融合计算 (积分制)
+        # ==========================================
+        reply_score = 0.0
 
-            dialogue_text = ""
-            for msg in recent_dialogue:
-                role_name = "" if msg["role"] == "user" else f"【{cfg.ROBOT_NAME.title()}】说:"
-                dialogue_text += f"{role_name}{msg['content']}\n\n"
+        # A. 基础表达欲权重 (占比 30%)
+        reply_score += desire * 0.3
 
-            energy_desc = "精力充沛，很愿意找人聊天" if current_e > 90 else "精力正常，会选择性接有趣的话题" if current_e > 45 else "疲惫，只想接少数有趣的话题" if current_e > 25 else "非常疲惫，只有认为必须发言时才发言"
+        # B. 话题激素权重 (占比 40%) - 决定了对话的连贯性
+        reply_score += new_hormone * 0.4
 
-            check_prompt = (
-                f"请分析对话上下文和氛围，判断现在是否要发言。{cfg.ROBOT_NAME}对感兴趣的话题会冒泡，但是会避免过于频繁地打扰大家。对{cfg.MASTER_NAME}和{cfg.ROBOT_NAME}的直接称呼会增加发言倾向。请综合考虑对话内容、氛围和当前精力，判断{cfg.ROBOT_NAME}是否应该发言。\n\n"
-                f"如果要发言，请回答 'YES'。如果想继续潜水观察，请回答 'NO'。"
-            )
+        # C. 疑问句加分
+        if question_mark:
+            reply_score += 15
 
-            messages = [
-                {"role": "system", "content": f"{self.yuki.get_setting('group')}\n你现在需要根据精力值和氛围决定是否发言。"},
-                {"role": "user", "content": (
-                    f"--- 观察背景 ---\n"
-                    f"最近对话内容：\n{dialogue_text}\n\n"
-                    f"--- 自身状态 ---\n"
-                    f"精力值：{current_e:.1f}/100 ({energy_desc})\n"
-                    f"发言消耗{cfg.COST_PER_REPLY}点精力\n\n"
-                    f"--- 决策指令 ---\n"
-                    f"{check_prompt}"
-                )}
-            ]
-            logger.debug(f"[Engine] 判定消息内容:\n {messages}")
-            logger.info(f"[Engine] 判定消息构建完成，发送 API 请求 (精力: {current_e:.1f})")
+        # D. 精力状态修正
+        if current_e > 80:
+            reply_score += 10
+        elif current_e < 40:
+            reply_score -= 15
 
-            raw_response = await llm_chat(
-                messages=messages,
-                model=cfg.LLM_MODEL,
-                max_tokens=10,
-                temperature=0.6
-            )
+        # E. 【特权机制：主人的偏爱】
+        if is_master:
+            reply_score += 25  # 极大的加成，只要主人在场，活跃度直线上升
+            logger.debug(f"[Decision] 检测到哥哥大人发言，触发专属偏爱加成 +25")
 
-            # 2. 拿到字符串后再进行各种清洗
-            result = raw_response.strip().upper()
-            result = re.sub(r'\s*FINISHED\s*$', '', result, flags=re.IGNORECASE)
+        # F. 明确点名
+        if human_calling:
+            reply_score += 100  # 绝对秒回
 
-            return "YES" in result
-        except Exception as e:
-            logger.error(f"[Engine] 判定失败: {e}")
-            return False
+        # ==========================================
+        # 6. 最终决断
+        # ==========================================
+        threshold = 65.0  # 发言及格线
+        will_reply = reply_score >= threshold
+
+        logger.info(
+            f"[Decision] 积分判定 | 激素:{new_hormone:.1f} 欲:{desire:.1f} 精:{current_e:.1f} "
+            f"主人:{is_master} | 总分:{reply_score:.1f}/{threshold} -> 发言:{will_reply}"
+        )
+        return will_reply
 
     async def do_summarize(self, chat_id, history):
         logger.info(f"[Engine] [{chat_id}] 记忆过长，{cfg.ROBOT_NAME.title()} 正在写日记...")

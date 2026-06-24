@@ -268,7 +268,7 @@ async def build_chat_context(yuki, chat_id: str, combined_text: str, history_dic
     # 第四层：当前最新消息 (动态区结尾)
     # ==========================================
     combined_API_message.append(
-        {"role": "user", "content": f" (当前时间:{datetime.datetime.now().strftime('%Y-%m-%d %H:%M')}){combined_text}"}
+        {"role": "user", "content": f" (当前时间:{datetime.datetime.now().strftime('%Y-%m-%d %H:%M')})\n[收到消息!]|{combined_text}"}
     )
 
     return combined_API_message

@@ -30,8 +30,8 @@ class SessionPipeline:
             self.prepare_message_batch,
             self.normalize_incoming_content,
             self.prepare_chat_context,
-            self.decide_reply_action,
-            self.retrieve_memories,
+            self.retrieve_memories,        # 先检索 RAG，为激素系统提供兴趣度
+            self.decide_reply_action,      # 再决定是否回复，融合 rag_interest
             self.generate_reply,
             self.send_reply,
             self.finalize_conversation,
@@ -302,11 +302,18 @@ class SessionPipeline:
         mode = context["mode"]
         history_dict = context["history_dict"]
 
+        # 从已检索的 RAG 结果中计算话题兴趣度
+        rag_interest = 0.0
+        relevant_diaries = context.get("relevant_diaries", [])
+        if relevant_diaries:
+            rag_interest = sum(d.get("score", 0) for d in relevant_diaries) / len(relevant_diaries)
+
         if mode == "group" and not await self.engine.decide_to_reply(
             history_dict[chat_id],
             context["message_objs"],
             chat_id,
             force_reply=context["force_reply"],
+            rag_interest=rag_interest,
         ):
             self.history_manager.save(history_dict)
             logger.info(f"[Pipeline] {cfg.ROBOT_NAME.title()} 决定继续潜水")
