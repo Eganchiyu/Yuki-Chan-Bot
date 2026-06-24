@@ -1,9 +1,11 @@
 import datetime
 import json
 import os
+import concurrent.futures
+import warnings
 
 import chromadb
-import warnings
+
 with warnings.catch_warnings():
     warnings.simplefilter("ignore", UserWarning)
     import jieba.analyse
@@ -30,7 +32,7 @@ class MemoryRAG:
         self.client = chromadb.PersistentClient(path=cfg.VECTOR_DB_PATH)
         self.collection = self.client.get_or_create_collection(
             name="diaries",
-            metadata={"hnsw:space": "cosine"} # 使用余弦相似度进行向量匹配
+            metadata={"hnsw:space": "cosine"}  # 核心：使用余弦相似度进行向量匹配
         )
         self.blacklist_path = "blacklist.txt"
         self.name_blacklist = self._load_blacklist()
@@ -41,38 +43,34 @@ class MemoryRAG:
     def _load_blacklist(self):
         """从文件加载屏蔽词，支持自动去重和过滤空行"""
         if not os.path.exists(self.blacklist_path):
-            # 如果文件不存在，创建一个默认的
             default_list = [cfg.ROBOT_NAME, '主人', '哥哥', cfg.MASTER_NAME, '人家']
             with open(self.blacklist_path, "w", encoding="utf-8") as f:
                 f.write("\n".join(default_list))
             return default_list
 
         with open(self.blacklist_path, "r", encoding="utf-8") as f:
-            # 读取每一行，去除空格，忽略以 # 开头的注释行
             words = [line.strip().lower() for line in f
                      if line.strip() and not line.startswith("#")]
-        return list(set(words)) # 去重
+        return list(set(words))
 
     def reload_blacklist(self):
-        """提供一个热重载接口"""
         self.name_blacklist = self._load_blacklist()
         logger.info("[RAG] 屏蔽词库已完成热重载")
 
     @staticmethod
     def _build_memory_metadata(
-        memory_type="summary",
-        chat_id=None,
-        people=None,
-        emotion=None,
-        subject=None,
-        status="active",
-        confidence=1.0,
-        importance=3,
-        supersedes=None,
-        source_ids=None,
-        extra_metadata=None,
+            memory_type="summary",
+            chat_id=None,
+            people=None,
+            emotion=None,
+            subject=None,
+            status="active",
+            confidence=1.0,
+            importance=3,
+            supersedes=None,
+            source_ids=None,
+            extra_metadata=None,
     ):
-        """构造兼容 Chroma 的标准记忆 metadata。"""
         now = datetime.datetime.now().timestamp()
         metadata = {
             "type": memory_type,
@@ -109,21 +107,20 @@ class MemoryRAG:
         return metadata
 
     def save_memory(
-        self,
-        content,
-        memory_type="summary",
-        chat_id=None,
-        people=None,
-        emotion=None,
-        subject=None,
-        status="active",
-        confidence=1.0,
-        importance=3,
-        supersedes=None,
-        source_ids=None,
-        extra_metadata=None,
+            self,
+            content,
+            memory_type="summary",
+            chat_id=None,
+            people=None,
+            emotion=None,
+            subject=None,
+            status="active",
+            confidence=1.0,
+            importance=3,
+            supersedes=None,
+            source_ids=None,
+            extra_metadata=None,
     ):
-        """保存标准化长期记忆，兼容日记、事实、画像等多类型。"""
         if not content or not content.strip():
             return None
 
@@ -166,7 +163,6 @@ class MemoryRAG:
         return doc_id
 
     def save_diary(self, content, chat_id=None, people=None, emotion=None):
-        """保存日记到向量库，包含自动去重逻辑"""
         return self.save_memory(
             content=content,
             memory_type="summary",
@@ -177,14 +173,12 @@ class MemoryRAG:
         )
 
     def search_memory(self, query, chat_id=None, top_k=cfg.RETRIEVAL_TOP_K, threshold=1.0):
-        """混合检索：支持当前群聊 + 手动录入的记忆"""
         if not query.strip():
             return []
 
         query_emb = self.model.encode(query).tolist()
         where_filter = {}
         if chat_id is not None:
-            # 融合检索逻辑：检索当前 chat_id 或全局 manual_record
             where_filter["chat_id"] = {"$in": [str(chat_id), "manual_record"]}
 
         results = self.collection.query(
@@ -197,7 +191,6 @@ class MemoryRAG:
         if results['documents'] and results['documents'][0]:
             docs = results['documents'][0]
             distances = results['distances'][0]
-            # 根据相似度阈值过滤并进行结果集去重
             filtered = []
             seen = set()
             for doc, dist in zip(docs, distances):
@@ -207,51 +200,66 @@ class MemoryRAG:
             return filtered
         return []
 
-    def search_diaries(self, query_text, chat_id=None, n_results=12, top_k=8):
+    def search_diaries(self, query_text, chat_id=None, n_results=3, top_k_keywords=5):
         """
-        并行双池检索：语义池与关键词池并行提取，算法全透明调试版
+        优化版并行双池检索：真正的 I/O 并发 + 数据库下推过滤 + 宽进严出
         """
-        logger.debug(f"\n[RAG] 开启并行检索流: '{query_text}'")
+        logger.debug(f"\n[RAG] 开启优化版真并行双池检索流: '{query_text}'")
 
         total_count = self.collection.count()
         if total_count == 0:
             logger.debug("[RAG] 数据库为空，取消检索")
             return []
 
-        # 1. 准备：类型转换与关键词提取
         cid_str = str(chat_id) if chat_id else None
         filter_cond = {"chat_id": {"$in": [cid_str, "manual_record"]}} if cid_str else None
 
-
-
-        raw_keywords = jieba.analyse.extract_tags(query_text, topK=top_k, withWeight=True)
-
-        # 直接调用类属性中的黑名单
+        # 1. 提取核心锚点词
+        raw_keywords = jieba.analyse.extract_tags(query_text, topK=top_k_keywords, withWeight=True)
         keywords_with_weight = [
             (kw, w) for kw, w in raw_keywords
             if kw.lower() not in self.name_blacklist
         ]
-        logger.debug(f"[RAG] 核心锚点词: {keywords_with_weight}")
+        keywords = [kw for kw, _ in keywords_with_weight]
+        logger.debug(f"[RAG] 核心锚点词: {keywords}")
 
-        # 2. 【并行池 A】向量语义池
-        logger.debug(f"[RAG] 正在提取语义池 (Top {n_results})")
-        query_embedding = self.model.encode(query_text).tolist()
-        vector_results = self.collection.query(
-            query_embeddings=[query_embedding],
-            n_results=n_results,
-            where=filter_cond
-        )
+        # 2. 定义并行查询任务
+        def fetch_vector_pool():
+            query_embedding = self.model.encode(query_text).tolist()
+            # 宽进：语义池多抓取一些做基准，确保长线情感匹配
+            return self.collection.query(
+                query_embeddings=[query_embedding],
+                n_results=max(10, n_results * 2),
+                where=filter_cond
+            )
 
-        # 3. 【并行池 B】全量关键词扫描池 (关键改动：使用 get 代替 query)
-        logger.debug(f"[RAG] 正在执行全量关键词扫描")
-        all_relevant_docs = self.collection.get(where=filter_cond)
+        def fetch_keyword_pool():
+            if not keywords:
+                return {'documents': [], 'metadatas': [], 'ids': []}
 
-        # 4. 合并与重置逻辑
-        combined_map = {} # {doc_id: item_data}
+            # 【核心优化】：利用数据库底层的 $contains 操作符，彻底告别全表扫内存
+            contains_filters = [{"$contains": kw} for kw in keywords]
+            doc_filter = {"$or": contains_filters} if len(contains_filters) > 1 else contains_filters[0]
 
-        # 处理语义池
+            return self.collection.get(
+                where=filter_cond,
+                where_document=doc_filter
+            )
+
+        # 3. 线程池触发真正的并发请求
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+            future_vector = executor.submit(fetch_vector_pool)
+            future_keyword = executor.submit(fetch_keyword_pool)
+
+            vector_results = future_vector.result()
+            keyword_results = future_keyword.result()
+
+        # 4. 合并与重排逻辑
+        combined_map = {}  # doc_id -> item_data
+
+        # --- 处理语义池 ---
         max_v_score = 0.0
-        if vector_results['documents'] and vector_results['documents'][0]:
+        if vector_results and vector_results['documents'] and vector_results['documents'][0]:
             # 记录最高向量分作为基准
             max_v_score = 1.0 - vector_results['distances'][0][0]
             for i in range(len(vector_results['documents'][0])):
@@ -264,48 +272,42 @@ class MemoryRAG:
                     "source": "语义池"
                 }
 
-        # 处理关键词池 (保底分策略)
+        # --- 处理关键词池 ---
+        # 保留原有的保底分策略，但现在参与打捞的数据是经过 Chroma 引擎极速过滤的
         initial_kw_score = max_v_score * 0.85
         kw_found_count = 0
-        if all_relevant_docs['documents']:
-            for i in range(len(all_relevant_docs['documents'])):
-                doc_id = all_relevant_docs['ids'][i]
-                content = all_relevant_docs['documents'][i]
-
-                # 检查是否包含关键词
-                matched_in_doc = [kw for kw, _ in keywords_with_weight if kw in content]
-                if matched_in_doc and doc_id not in combined_map:
+        if keyword_results and keyword_results['documents']:
+            for i, content in enumerate(keyword_results['documents']):
+                doc_id = keyword_results['ids'][i]
+                if doc_id not in combined_map:
                     combined_map[doc_id] = {
                         "doc": content,
-                        "meta": all_relevant_docs['metadatas'][i],
+                        "meta": keyword_results['metadatas'][i],
                         "base_score": initial_kw_score,
-                        "source": f"关键词打捞(保底:{initial_kw_score:.2f})"
+                        "source": f"关键词精准打捞(保底:{initial_kw_score:.2f})"
                     }
                     kw_found_count += 1
 
-        logger.debug(
-            f"[RAG] 池合并完成: 语义池 {len(combined_map) - kw_found_count} 条，关键词池打捞 {kw_found_count} 条")
-
+        # 5. 精准算分与加权补偿
         final_results = []
         for item in combined_map.values():
-            # 这里的 _calculate_final_item 需要接收 base_score
             scored_item = self._calculate_final_item(
                 item["doc"], item["meta"], item["base_score"], keywords_with_weight
             )
             if scored_item:
-                # 把来源信息塞进 debug 方便观察
                 scored_item["debug"] = f"[{item['source']}] {scored_item['debug']}"
                 final_results.append(scored_item)
 
-        # 6. 排序与截断
+        # 6. 截断与严出
         final_results.sort(key=lambda x: x['score'], reverse=True)
+        final_output = final_results[:n_results]
 
-        logger.debug(f"[RAG] 排序结果 (Top 3):")
-        for i, res in enumerate(final_results[:3]):
+        logger.debug(
+            f"[RAG] 融合完成: 向量池 {len(combined_map) - kw_found_count}条，关键词池 {kw_found_count}条。最终输出 {len(final_output)} 条")
+        for i, res in enumerate(final_output):
             logger.debug(f"   #{i + 1} 分数:{res['score']:.4f} | {res['debug']}")
 
-        return final_results[:12]
-
+        return final_output
 
     @staticmethod
     def _calculate_final_item(doc, meta, base_score, keywords_with_weight):
@@ -313,7 +315,7 @@ class MemoryRAG:
         matched_words = []
         for kw, weight in keywords_with_weight:
             if kw in doc:
-                # 权重补偿
+                # 原汁原味的权重补偿，发挥极佳的“命中记忆”效果
                 keyword_boost += weight * 0.5
                 matched_words.append(kw)
 
@@ -326,14 +328,13 @@ class MemoryRAG:
         }
 
     def clean_duplicate_diaries(self, dry_run=False):
-        """物理清理数据库中所有的重复项（保留最新的一条）"""
         logger.info("[RAG] 正在扫描全局重复记录...")
         all_data = self.collection.get()
 
         if not all_data or not all_data['documents']:
             return None
 
-        seen = {} # (content, chat_id) -> (id, timestamp)
+        seen = {}
         to_delete = []
 
         for doc, meta, id in zip(all_data['documents'], all_data['metadatas'], all_data['ids']):
@@ -355,9 +356,8 @@ class MemoryRAG:
             return to_delete
 
         if to_delete:
-            # 分批删除防止内存溢出
             for i in range(0, len(to_delete), 100):
-                self.collection.delete(ids=to_delete[i:i+100])
+                self.collection.delete(ids=to_delete[i:i + 100])
             logger.info(f"[RAG] 清理完成，已删除 {len(to_delete)} 条重复记录")
             return None
         else:
