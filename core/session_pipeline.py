@@ -75,7 +75,7 @@ class SessionPipeline:
 
     def wake_quickly(self, chat_id):
         """被直接点名时缩短当前群聊防抖时间。"""
-        self.debounce_time_by_chat[str(chat_id)] = 3
+        self.debounce_time_by_chat[str(chat_id)] = 0.1
 
     async def enqueue_message(
         self,
@@ -109,7 +109,7 @@ class SessionPipeline:
         try:
             while True:
                 await self.run_once(cid, mode, debounce_flag, force_reply, ice_break)
-                debounce_flag = False
+                debounce_flag = True
                 force_reply = None
                 ice_break = False  # 破冰只在第一轮执行
 
@@ -389,7 +389,10 @@ class SessionPipeline:
                 if not part:
                     continue
                 await self.sender.send(chat_id, part, mode=mode)
-                await asyncio.sleep(1.0)
+                if part.startswith("[CQ:image"):
+                    await asyncio.sleep(3.0)
+                else:
+                    await asyncio.sleep(1.0)
         else:
             await self.sender.send(chat_id, voice, mode=mode)
 

@@ -111,7 +111,7 @@ async def napcat_listen(mode: str):
                     if not group_active_state.get(gid_str, True):
                         continue
                     
-                    logger.debug(f"[NapCat] 收到原始消息: {data}")
+                    # logger.debug(f"[NapCat] 收到原始消息: {data}")
                     
                     sender_info = data.get("sender", {})
                     name = sender_info.get("card") or sender_info.get("nickname") or "路人"

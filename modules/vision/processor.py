@@ -199,7 +199,7 @@ class MemeProcessor:
         images_info = []  # 用来存放字典的列表
         modified_text = text
 
-        logger.debug(f"[Meme]传入的数据：{text}")
+        # logger.debug(f"[Meme]传入的数据：{text}")
 
 
 
