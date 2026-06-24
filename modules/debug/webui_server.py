@@ -26,16 +26,89 @@ HTML = r"""<!doctype html>
   <section class="layout"><aside class="card"><h2>最近会话</h2><div id="sessions" class="sessions"></div></aside><section class="card"><h2>完整构建上下文</h2><div id="messages" class="messages empty">暂无 snapshot</div></section><aside class="card panel"><div><h2>记忆召回</h2><div id="memories"></div></div><div><h2>Snapshot JSON</h2><div id="snapshotJson" class="json">{}</div></div></aside></section>
   <section class="card"><h2>Pipeline 阶段时间线</h2><div id="timeline" class="timeline"></div></section>
 </main><script>
-let selectedId=null,current=null,paused=false;const stages=['prepare_message_batch','normalize_incoming_content','prepare_chat_context','decide_reply_action','retrieve_memories','generate_reply','send_reply','finalize_conversation'];
-async function api(path){const r=await fetch(path);return await r.json()}function esc(s){return String(s??'').replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]))}
+let selectedId=null, current=null, paused=false;
+let lastListUpdate=null; // 追踪左侧列表更新
+const stages=['prepare_message_batch','normalize_incoming_content','prepare_chat_context','decide_reply_action','retrieve_memories','generate_reply','send_reply','finalize_conversation'];
+async function api(path){const r=await fetch(path);return await r.json()}
+function esc(s){return String(s??'').replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]))}
 function meta(){return current?`chat_id=${current.chat_id||''} · stage=${current.stage||''} · tokens≈${current.token_estimate?.estimated_tokens||0}`:'等待数据'}
-async function refreshAll(){const [status,list]=await Promise.all([api('/api/status'),api('/api/snapshots?limit=80')]);document.getElementById('status').innerHTML=`<span class="pill"><i class="dot"></i>online</span><span class="pill">刷新 ${status.generated_at}</span><span class="pill">snapshots ${status.snapshot_count}</span><span class="pill">${meta()}</span>`;renderSessions(list);if(!selectedId&&status.latest_snapshot_id)selectedId=status.latest_snapshot_id;if(selectedId)await loadSnapshot(selectedId)}
-function renderSessions(list){document.getElementById('sessions').innerHTML=list.length?list.map(x=>`<div class="session ${x.snapshot_id===selectedId?'active':''}" onclick="selectSnapshot('${x.snapshot_id}')"><b>${esc(x.chat_id||'-')}</b><div class="preview">${esc(x.mode||'')} · ${esc(x.stage||'')} · ${esc(x.updated_at||x.created_at||'')}</div><div class="preview">${esc(x.combined_text_preview||'')}</div><div class="preview">messages ${x.built_message_count||0} · tokens≈${x.estimated_tokens||0}</div></div>`).join(''):'<div class="empty">暂无 snapshot</div>'}
-async function selectSnapshot(id){selectedId=id;await loadSnapshot(id);await refreshAll()}async function loadSnapshot(id){current=await api('/api/snapshots/'+encodeURIComponent(id));renderSnapshot()}
-function renderSnapshot(){document.getElementById('snapshotJson').textContent=JSON.stringify(current,null,2);const messages=current.built_messages||[];document.getElementById('messages').className=messages.length?'messages':'messages empty';document.getElementById('messages').innerHTML=messages.length?messages.map((m,i)=>{const c=typeof m.content==='string'?m.content:JSON.stringify(m.content,null,2);return `<details class="msg" ${i<3?'open':''}><summary><span class="role ${esc(m.role)}">${esc(m.role||'unknown')}</span><span class="muted">#${i+1} · chars ${c.length} · tokens≈${Math.max(1,Math.floor(c.length/2))}</span><button onclick="event.stopPropagation();navigator.clipboard.writeText(${JSON.stringify(c)})">复制</button></summary><div class="content">${esc(c)}</div></details>`}).join(''):'暂无完整 messages';renderMemories();renderTimeline()}
-function renderMemories(){const old=current.relevant_diaries||[];let html=`<h2>RAG 回忆</h2>${old.length?old.map(x=>`<div class="mem">${esc(typeof x==='string'?x:JSON.stringify(x,null,2))}</div>`).join(''):'<div class="muted">无</div>'}`;document.getElementById('memories').innerHTML=html}
-function renderTimeline(){const latency=current.latency||{};const stage=current.stage||'';document.getElementById('timeline').innerHTML=stages.map(s=>`<div class="step ${(latency[s]||stage===s)?'done':''}"><b>${s}</b><br>${latency[s]??''}</div>`).join('')}
-function togglePause(){paused=!paused;document.getElementById('pauseBtn').textContent=paused?'恢复自动刷新':'暂停自动刷新'}function copySnapshot(){if(current)navigator.clipboard.writeText(JSON.stringify(current,null,2))}function downloadSnapshot(){if(!current)return;const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([JSON.stringify(current,null,2)],{type:'application/json'}));a.download=(current.snapshot_id||'snapshot')+'.json';a.click()}setInterval(()=>{if(!paused)refreshAll()},2000);refreshAll();
+
+async function refreshAll(){
+  const [status,list]=await Promise.all([api('/api/status'),api('/api/snapshots?limit=80')]);
+  document.getElementById('status').innerHTML=`<span class="pill"><i class="dot"></i>online</span><span class="pill">刷新 ${status.generated_at}</span><span class="pill">snapshots ${status.snapshot_count}</span><span class="pill">${meta()}</span>`;
+
+  // 【核心修复 1】仅当最新快照时间变化，或强制刷新时，才重绘左侧列表
+  if(status.latest_snapshot_at !== lastListUpdate || !lastListUpdate){
+    renderSessions(list);
+    lastListUpdate = status.latest_snapshot_at;
+  }
+
+  if(!selectedId && status.latest_snapshot_id) {
+    selectedId=status.latest_snapshot_id;
+    lastListUpdate=null; // 触发列表重绘以更新高亮
+  }
+
+  if(selectedId){
+    const freshData = await api('/api/snapshots/'+encodeURIComponent(selectedId));
+    // 【核心修复 2】仅当当前详情的 updated_at 发生变化时，才重绘右侧 DOM
+    if(!current || current.snapshot_id !== freshData.snapshot_id || current.updated_at !== freshData.updated_at){
+      current = freshData;
+      renderSnapshot();
+    }
+  }
+}
+
+function renderSessions(list){
+  document.getElementById('sessions').innerHTML=list.length?list.map(x=>`<div class="session ${x.snapshot_id===selectedId?'active':''}" onclick="selectSnapshot('${x.snapshot_id}')"><b>${esc(x.chat_id||'-')}</b><div class="preview">${esc(x.mode||'')} · ${esc(x.stage||'')} · ${esc(x.updated_at||x.created_at||'')}</div><div class="preview">${esc(x.combined_text_preview||'')}</div><div class="preview">messages ${x.built_message_count||0} · tokens≈${x.estimated_tokens||0}</div></div>`).join(''):'<div class="empty">暂无 snapshot</div>';
+}
+
+async function selectSnapshot(id){
+  selectedId=id;
+  current=null; // 置空，迫使 refreshAll 重绘右侧
+  lastListUpdate=null; // 置空，迫使 refreshAll 重绘左侧高亮
+  await refreshAll();
+}
+
+function renderSnapshot(){
+  document.getElementById('snapshotJson').textContent=JSON.stringify(current,null,2);
+  const messages=current.built_messages||[];
+  document.getElementById('messages').className=messages.length?'messages':'messages empty';
+  document.getElementById('messages').innerHTML=messages.length?messages.map((m,i)=>{
+    const c=typeof m.content==='string'?m.content:JSON.stringify(m.content,null,2);
+    return `<details class="msg" ${i<3?'open':''}><summary><span class="role ${esc(m.role)}">${esc(m.role||'unknown')}</span><span class="muted">#${i+1} · chars ${c.length} · tokens≈${Math.max(1,Math.floor(c.length/2))}</span><button onclick="event.stopPropagation();navigator.clipboard.writeText(${JSON.stringify(c).replace(/"/g, '&quot;')})">复制</button></summary><div class="content">${esc(c)}</div></details>`;
+  }).join(''):'暂无完整 messages';
+  renderMemories();
+  renderTimeline();
+}
+
+function renderMemories(){
+  const old=current.relevant_diaries||[];
+  let html=`<h2>RAG 回忆</h2>${old.length?old.map(x=>`<div class="mem">${esc(typeof x==='string'?x:JSON.stringify(x,null,2))}</div>`).join(''):'<div class="muted">无</div>'}`;
+  document.getElementById('memories').innerHTML=html;
+}
+
+function renderTimeline(){
+  const latency=current.latency||{};const stage=current.stage||'';
+  document.getElementById('timeline').innerHTML=stages.map(s=>`<div class="step ${(latency[s]||stage===s)?'done':''}"><b>${s}</b><br>${latency[s]??''}</div>`).join('');
+}
+
+function togglePause(){
+  paused=!paused;
+  document.getElementById('pauseBtn').textContent=paused?'恢复自动刷新':'暂停自动刷新';
+}
+
+function copySnapshot(){if(current)navigator.clipboard.writeText(JSON.stringify(current,null,2))}
+
+function downloadSnapshot(){
+  if(!current)return;
+  const a=document.createElement('a');
+  a.href=URL.createObjectURL(new Blob([JSON.stringify(current,null,2)],{type:'application/json'}));
+  a.download=(current.snapshot_id||'snapshot')+'.json';
+  a.click();
+}
+
+setInterval(()=>{if(!paused)refreshAll()},2000);
+refreshAll();
 </script></body></html>"""
 
 
