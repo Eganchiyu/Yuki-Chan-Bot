@@ -206,31 +206,6 @@ class DiaryConfig:
 
 
 @dataclass
-class StructuredMemoryConfig:
-    """结构化记忆配置"""
-    enabled: bool = config_field(
-        False,
-        comment="结构化记忆开关（关闭后回退旧 RAG）",
-        section="structured_memory"
-    )
-    max_profiles: int = config_field(
-        2,
-        comment="最大画像召回条数",
-        section="structured_memory"
-    )
-    max_facts: int = config_field(
-        6,
-        comment="最大事实召回条数",
-        section="structured_memory"
-    )
-    max_summaries: int = config_field(
-        4,
-        comment="最大摘要召回条数",
-        section="structured_memory"
-    )
-
-
-@dataclass
 class RAGConfig:
     """RAG 记忆配置"""
     enabled: bool = config_field(
@@ -450,11 +425,6 @@ class Config:
         RAGConfig,
         comment="RAG 记忆配置",
         section="rag"
-    )
-    structured_memory: StructuredMemoryConfig = config_field_factory(
-        StructuredMemoryConfig,
-        comment="结构化记忆配置",
-        section="structured_memory"
     )
     energy: EnergyConfig = config_field_factory(
         EnergyConfig,
@@ -911,7 +881,6 @@ _SECTION_HEADERS = {
     "target": "# ================= 目标配置 =================",
     "diary": "# ================= 日记触发配置 =================",
     "rag": "# ================= RAG 记忆配置 =================",
-    "structured_memory": "# ================= 结构化记忆配置 =================",
     "paths": "# ================= 本地文件路径配置 =================\n# 均为相对项目根目录的路径",
     "timing": "# ================= 时间/超时配置 =================",
     "energy": "# ================= 精力值系统配置 =================",

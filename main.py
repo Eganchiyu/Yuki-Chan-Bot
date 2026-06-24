@@ -49,10 +49,6 @@ def initialize_components():
     from modules.memory.rag import MemoryRAG
     memory_rag = MemoryRAG()
 
-    logger.info("[System] 开始初始化 Yuki-Memory 结构化检索器...")
-    from modules.yuki_memory.retriever import YukiMemoryRetriever
-    yuki_memory_retriever = YukiMemoryRetriever()
-
     from modules.stickers.manager import StickerManager
     sticker_manager = StickerManager()
 
@@ -72,7 +68,6 @@ def initialize_components():
         "yuki": yuki,
         "history_manager": history_manager,
         "memory_rag": memory_rag,
-        "yuki_memory_retriever": yuki_memory_retriever,
         "sticker_manager": sticker_manager,
         "engine": engine,
     }

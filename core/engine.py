@@ -40,7 +40,9 @@ class YukiEngine:
         if not content:
             return ""
         clean_content = re.sub(r'\s*FINISHED\s*$', '', content, flags=re.IGNORECASE).strip()
-        return re.sub(r'<布局>.*?</布局>', '', clean_content, flags=re.DOTALL).strip()
+        clean_content = re.sub(r'<布局>.*?</布局>', '', clean_content, flags=re.DOTALL).strip()
+        added_content = clean_content + "| (๑•̀ㅂ•́)و💻"
+        return added_content
 
     @staticmethod
     def _append_session_message(history_dict, chat_id, role, content, **extra):
@@ -99,11 +101,11 @@ class YukiEngine:
                 response_message = await llm_chat_raw(
                     messages=tool_messages,
                     model=cfg.LLM_MODEL,
-                    temperature=0.8,
+                    temperature=1.0,
                     top_p=0.8,
-                    frequency_penalty=0.05,
-                    presence_penalty=0.2,
-                    max_tokens=220,
+                    frequency_penalty=0.5,
+                    presence_penalty=0.3,
+                    max_tokens=520,
                     tools=self.tool_registry.get_tools(),
                     tool_choice="auto",
                 )
@@ -161,7 +163,7 @@ class YukiEngine:
             self.tool_manager.finish_session(str(chat_id))
 
     async def api_reply(self, chat_id: str, combined_text: str, history_dict: dict, mode,
-                        relevant_diaries: list[Any], structured_memory_context=None,
+                        relevant_diaries: list[Any],
                         ice_break: bool = False, debug_snapshot_id: Optional[str] = None) -> str:
         # 总构建发送Deepseek补全的信息
         combined_API_message = await build_chat_context(self.yuki,
@@ -170,7 +172,6 @@ class YukiEngine:
                                                         history_dict,
                                                         mode,
                                                         relevant_diaries,
-                                                        structured_memory_context=structured_memory_context,
                                                         ice_break=ice_break
                                                         )
         if debug_snapshot_id:
@@ -187,7 +188,7 @@ class YukiEngine:
             except Exception as exc:
                 logger.debug(f"[ContextDebug] 记录 LLM messages 失败: {exc}")
 
-        await asyncio.sleep(0.2)
+        # await asyncio.sleep(0.2)
         # 发送对话补全到DeepSeek
         logger.info(f"[Engine] {cfg.ROBOT_NAME.title()} 正在打字...")
         try:
