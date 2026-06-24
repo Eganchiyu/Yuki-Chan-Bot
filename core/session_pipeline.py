@@ -340,7 +340,7 @@ class SessionPipeline:
             combined_text,
             chat_id=chat_id,
             top_k_keywords=dynamic_top_k,
-            n_results=3
+            n_results=8
         )
         logger.info(f"[Pipeline] 检索到 {len(relevant_diaries)} 条相关日记")
         logger.info(f"[Pipeline] 检索完成，耗时 {(time.time() - context['first_time']):.2f}s")

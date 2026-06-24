@@ -692,7 +692,7 @@ class QZoneSocialMonitor:
             if reply:
                 reply = reply.strip().strip('"').strip("'")
                 # 清理可能的格式
-                reply = re.sub(r'<布局>.*?</布局>', '', reply, flags=re.DOTALL).strip()
+                reply = re.sub(r'<layout>.*?</layout>', '', reply, flags=re.DOTALL).strip()
                 return reply[:100]  # 限制长度
         except Exception as e:
             logger.error(f"[QZoneMonitor] LLM 生成回复失败: {e}")

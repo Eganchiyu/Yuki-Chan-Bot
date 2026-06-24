@@ -200,7 +200,7 @@ class MemoryRAG:
             return filtered
         return []
 
-    def search_diaries(self, query_text, chat_id=None, n_results=3, top_k_keywords=5):
+    def search_diaries(self, query_text, chat_id=None, n_results=8, top_k_keywords=5):
         """
         优化版并行双池检索：真正的 I/O 并发 + 数据库下推过滤 + 宽进严出
         """
