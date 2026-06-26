@@ -31,17 +31,41 @@ class MemeProcessor:
     @staticmethod
     def compress_image(image_data, max_size=640, quality=70):
         try:
+            # 1. 优先尝试原生 OpenCV 读取（速度最快）
             encoded = np.frombuffer(image_data, np.uint8)
             img = cv2.imdecode(encoded, cv2.IMREAD_COLOR)
+
+            # 2. 如果 OpenCV 读取失败（常见于 GIF、WebP 等格式），使用 PIL 兜底
             if img is None:
-                logger.warning("无法读取图片")
-                return None
+                try:
+                    from PIL import Image
+                    import io
+
+                    # 加载二进制数据
+                    pil_img = Image.open(io.BytesIO(image_data))
+
+                    # 针对表情包常见情况：如果是动图，强行定位到第一帧
+                    if hasattr(pil_img, 'is_animated') and pil_img.is_animated:
+                        pil_img.seek(0)
+
+                    # 统一转换为 RGB，丢弃 Alpha 通道（避免转 OpenCV 时通道报错）
+                    pil_img = pil_img.convert('RGB')
+
+                    # 将 PIL 的 RGB 阵列转换为 OpenCV 需要的 BGR 阵列
+                    img = cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
+                    logger.debug("OpenCV 读取失败，已通过 PIL 成功解析表情包格式")
+                except Exception as read_err:
+                    logger.error(f"无法读取图片，OpenCV 和 PIL 均解析失败: {read_err}")
+                    return None
+
+            # 后续正常的压缩逻辑
             h, w = img.shape[:2]
             if max(h, w) > max_size:
                 scale = max_size / max(h, w)
                 new_w, new_h = int(w * scale), int(h * scale)
                 img = cv2.resize(img, (new_w, new_h), interpolation=cv2.INTER_AREA)
                 logger.debug(f"尺寸从 {w}x{h} 压缩到 {new_w}x{new_h}")
+
             encode_param = [int(cv2.IMWRITE_JPEG_QUALITY), quality]
             _, buffer = cv2.imencode('.jpg', img, encode_param)
             return base64.b64encode(buffer).decode('utf-8')

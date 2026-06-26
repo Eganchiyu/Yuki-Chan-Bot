@@ -84,7 +84,7 @@ Desktop.ini
 *.backup
 temp_expression.png
 window_list.txt
-
+output/
 # UV 包管理器
 .uv/
 uv.lock

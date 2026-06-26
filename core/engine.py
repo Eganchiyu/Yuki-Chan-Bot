@@ -105,10 +105,10 @@ class YukiEngine:
                 response_message = await llm_chat_raw(
                     messages=tool_messages,
                     model=cfg.LLM_MODEL,
-                    temperature=0.8,
-                    top_p=0.8,
-                    frequency_penalty=0.2,
-                    presence_penalty=0.2,
+                    temperature=1.1,
+                    top_p=0.9,
+                    frequency_penalty=0.5,
+                    presence_penalty=0.4,
                     max_tokens=520,
                     tools=self.tool_registry.get_tools(),
                     tool_choice="auto",
@@ -365,13 +365,13 @@ class YukiEngine:
 
         # E. 主人依赖修正 (中等水准 +15) - 相比之前的 +25 有所克制
         if is_master:
-            reply_score += 15
+            reply_score += 20
             logger.debug(f"[Decision] 检测到哥哥大人发言，触发中等依赖修正 +15")
 
         # ==========================================
         # 5. 最终决断
         # ==========================================
-        threshold = 60.0  # 及格线可以根据实测微调
+        threshold = 55.0  # 及格线可以根据实测微调
         will_reply = reply_score >= threshold
 
         logger.info(
@@ -379,6 +379,106 @@ class YukiEngine:
             f"主人:{is_master} | 总分:{reply_score:.1f}/{threshold} -> 发言:{will_reply}"
         )
         return will_reply
+
+    # ==================================================================================
+    # 【待启用】非线性精力融合版 decide_to_reply
+    # 设计思路：
+    #   - 精力值为基底，非线性幂函数 f(e) = 100×(e/100)^0.7
+    #   - 精力=0 时得分=0，精力=100 时得分=100，全程平滑连续
+    #   - 其他项（参与度、主人、疑问句）作为乘法修正系数，不是加法
+    #   - 叫名字时强制通过 + engagement=100 + 精力boost
+    #   - 阈值=50
+    #
+    # 配套改动（brain.py）：
+    #   - self.engagement = {}                          # 新增参与度状态
+    #   - update_energy: 参与度>40时精力恢复×1.5
+    #   - consume_energy: 参与度>60时消耗减半
+    #   - update_desire_to_reply: 精力=0时欲望归零
+    #   - decay_engagement: 每轮衰减×0.7，<5时清除
+    #
+    # 配套改动（session_pipeline.py finalize_conversation）：
+    #   - self.yuki.decay_engagement(chat_id)
+    #
+    # 阈值选择参考（α=0.7）：
+    #   阈值=40: 无加成需精力>27, 被叫后>22, 全加成>16 (太爱说话)
+    #   阈值=50: 无加成需精力>37, 被叫后>30, 全加成>22 (推荐)
+    #   阈值=55: 无加成需精力>43, 被叫后>35, 全加成>25 (平衡)
+    #   阈值=60: 无加成需精力>48, 被叫后>40, 全加成>28 (偏安静)
+    # ==================================================================================
+    #
+    # async def decide_to_reply(self, history, message_objs, chat_id, force_reply=False, rag_interest=0.0):
+    #     """
+    #     [非线性精力融合版]
+    #     score = f(energy) × correction(engagement, question, master)
+    #     f(e) = 100 × (e/100)^0.7
+    #     """
+    #     cid = str(chat_id)
+    #
+    #     # --- 1. 基础属性更新 ---
+    #     current_e = self.yuki.update_energy(chat_id)
+    #     self.yuki.update_desire_to_reply(chat_id)
+    #
+    #     # --- 2. 消息特征解析 ---
+    #     human_calling = False
+    #     bot_calling_only = True
+    #     question_mark = False
+    #     is_master = False
+    #
+    #     master_identifiers = [cfg.MASTER_NAME, "池宇健"]
+    #     master_qq_str = str(cfg.TARGET_QQ)
+    #
+    #     for m in message_objs:
+    #         raw_text = m.get("raw_text", "").lower()
+    #         if not m.get("is_bot"):
+    #             bot_calling_only = False
+    #         if any(kw in raw_text for kw in cfg.keywords):
+    #             if not m.get("is_bot"):
+    #                 human_calling = True
+    #         if raw_text.rstrip().endswith(('?', '？')):
+    #             question_mark = True
+    #         if any(mid in raw_text for mid in master_identifiers) or master_qq_str in raw_text or m.get("user_id") == cfg.TARGET_QQ:
+    #             is_master = True
+    #
+    #     # --- 3. 硬性规则：叫名字强制通过 ---
+    #     if force_reply or human_calling:
+    #         if human_calling:
+    #             self.yuki.engagement[cid] = 100.0
+    #             if cid in self.yuki.energy:
+    #                 boost = min(15.0, cfg.MAX_ENERGY - self.yuki.energy[cid])
+    #                 self.yuki.energy[cid] += boost
+    #                 logger.info(f"[Decision] 被叫到名字，精力值 +{boost:.1f} -> {self.yuki.energy[cid]:.1f}")
+    #         logger.info(f"[Decision] 触发强制回复或直接召唤，立即响应")
+    #         return True
+    #
+    #     if bot_calling_only and any(any(kw in m["raw_text"].lower() for kw in cfg.keywords) for m in message_objs):
+    #         self.yuki.desire_to_start_topic[cid] *= 0.5
+    #         logger.info(f"[Decision] 防套娃机制触发：纯 BOT 召唤，静默")
+    #         return False
+    #
+    #     # --- 4. 非线性融合积分 ---
+    #     energy_score = 100.0 * (current_e / 100.0) ** 0.7
+    #
+    #     engagement = self.yuki.engagement.get(cid, 0.0)
+    #     correction = 1.0
+    #     correction += 0.15 * (engagement / 100.0)
+    #     correction += 0.15 * float(question_mark)
+    #     correction += 0.15 * float(is_master)
+    #
+    #     if is_master:
+    #         self.yuki.engagement[cid] = max(engagement, 60.0)
+    #
+    #     reply_score = energy_score * correction
+    #
+    #     # --- 5. 阈值判定 ---
+    #     threshold = 50.0
+    #     will_reply = reply_score >= threshold
+    #
+    #     logger.info(
+    #         f"[Decision] 精力:{current_e:.1f} 基底:{energy_score:.1f} "
+    #         f"参与:{engagement:.1f} 主人:{is_master} 问:{question_mark} "
+    #         f"修正:{correction:.2f} | 总分:{reply_score:.1f}/{threshold} -> 发言:{will_reply}"
+    #     )
+    #     return will_reply
     async def do_summarize(self, chat_id, history):
         logger.info(f"[Engine] [{chat_id}] 记忆过长，{cfg.ROBOT_NAME.title()} 正在写日记...")
         dialogue_msgs = [msg for msg in history if msg["role"] != "system"]

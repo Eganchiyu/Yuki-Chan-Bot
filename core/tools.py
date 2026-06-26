@@ -540,6 +540,127 @@ async def publish_qzone_mood_tool(context, content, visible=1, image_paths=None)
     )
 
 
+async def generate_image_tool(context, prompt, size="1024*1024"):
+    """调用图像生成模型生成图片，保存到 output 目录并返回路径。"""
+    if not prompt:
+        return ToolResult(success=False, content="缺少图像描述", error="missing_prompt")
+
+    api_key = cfg.IMAGE_GEN_API_KEY
+    if not api_key:
+        return ToolResult(success=False, content="未配置 image_gen_api_key", error="missing_api_key")
+
+    base_url = cfg.IMAGE_GEN_URL
+    model = cfg.IMAGE_GEN_MODEL
+    # 兼容 "1024x1024" → "1024*1024"
+    size = size.replace("x", "*").replace("X", "*")
+
+    # wan 系列走 DashScope 原生 API，其他走 OpenAI 兼容接口
+    use_native = model.startswith("wan")
+
+    if use_native:
+        import re
+        host_match = re.match(r'(https://[^/]+)/compatible-mode/v1', base_url)
+        if host_match:
+            api_endpoint = f"{host_match.group(1)}/api/v1/services/aigc/multimodal-generation/generation"
+        else:
+            api_endpoint = f"{base_url.rstrip('/')}/api/v1/services/aigc/multimodal-generation/generation"
+
+        payload = {
+            "model": model,
+            "input": {
+                "messages": [
+                    {"role": "user", "content": [{"text": prompt}]}
+                ]
+            },
+            "parameters": {"size": size, "n": 1},
+        }
+
+        async def _do_generate():
+            timeout = aiohttp.ClientTimeout(total=120)
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.post(
+                    api_endpoint,
+                    headers={
+                        "Authorization": f"Bearer {api_key}",
+                        "Content-Type": "application/json",
+                    },
+                    json=payload,
+                ) as resp:
+                    data = await resp.json(content_type=None)
+                    if resp.status != 200:
+                        raise Exception(f"API 返回 {resp.status}: {data}")
+                    return data
+
+        try:
+            data = await _do_generate()
+        except Exception as e:
+            logger.error(f"[ImageGen] 生成失败: {e}")
+            return ToolResult(success=False, content=f"图像生成失败: {str(e)}", error=str(e))
+
+        try:
+            image_url = data["output"]["choices"][0]["message"]["content"][0]["image"]
+        except (KeyError, IndexError, TypeError) as e:
+            logger.error(f"[ImageGen] 解析返回数据失败: {data}")
+            return ToolResult(success=False, content="模型返回数据格式异常", error=str(e))
+
+        # 下载图片到本地
+        output_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'output')
+        os.makedirs(output_dir, exist_ok=True)
+        filename = datetime.datetime.now().strftime('%Y%m%d_%H%M%S') + '.png'
+        filepath = os.path.join(output_dir, filename)
+
+        try:
+            timeout = aiohttp.ClientTimeout(total=60)
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.get(image_url) as resp:
+                    if resp.status != 200:
+                        raise Exception(f"下载图片失败: HTTP {resp.status}")
+                    img_bytes = await resp.read()
+                    with open(filepath, 'wb') as f:
+                        f.write(img_bytes)
+        except Exception as e:
+            logger.error(f"[ImageGen] 下载图片失败: {e}")
+            return ToolResult(success=False, content=f"图片下载失败: {str(e)}", error=str(e))
+
+        logger.info(f"[ImageGen] 图片已保存: {filepath} ({len(img_bytes)} bytes)")
+
+    else:
+        # OpenAI 兼容接口（如 gpt-image 等）
+        def _do_generate():
+            from openai import OpenAI
+            client = OpenAI(api_key=api_key, base_url=base_url)
+            return client.images.generate(
+                model=model, prompt=prompt, n=1,
+                size=size, response_format="b64_json",
+            )
+
+        try:
+            response = await asyncio.to_thread(_do_generate)
+        except Exception as e:
+            logger.error(f"[ImageGen] 生成失败: {e}")
+            return ToolResult(success=False, content=f"图像生成失败: {str(e)}", error=str(e))
+
+        image_data = response.data[0]
+        if not (hasattr(image_data, 'b64_json') and image_data.b64_json):
+            return ToolResult(success=False, content="模型未返回图像数据", error="no_image_data")
+
+        import base64
+        output_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'output')
+        os.makedirs(output_dir, exist_ok=True)
+        filename = datetime.datetime.now().strftime('%Y%m%d_%H%M%S') + '.png'
+        filepath = os.path.join(output_dir, filename)
+        with open(filepath, 'wb') as f:
+            f.write(base64.b64decode(image_data.b64_json))
+
+        logger.info(f"[ImageGen] 图片已保存: {filepath}")
+
+    return ToolResult(
+        success=True,
+        content=f"图像已生成并保存: {filepath}",
+        data={"file_path": filepath, "prompt": prompt},
+    )
+
+
 TOOL_SPECS = [
     ToolSpec(
         name="search_diary",
@@ -643,6 +764,25 @@ TOOL_SPECS = [
             "required": ["content"],
         },
         handler=publish_qzone_mood_tool,
+    ),
+    ToolSpec(
+        name="generate_image",
+        description=(
+            "根据文字描述生成图片。生成后保存到本地 output 目录，返回文件路径。"
+            "生成完后必须用 send_qq_file 工具把图片发出来。"
+            "重要：prompt 必须完整详细，包含主体、场景、风格、光影、构图等细节，"
+            "融入 Yuki 的二次元少女特色（如猫耳、水手服、星空瞳等），"
+            "确保出图质量。英文 prompt 效果更好。"
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "prompt": {"type": "string", "description": "图像描述（英文效果更好）"},
+                "size": {"type": "string", "description": "图片尺寸，如 1024*1024、512*512（wan模型用*分隔）", "default": "1024*1024"},
+            },
+            "required": ["prompt"],
+        },
+        handler=generate_image_tool,
     ),
 ]
 
