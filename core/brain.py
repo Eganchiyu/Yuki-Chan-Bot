@@ -6,7 +6,7 @@ from collections import defaultdict
 from concurrent.futures.thread import ThreadPoolExecutor
 
 from config import cfg
-from core.prompts import get_yuki_setting_private, get_yuki_setting_group
+from core.prompts import get_yuki_setting_private, get_yuki_setting_group, get_yuki_setting_master_private
 from utils.logger import get_logger
 
 logger = get_logger("brain")
@@ -142,6 +142,8 @@ class YukiState:
 
     @staticmethod
     def get_setting(mode):
+        if mode == "master_private":
+            return get_yuki_setting_master_private()
         return get_yuki_setting_private() if mode == "private" else get_yuki_setting_group()
 
     def update_energy(self, chat_id):

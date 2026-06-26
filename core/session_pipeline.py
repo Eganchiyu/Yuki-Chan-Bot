@@ -298,6 +298,11 @@ class SessionPipeline:
         if context.get("ice_break"):
             return context
 
+        # 主人私聊模式：永远回复，跳过决策
+        if context["mode"] == "master_private":
+            self._update_snapshot(context, should_reply=True)
+            return context
+
         chat_id = context["chat_id"]
         mode = context["mode"]
         history_dict = context["history_dict"]
@@ -378,9 +383,12 @@ class SessionPipeline:
         answer_text = context["answer_text"]
         voice = context["voice"]
 
+        # master_private 使用私聊 API 发送
+        send_mode = "private" if mode == "master_private" else mode
+
         if mode == "group":
             self.yuki.consume_energy(chat_id)
-        logger.info(f"[Pipeline] {cfg.ROBOT_NAME.title()} 正在发送消息 (精力: {self.yuki.energy[chat_id]:.1f})")
+        logger.info(f"[Pipeline] {cfg.ROBOT_NAME.title()} 正在发送消息 (精力: {self.yuki.energy.get(chat_id, 0):.1f})")
 
         if not voice:
             parts = re.split(r"(\[CQ:image,[^\]]*?sub_type=1\])", answer_text, flags=re.IGNORECASE)
@@ -388,13 +396,13 @@ class SessionPipeline:
                 part = part.strip()
                 if not part:
                     continue
-                await self.sender.send(chat_id, part, mode=mode)
+                await self.sender.send(chat_id, part, mode=send_mode)
                 if part.startswith("[CQ:image"):
                     await asyncio.sleep(3.0)
                 else:
                     await asyncio.sleep(1.0)
         else:
-            await self.sender.send(chat_id, voice, mode=mode)
+            await self.sender.send(chat_id, voice, mode=send_mode)
 
         logger.info(f"[Pipeline] 发送完成，内容: {answer_text[:80]}")
         return context

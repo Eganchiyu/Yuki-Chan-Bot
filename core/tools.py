@@ -185,12 +185,53 @@ async def delegate_to_maid_tool(context, goal, run_inline=False):
     return ToolResult(success=True, content="已交给小女仆后台处理。")
 
 
-async def send_master_private_tool(context, message):
-    """向主人私聊发送私密信息。"""
+async def send_master_private_tool(context, message, reason="重要信息"):
+    """向主人私聊发送私密信息，同时保存群聊上下文快照供后续召回。"""
     if not message:
         return ToolResult(success=False, content="缺少消息内容", error="missing_message")
+
+    # 保存上下文快照
+    try:
+        from core.private_context import save_context_snapshot
+        # 从当前群聊历史中提取最近消息
+        cid = str(context.chat_id)
+        recent_msgs = context.history_dict.get(cid, [])[-10:]
+        # 只保留 user/assistant 角色的消息，精简内容
+        slim_msgs = []
+        for msg in recent_msgs:
+            if msg.get("role") in ("user", "assistant"):
+                slim_msgs.append({
+                    "role": msg["role"],
+                    "content": msg.get("content", "")[:200],
+                    "time": msg.get("time", ""),
+                })
+        save_context_snapshot(
+            source_chat_id=cid,
+            message=message,
+            reason=reason,
+            recent_messages=slim_msgs,
+        )
+        logger.info(f"[Tool] 已保存私聊上下文快照，来源群聊 {cid}")
+    except Exception as e:
+        logger.warning(f"[Tool] 保存上下文快照失败（不影响发送）: {e}")
+
     await context.sender.send(cfg.TARGET_QQ, message, mode="private")
-    return ToolResult(success=True, content="已私聊发送给主人。")
+    return ToolResult(success=True, content="已私聊发送给主人，并保存了上下文快照。")
+
+
+async def recall_private_context_tool(context, limit=5, source_chat_id=None):
+    """召回最近发给主人的群聊上下文快照，了解群里发生了什么重要事情。"""
+    try:
+        from core.private_context import recall_context, format_context_for_prompt
+        snapshots = recall_context(limit=limit, source_chat_id=source_chat_id)
+        if not snapshots:
+            return ToolResult(success=True, content="暂无群聊上下文快照，还没有从群里发过私信通知。")
+
+        formatted = format_context_for_prompt(snapshots)
+        return ToolResult(success=True, content=formatted, data={"count": len(snapshots)})
+    except Exception as e:
+        logger.error(f"[Tool] 召回上下文失败: {e}")
+        return ToolResult(success=False, content=f"召回上下文失败: {str(e)}", error=str(e))
 
 
 async def amap_search_tool(context, keywords, search_type="text", location=None, address=None, city=None, radius=3000, page_size=10):
@@ -689,13 +730,28 @@ TOOL_SPECS = [
     ),
     ToolSpec(
         name="send_master_private",
-        description="向主人私聊发送私密信息。",
+        description="向主人私聊发送私密信息。发送时会自动保存群聊上下文快照，方便主人后续了解群里发生了什么。用于重要信息通知、有人提到主人等场景。",
         parameters={
             "type": "object",
-            "properties": {"message": {"type": "string"}},
+            "properties": {
+                "message": {"type": "string", "description": "要发送给主人的消息内容"},
+                "reason": {"type": "string", "description": "触发原因，如'有人提到主人'、'重要通知'等", "default": "重要信息"},
+            },
             "required": ["message"],
         },
         handler=send_master_private_tool,
+    ),
+    ToolSpec(
+        name="recall_private_context",
+        description="召回最近发给主人的群聊上下文快照。当主人在私聊中问起群里的事情、或者你想了解之前通知过主人什么时使用。",
+        parameters={
+            "type": "object",
+            "properties": {
+                "limit": {"type": "integer", "description": "返回的快照数量上限，默认5", "default": 5},
+                "source_chat_id": {"type": "string", "description": "可选，只召回指定群聊的快照"},
+            },
+        },
+        handler=recall_private_context_tool,
     ),
     ToolSpec(
         name="send_qq_file",
