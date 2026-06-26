@@ -176,7 +176,10 @@ class SessionPipeline:
             logger.info(f"[Pipeline] {chat_id} 跳过防抖，注入破冰上下文")
             return context
 
-        if context["debounce_flag"]:
+        # 主人私聊：跳过防抖，直接处理
+        if mode == "master_private":
+            pass
+        elif context["debounce_flag"]:
             debounce_time = self.debounce_time_by_chat.pop(str(chat_id), cfg.DEBOUNCE_TIME)
             await asyncio.sleep(debounce_time)
         else:

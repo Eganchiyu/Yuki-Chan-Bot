@@ -96,7 +96,7 @@ class YukiEngine:
             history_dict=history_dict,
             combined_text=combined_text,
             runtime=ToolRuntime(sender=self.sender, yuki_state=self.yuki, image_store=getattr(self, "image_store", None)),
-            metadata={"process_callback": self.process_callback},
+            metadata={"process_callback": self.process_callback, "history_manager": self.history},
         )
         self.tool_manager.start_session(str(chat_id), combined_text)
         tool_messages = list(messages)

@@ -193,10 +193,8 @@ async def send_master_private_tool(context, message, reason="重要信息"):
     # 保存上下文快照
     try:
         from core.private_context import save_context_snapshot
-        # 从当前群聊历史中提取最近消息
         cid = str(context.chat_id)
         recent_msgs = context.history_dict.get(cid, [])[-10:]
-        # 只保留 user/assistant 角色的消息，精简内容
         slim_msgs = []
         for msg in recent_msgs:
             if msg.get("role") in ("user", "assistant"):
@@ -215,7 +213,31 @@ async def send_master_private_tool(context, message, reason="重要信息"):
     except Exception as e:
         logger.warning(f"[Tool] 保存上下文快照失败（不影响发送）: {e}")
 
+    # 发送私信（使用私聊 API）
     await context.sender.send(cfg.TARGET_QQ, message, mode="private")
+
+    # 把这条消息同步写入主人私聊的 chat_history
+    try:
+        import datetime
+        history_manager = context.metadata.get("history_manager")
+        if history_manager:
+            master_cid = str(cfg.TARGET_QQ)
+            history_dict = history_manager.load()
+            if master_cid not in history_dict:
+                history_dict[master_cid] = []
+            current_time = datetime.datetime.now().strftime("%Y年%m月%d日%H:%M")
+            history_dict[master_cid].append({
+                "role": "assistant",
+                "content": f"[群聊通知] {message}",
+                "time": current_time,
+                "source_chat_id": str(context.chat_id),
+                "reason": reason,
+            })
+            history_manager.save(history_dict)
+            logger.info(f"[Tool] 已同步消息到主人私聊历史 ({master_cid})")
+    except Exception as e:
+        logger.warning(f"[Tool] 同步私聊历史失败（不影响发送）: {e}")
+
     return ToolResult(success=True, content="已私聊发送给主人，并保存了上下文快照。")
 
 
