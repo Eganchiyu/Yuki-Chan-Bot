@@ -100,6 +100,10 @@ async def napcat_listen(mode: str):
                 if mode == "private" and msg_type == "private" and user_id == cfg.TARGET_QQ:
                     await feed_message(user_id, raw_msg, mode)
 
+                # 群聊模式下，同时接收主人的私聊消息
+                elif mode == "group" and msg_type == "private" and user_id == cfg.TARGET_QQ:
+                    await feed_message(user_id, raw_msg, "master_private")
+
                 elif mode == "group" and msg_type == "group":
                     group_id = data.get("group_id")
                     gid_str = str(group_id)
