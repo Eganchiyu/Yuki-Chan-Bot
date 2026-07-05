@@ -568,6 +568,11 @@ class Config:
         return self.connection.max_retries
 
     @property
+    def SELF_QQ(self) -> int:
+        """机器人 QQ 号"""
+        return int(self.connection.qq)
+
+    @property
     def TARGET_QQ(self) -> int:
         """主人 QQ 号"""
         return int(self.target.qq)

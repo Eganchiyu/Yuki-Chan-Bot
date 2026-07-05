@@ -25,18 +25,26 @@ class SessionPipeline:
         self.engine = components["engine"]
         self.image_store = components.get("image_store")
         self.group_active_state = group_active_state
-        self.debounce_time_by_chat = {}
+
+        # 新防抖机制：按 chat_id 保存等待任务与上次处理完成时间
+        self._debounce_tasks: dict = {}          # chat_id -> asyncio.Task (防抖等待任务)
+        self.last_process_end_time: dict = {}    # chat_id -> 上次处理完成时间戳（秒）
+        self._chat_mode: dict = {}               # chat_id -> mode (用于 wake_quickly 获取模式)
+
+        self.last_msg_time = {}
+
         self.stages = [
             self.prepare_message_batch,
             self.normalize_incoming_content,
             self.prepare_chat_context,
-            self.retrieve_memories,        # 先检索 RAG，为激素系统提供兴趣度
-            self.decide_reply_action,      # 再决定是否回复，融合 rag_interest
+            self.retrieve_memories,
+            self.decide_reply_action,
             self.generate_reply,
             self.send_reply,
             self.finalize_conversation,
         ]
 
+    # ------------------- Debug 相关 (未做改动) -------------------
     def _mark_stage(self, context, stage_name, status="done", error=None):
         """轻量更新 Debug snapshot，不影响主管道。"""
         snapshot_id = context.get("debug_snapshot_id")
@@ -73,10 +81,7 @@ class SessionPipeline:
         except Exception as exc:
             logger.debug(f"[ContextDebug] 更新快照失败: {exc}")
 
-    def wake_quickly(self, chat_id):
-        """被直接点名时缩短当前群聊防抖时间。"""
-        self.debounce_time_by_chat[str(chat_id)] = 0.1
-
+    # ------------------- 新的防抖入口 -------------------
     async def enqueue_message(
         self,
         chat_id,
@@ -86,23 +91,63 @@ class SessionPipeline:
         force_reply=None,
         ice_break=False,
     ):
-        """统一写入会话缓冲，并确保同一 chat_id 只有一个管道任务。"""
+        """统一写入会话缓冲，并基于任务取消实现外部防抖。"""
         cid = str(chat_id)
+
+        # 1. 写入消息缓冲
         if message_obj:
             self.yuki.message_buffer.setdefault(cid, [])
             self.yuki.message_buffer[cid].append(message_obj)
+            self.last_msg_time[cid] = time.time()
 
-        current_task = self.yuki.buffer_tasks.get(cid)
-        if current_task and not current_task.done():
-            logger.info(f"[Pipeline] {cid} 管道运行中，新事件已入队等待合并处理。")
-            return current_task
+        # 2. 记录模式（用于 wake_quickly 等场景）
+        self._chat_mode[cid] = mode
 
-        task = asyncio.create_task(
-            self.process_loop(cid, mode, debounce_flag, force_reply, ice_break)
-        )
-        self.yuki.buffer_tasks[cid] = task
+        # 3. 取消上一个正在等待的防抖任务（有的话）
+        if cid in self._debounce_tasks:
+            self._debounce_tasks[cid].cancel()
+            self._debounce_tasks.pop(cid)
+
+        # 4. 决定本次等待时间
+        if not debounce_flag:
+            wait_time = 0.0
+        else:
+            # 冷启动：距离上次处理完成超过长防抖时间，则使用短防抖
+            last_end = self.last_process_end_time.get(cid, 0)
+            if time.time() - last_end > cfg.DEBOUNCE_TIME:
+                wait_time = 0.3
+            else:
+                wait_time = cfg.DEBOUNCE_TIME
+
+        # 5. 创建新的防抖任务：等待后启动 process_loop
+        async def _delayed_process():
+            await asyncio.sleep(wait_time)
+            # 安全删除自身记录
+            self._debounce_tasks.pop(cid, None)
+            # 启动真正的管道处理（会持续消费直到缓冲空）
+            await self.process_loop(cid, mode, debounce_flag=False, force_reply=force_reply, ice_break=ice_break)
+
+        task = asyncio.create_task(_delayed_process())
+        self._debounce_tasks[cid] = task
         return task
 
+    def wake_quickly(self, chat_id):
+        """被直接点名时立即以极短延迟启动处理（取消防抖，重新排程）"""
+        cid = str(chat_id)
+        if cid in self._debounce_tasks:
+            self._debounce_tasks[cid].cancel()
+
+        mode = self._chat_mode.get(cid, "group")  # 从之前记录的 mode 获取，默认群聊
+
+        async def _fast_start():
+            await asyncio.sleep(0.1)
+            self._debounce_tasks.pop(cid, None)
+            await self.process_loop(cid, mode, debounce_flag=False, force_reply=None, ice_break=False)
+
+        task = asyncio.create_task(_fast_start())
+        self._debounce_tasks[cid] = task
+
+    # ------------------- 管道主循环（无睡眠） -------------------
     async def process_loop(self, chat_id, mode, debounce_flag=True, force_reply=None, ice_break=False):
         """持续消费同一 chat_id 的缓冲消息，直到当前缓冲为空。"""
         cid = str(chat_id)
@@ -145,6 +190,7 @@ class SessionPipeline:
             })
         except Exception as exc:
             logger.debug(f"[ContextDebug] 创建快照失败: {exc}")
+
         for stage in self.stages:
             stage_name = stage.__name__
             context["debug_stage_started_at"] = time.time()
@@ -160,6 +206,7 @@ class SessionPipeline:
                 return context
         return context
 
+    # ------------------- 阶段一：准备消息批次（无睡眠） -------------------
     async def prepare_message_batch(self, context):
         """防抖、静音拦截、读取消息缓冲。"""
         chat_id = context["chat_id"]
@@ -176,15 +223,11 @@ class SessionPipeline:
             logger.info(f"[Pipeline] {chat_id} 跳过防抖，注入破冰上下文")
             return context
 
-        # 主人私聊：跳过防抖，直接处理
-        if mode == "master_private":
-            pass
-        elif context["debounce_flag"]:
-            debounce_time = self.debounce_time_by_chat.pop(str(chat_id), cfg.DEBOUNCE_TIME)
-            await asyncio.sleep(debounce_time)
-        else:
-            await asyncio.sleep(0.5)
+        # 主人私聊：无需任何等待，直接读取缓冲
+        # 群聊/普通私聊：防抖已在外部 enqueue_message 完成，这里直接取缓冲即可
+        # 因此完全不需要任何 sleep
 
+        # 静音检查
         if mode == "group" and not self.group_active_state.get(str(chat_id), True):
             logger.info(f"[Pipeline] {chat_id} 群已静音，丢弃消息并退出")
             self.yuki.pop_buffer(chat_id)
@@ -205,6 +248,7 @@ class SessionPipeline:
         await self.yuki.boost_activity(chat_id)
         return context
 
+    # ------------------- 后续阶段（除 finalize 记录时间外无改动） -------------------
     async def normalize_incoming_content(self, context):
         """合并消息、理解图片、解析 CQ 码，生成用户输入文本。"""
         # 破冰模式已在 prepare_message_batch 中设置 combined_text，直接跳过
@@ -214,13 +258,13 @@ class SessionPipeline:
         chat_id = context["chat_id"]
         message_objs = context["message_objs"]
 
-        # === 新增：更新用户昵称到QQ号的映射 ===
+        # 更新用户昵称到QQ号的映射
         for m in message_objs:
             if m.get("user_id") and m.get("name"):
                 self.yuki.user_mapping.update(chat_id, m["name"], m["user_id"])
         # ========================================
 
-        # 合并同一用户连续消息，去掉重复的 "【"xxx"】说:" 前缀
+        # 合并同一用户连续消息，去掉重复前缀
         merged_contents = []
         prev_uid = None
         for m in message_objs:
@@ -235,19 +279,25 @@ class SessionPipeline:
 
         modified_text, images_info = self.meme_processor.extract_urls_from_text(combined_text)
         if images_info:
-            understood_contents = []
-            for img in images_info:
+            # 并发执行所有图片理解
+            async def understand_image(img):
                 url = img["url"]
                 is_meme = img["is_meme"]
                 result = await self.meme_processor.understand_from_url(url, is_meme=is_meme)
+                return img, result
 
+            tasks = [understand_image(img) for img in images_info]
+            results = await asyncio.gather(*tasks)
+
+            understood_contents = []
+            for img, result in results:
+                is_meme = img["is_meme"]
                 desc = result.get("description", "未知图片/表情") if isinstance(result, dict) else result
                 idx = result.get("index") if isinstance(result, dict) else None
                 idx_tag = f"[img:{idx}]" if idx else ""
 
                 if is_meme and desc:
                     understood_contents.append(f"[表情:{desc}]{idx_tag}")
-                    logger.debug(f"[Pipeline_meme]收到[表情:{desc}]{idx_tag}")
                 elif not is_meme and desc:
                     understood_contents.append(f"[图片:{desc}]{idx_tag}")
                     logger.debug(f"[Pipeline_meme]收到[图片:{desc}]{idx_tag}")
@@ -333,7 +383,6 @@ class SessionPipeline:
 
     async def retrieve_memories(self, context):
         """根据输入长度动态检索相关日记。"""
-        # RAG 关闭时跳过检索，直接使用上下文
         if not cfg.RAG_ENABLED:
             logger.info(f"[Pipeline] RAG 已关闭，跳过日记检索，直接使用上下文")
             context["relevant_diaries"] = []
@@ -354,10 +403,7 @@ class SessionPipeline:
         logger.info(f"[Pipeline] 检索完成，耗时 {(time.time() - context['first_time']):.2f}s")
 
         context["relevant_diaries"] = relevant_diaries
-        self._update_snapshot(
-            context,
-            relevant_diaries=relevant_diaries,
-        )
+        self._update_snapshot(context, relevant_diaries=relevant_diaries)
         return context
 
     async def generate_reply(self, context):
@@ -426,25 +472,38 @@ class SessionPipeline:
         self.history_manager.save(history_dict)
         logger.info("[Pipeline] 上下文保存完成")
 
-        # === 新增：递减用户映射表 TTL ===
-        self.yuki.user_mapping.tick(chat_id)
-        # =================================
+        # 记录本次处理完成时间，用于冷启动判断
+        self.last_process_end_time[chat_id] = time.time()
 
-        # === 新增：递增图片索引轮次，清理过期图片 ===
+        # 递减用户映射表 TTL
+        self.yuki.user_mapping.tick(chat_id)
+
+        # 递增图片索引轮次，清理过期图片
         if self.image_store:
             self.image_store.tick()
-        # ============================================
 
         if len(history_dict[chat_id]) > cfg.DIARY_MAX_LENGTH:
-            summarized_list = await self.engine.do_summarize(chat_id, history_dict[chat_id])
-            history_dict[chat_id] = summarized_list
+            history_snapshot = history_dict[chat_id].copy()
+            history_dict[chat_id] = [history_dict[chat_id][0]]  # 保留系统提示词
             self.history_manager.save(history_dict)
-            logger.info(f"[Pipeline] [{chat_id}] 日记写入完成，历史已同步")
 
-        # 破冰模式：递增失败计数（下次收到非 bot 消息时由 feed_message 重置）
+            asyncio.create_task(self._background_summarize(chat_id, history_snapshot))
+
+        # 破冰模式：递增失败计数
         if context.get("ice_break"):
             async with self.yuki.lock:
                 self.yuki.ice_break_fail_count[chat_id] = self.yuki.ice_break_fail_count.get(chat_id, 0) + 1
             logger.info(f"[Pipeline] {chat_id} 破冰计数递增至 {self.yuki.ice_break_fail_count[chat_id]}")
 
         return context
+
+    async def _background_summarize(self, chat_id, history_snapshot):
+        """后台处理摘要，不阻塞主流程。"""
+        try:
+            summarized_list = await self.engine.do_summarize(chat_id, history_snapshot)
+            history_dict = self.history_manager.load()
+            history_dict[chat_id] = summarized_list
+            self.history_manager.save(history_dict)
+            logger.info(f"[Pipeline] [{chat_id}] 日记写入完成，历史已同步")
+        except Exception as e:
+            logger.error(f"[Pipeline] [{chat_id}] 后台摘要失败: {e}")
