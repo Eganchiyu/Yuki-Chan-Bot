@@ -10,9 +10,20 @@
 ## [未发布]
 
 ### 新增
+- 新增主人私聊双模系统（`master_private` 模式）：群聊运行时自动接受主人私聊消息，维护独立的私聊上下文，使用专属个人助手 prompt，必回、无防抖、带完整工具链
+- 新增 `core/private_context.py` 私聊上下文管理器：支持保存群聊上下文快照到 `data/private_context.json`，最多保留 50 条，支持按群聊过滤召回
+- 新增 `recall_private_context` 工具：主人私聊时可召回最近的群聊上下文快照，了解群里发生了什么
+- 增强 `send_master_private` 工具：新增 `reason` 参数，发送私信时自动保存群聊上下文快照，消息同步写入主人私聊的 `chat_history.json`
+- 新增 `get_yuki_setting_master_private()` 主人私聊专用 prompt，身份为专属小助手而非代管模式
 - 新增 `config.py` 中 `StructuredMemoryConfig` 配置组，支持通过 `config.yaml` 控制结构化记忆开关和召回数量参数（`enabled`、`max_profiles`、`max_facts`、`max_summaries`），默认关闭
 
 ### 变更
+- `napcat_listen()` 支持群聊模式下同时接收主人私聊消息，路由为 `master_private` 模式
+- `SessionPipeline.decide_reply_action()` 对 `master_private` 模式跳过精力决策，强制回复
+- `SessionPipeline.prepare_message_batch()` 对 `master_private` 模式跳过防抖，立即处理
+- `SessionPipeline.send_reply()` 和 `YukiEngine._send_tool_thought()` 对 `master_private` 模式使用私聊 API（`send_private_msg`）发送
+- `sync_system_prompts()` 对主人 QQ 号的 chat_id 注入 `master_private` prompt 而非代管 prompt
+- `_chat_with_tools()` 将 `history_manager` 传入 ToolContext metadata，供工具写入跨会话历史
 - `YukiMemoryRetriever` 改为从 `cfg.structured_memory` 读取开关和召回数量，移除 `enabled` 参数硬编码
 - `SessionPipeline.retrieve_memories()` 移除重复的 `top_k` 硬编码，统一由 retriever 从配置读取
 - 新增 `modules/debug/context_snapshot.py`、`modules/debug/webui_server.py` 和 `scripts/debug_tools/start_context_debug_webui.py`，提供本地只读 Context Debug WebUI、快照 API、自动刷新页面、上下文复制/导出与敏感字段脱敏
