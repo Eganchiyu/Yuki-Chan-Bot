@@ -88,3 +88,7 @@ output/
 # UV 包管理器
 .uv/
 uv.lock
+
+#其他
+
+yuki.bat
