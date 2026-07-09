@@ -88,15 +88,20 @@ class YukiEngine:
         logger.info(f"[ToolChain] 实时发送阶段性文本 chat_id={chat_id}: {clean_content}")
         return clean_content
 
-    async def _chat_with_tools(self, chat_id, combined_text, history_dict, mode, messages):
+    async def _chat_with_tools(self, chat_id, combined_text, history_dict, mode, messages, message_objs=None):
         """执行支持多轮工具调用的 LLM 对话。"""
         context = ToolContext(
             chat_id=str(chat_id),
             mode=mode,
             history_dict=history_dict,
             combined_text=combined_text,
-            runtime=ToolRuntime(sender=self.sender, yuki_state=self.yuki, image_store=getattr(self, "image_store", None)),
-            metadata={"process_callback": self.process_callback, "history_manager": self.history},
+            runtime=ToolRuntime(sender=self.sender, yuki_state=self.yuki,
+                                image_store=getattr(self, "image_store", None)),
+            metadata={
+                "process_callback": self.process_callback,
+                "history_manager": self.history,
+                "message_objs": message_objs or [],
+            },
         )
         self.tool_manager.start_session(str(chat_id), combined_text)
         tool_messages = list(messages)
@@ -171,8 +176,9 @@ class YukiEngine:
 
     async def api_reply(self, chat_id: str, combined_text: str, history_dict: dict, mode,
                         relevant_diaries: list[Any],
-                        ice_break: bool = False, debug_snapshot_id: Optional[str] = None) -> str:
-        # 总构建发送Deepseek补全的信息
+                        ice_break: bool = False, debug_snapshot_id: Optional[str] = None,
+                        message_objs: Optional[list[dict]] = None) -> str:
+
         combined_API_message = await build_chat_context(self.yuki,
                                                         chat_id,
                                                         combined_text,
@@ -205,6 +211,7 @@ class YukiEngine:
                 history_dict,
                 mode,
                 combined_API_message,
+                message_objs=message_objs,
             )
             Yuki_Answer = re.sub(r'<layout>.*?</layout>', '', Yuki_Answer, flags=re.DOTALL).strip()
             Yuki_Answer = re.sub(r'\n+', ' ', Yuki_Answer).strip()
@@ -226,7 +233,21 @@ class YukiEngine:
                     # 原地替换：MEME 标签 -> CQ 码，保留位置信息
                     cq_code = f"[CQ:image,file=file:///{image_path},sub_type=1]"
                     Yuki_Answer = Yuki_Answer.replace(meme_match.group(0), cq_code, 1)
+                    try:
+                        from modules.shot_memory import shot_live_buffer
+                        shot_live_buffer.append(
+                            chat_id,
+                            name=cfg.ROBOT_NAME.title(),
+                            raw_text="[表情包]",
+                            content="[表情包]",
+                            segments=[{"type": "image", "data": {"file": image_path}}],
+                            user_id=cfg.SELF_QQ,
+                            is_bot=True,
+                        )
+                    except Exception as exc:
+                        logger.debug(f"[ShotMemory] 记录表情包到截屏缓冲失败: {exc}")
                 Yuki_Answer = re.sub(r'\[MEME:.+?\]', '', Yuki_Answer, flags=re.DOTALL).strip()
+
             # ==============================
             # # ==========================================
             # # 新增：截获文本并请求本地 GPT-SoVITS API

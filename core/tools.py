@@ -10,9 +10,11 @@ import aiohttp
 from config import cfg
 from core.maid import MaidCapabilityBoundary, build_maid_task, maid_evolution_loop, search_diary_fast
 from core.toolchain import ToolResult, ToolSpec
+from modules.shot_memory import ShotMemoryStore, render_snapshot, shot_live_buffer
 from utils.logger import get_logger
 
 logger = get_logger("tools")
+shot_memory_store = ShotMemoryStore()
 
 _TIMER_TASKS_KEY = "__timer_tasks__"
 _TIMER_HANDLES_KEY = "__timer_handles__"
@@ -377,7 +379,7 @@ async def browser_search_tool(context, query, max_results=5, search_depth="basic
 
 
 def _resolve_image_path(context, path: str) -> str:
-    """解析 [img:XXX] 索引为真实文件路径，普通路径原样返回。"""
+    """解析 [img:XXX]/[shot:N] 索引为真实文件路径，普通路径原样返回。"""
     import re
     m = re.match(r'^\[img:(\d{3})\]$', path)
     if m:
@@ -387,7 +389,70 @@ def _resolve_image_path(context, path: str) -> str:
             resolved = image_store.resolve(idx)
             if resolved:
                 return resolved
+
+    shot = re.match(r'^\[shot:(\d+)\]$', path)
+    if shot:
+        resolved = shot_memory_store.resolve(context.chat_id, shot.group(1))
+        if resolved:
+            return resolved
     return path
+
+
+async def capture_group_snapshot_tool(context, note, limit=12):
+    """把当前群聊最近上下文渲染成永久保存的伪截屏。"""
+    if not note:
+        return ToolResult(success=False, content="缺少截屏备注", error="missing_note")
+    if context.mode not in ("group", "master_private"):
+        return ToolResult(success=False, content="截屏留念目前只适合群聊上下文。", error="unsupported_mode")
+
+    chat_id = str(context.chat_id)
+    limit = max(4, min(int(limit or 12), 20))
+    history = context.history_dict.get(chat_id, [])[-limit:]
+    message_objs = context.metadata.get("message_objs") or []
+    live_messages = shot_live_buffer.snapshot(chat_id, limit=limit)
+    connector = getattr(context.sender, "connector", None)
+
+    try:
+        image_bytes, meta = await render_snapshot(
+            chat_id,
+            note,
+            history,
+            message_objs,
+            connector=connector,
+            live_messages=live_messages,
+        )
+        record = shot_memory_store.save_record(chat_id, note, image_bytes, metadata=meta)
+    except Exception as e:
+        logger.error(f"[ShotMemory] 截屏失败: {e}")
+        return ToolResult(success=False, content=f"截屏失败: {str(e)}", error=str(e))
+
+    return ToolResult(
+        success=True,
+        content=f"截屏已保存: {record['note']}",
+        data={
+            "file_path": record["file_path"],
+            "note": record["note"],
+            "created_at": record["created_at"],
+            "group_name": record.get("group_name", ""),
+        },
+    )
+
+
+async def search_group_snapshots_tool(context, keyword=None, limit=5):
+    """搜索当前群聊的永久截屏记录，并预热 [shot:N] 索引。"""
+    chat_id = str(context.chat_id)
+    records = shot_memory_store.search(chat_id, keyword=keyword, limit=limit)
+    prepared = shot_memory_store.preload(chat_id, records)
+    if not prepared:
+        return ToolResult(success=True, content="没有找到本群相关截屏记录。", data={"records": []})
+
+    lines = [f"找到 {len(prepared)} 条本群截屏记录，已预热为 [shot:编号]："]
+    for item in prepared:
+        lines.append(
+            f"{item['shot_tag']} {item.get('created_at', '')} | {item.get('note', '')}\n"
+            f"路径: {item['absolute_path']}"
+        )
+    return ToolResult(success=True, content="\n".join(lines), data={"records": prepared})
 
 
 async def send_qq_file_tool(context, file_path, file_type="auto", caption=None):
@@ -415,6 +480,16 @@ async def send_qq_file_tool(context, file_path, file_type="auto", caption=None):
         await context.sender.send_local_voice(context.chat_id, abs_path, mode=context.mode)
     elif file_type == "image":
         await context.sender.send_local_image(context.chat_id, abs_path, mode=context.mode)
+        if context.mode == "group":
+            shot_live_buffer.append(
+                context.chat_id,
+                name=cfg.ROBOT_NAME.title(),
+                raw_text="[图片]",
+                content="[图片]",
+                segments=[{"type": "image", "data": {"file": abs_path}}],
+                user_id=cfg.SELF_QQ,
+                is_bot=True,
+            )
     elif file_type == "file":
         if hasattr(context.sender, "send_local_file"):
             await context.sender.send_local_file(context.chat_id, abs_path, mode=context.mode)
@@ -774,6 +849,31 @@ TOOL_SPECS = [
             },
         },
         handler=recall_private_context_tool,
+    ),
+    ToolSpec(
+        name="capture_group_snapshot",
+        description="截屏留念当前群聊最近上下文：把最近聊天渲染成一张本地永久保存的伪截图，并用备注作为标记。想记录热闹、名场面、群里发生了什么时直接调用。",
+        parameters={
+            "type": "object",
+            "properties": {
+                "note": {"type": "string", "description": "这张截屏的唯一备注/事件描述，会用于文件名和检索"},
+                "limit": {"type": "integer", "description": "截取最近多少条上下文，默认12", "default": 12},
+            },
+            "required": ["note"],
+        },
+        handler=capture_group_snapshot_tool,
+    ),
+    ToolSpec(
+        name="search_group_snapshots",
+        description="翻看本群截屏记录。按关键词搜索当前群聊永久保存的截屏，最多返回5条，并预热为 [shot:1]、[shot:2] 等索引；要发送时用 send_qq_file 发送对应 [shot:编号]。",
+        parameters={
+            "type": "object",
+            "properties": {
+                "keyword": {"type": "string", "description": "搜索关键词，可省略以查看最近记录"},
+                "limit": {"type": "integer", "description": "返回数量，默认5，最多5", "default": 5},
+            },
+        },
+        handler=search_group_snapshots_tool,
     ),
     ToolSpec(
         name="send_qq_file",

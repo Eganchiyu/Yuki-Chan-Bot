@@ -178,6 +178,11 @@ class ConnectionConfig:
         comment="最大重试次数",
         section="connection"
     )
+    qq: int = config_field(
+        0,
+        comment="机器人 QQ 号",
+        section="connection"
+    )
 
 
 @dataclass

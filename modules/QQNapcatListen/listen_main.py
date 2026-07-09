@@ -6,6 +6,7 @@ from config import cfg
 from init import save_group_state
 from modules.message.CQProtocol import smart_truncate
 from modules.message.GetMeta import MetaGetter
+from modules.shot_memory import shot_live_buffer
 
 connector = None
 sender = None
@@ -186,6 +187,17 @@ async def napcat_listen(mode: str):
                             f"[NapCat] 检测到疑似冒充消息，已替换发送者姓名。原始姓名: {name}, QQ: {user_id}"
                         )
                         name = f"{name}(冒充)"
+
+                    shot_live_buffer.append(
+                        gid_str,
+                        name=name,
+                        raw_text=raw_msg,
+                        content=f'【"{name}"】说: {raw_msg}',
+                        segments=data.get("message"),
+                        user_id=int(user_id),
+                        message_id=data.get("message_id"),
+                        is_bot=False,
+                    )
 
                     await feed_message(
                         group_id,

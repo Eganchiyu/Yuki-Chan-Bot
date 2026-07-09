@@ -26,11 +26,13 @@ class SessionPipeline:
         self.image_store = components.get("image_store")
         self.group_active_state = group_active_state
 
-        # 新防抖机制：按 chat_id 保存等待任务与上次处理完成时间
-        self._debounce_tasks: dict = {}          # chat_id -> asyncio.Task (防抖等待任务)
-        self.last_process_end_time: dict = {}    # chat_id -> 上次处理完成时间戳（秒）
-        self._chat_mode: dict = {}               # chat_id -> mode (用于 wake_quickly 获取模式)
+        # --- 极简重构的防抖与锁机制 ---
+        self._timer_tasks: dict = {}  # chat_id -> asyncio.Task (当前正在计时的防抖任务)
+        self._chat_locks: dict = {}  # chat_id -> asyncio.Lock (确保处理管线串行)
+        self._skip_debounce: dict = {}  # chat_id -> bool (是否跳过本次防抖的持久化标志)
 
+        self.last_process_end_time: dict = {}
+        self._chat_mode: dict = {}
         self.last_msg_time = {}
 
         self.stages = [
@@ -44,9 +46,13 @@ class SessionPipeline:
             self.finalize_conversation,
         ]
 
-    # ------------------- Debug 相关 (未做改动) -------------------
+    def _get_lock(self, chat_id: str) -> asyncio.Lock:
+        if chat_id not in self._chat_locks:
+            self._chat_locks[chat_id] = asyncio.Lock()
+        return self._chat_locks[chat_id]
+
+    # (保留原本的 _mark_stage 和 _update_snapshot 不变)
     def _mark_stage(self, context, stage_name, status="done", error=None):
-        """轻量更新 Debug snapshot，不影响主管道。"""
         snapshot_id = context.get("debug_snapshot_id")
         if not snapshot_id:
             return
@@ -61,135 +67,103 @@ class SessionPipeline:
             errors.append({"stage": stage_name, "error": str(error)})
             context["debug_errors"] = errors
         try:
-            context_snapshot_store.update(
-                snapshot_id,
-                stage=stage_name,
-                stage_status=status,
-                latency=latency,
-                errors=errors,
-            )
-        except Exception as exc:
-            logger.debug(f"[ContextDebug] 更新阶段快照失败: {exc}")
+            context_snapshot_store.update(snapshot_id, stage=stage_name, stage_status=status, latency=latency,
+                                          errors=errors)
+        except Exception:
+            pass
 
     def _update_snapshot(self, context, **fields):
-        """安全更新 Debug snapshot。"""
         snapshot_id = context.get("debug_snapshot_id")
         if not snapshot_id:
             return
         try:
             context_snapshot_store.update(snapshot_id, **fields)
-        except Exception as exc:
-            logger.debug(f"[ContextDebug] 更新快照失败: {exc}")
+        except Exception:
+            pass
 
-    # ------------------- 新的防抖入口 -------------------
-    async def enqueue_message(
-        self,
-        chat_id,
-        mode,
-        message_obj=None,
-        debounce_flag=True,
-        force_reply=None,
-        ice_break=False,
-    ):
-        """统一写入会话缓冲，并基于任务取消实现外部防抖。"""
+    # ------------------- 核心逻辑重写 -------------------
+
+    async def enqueue_message(self, chat_id, mode, message_obj=None, debounce_flag=True, force_reply=None,
+                              ice_break=False):
+        """核心入列机制：写入缓冲 -> 重置定时器 -> 等待执行锁"""
         cid = str(chat_id)
+        self._chat_mode[cid] = mode
 
-        # 1. 写入消息缓冲
+        # 1. 安全写入缓冲区
         if message_obj:
             self.yuki.message_buffer.setdefault(cid, [])
             self.yuki.message_buffer[cid].append(message_obj)
             self.last_msg_time[cid] = time.time()
 
-        # 2. 记录模式（用于 wake_quickly 等场景）
-        self._chat_mode[cid] = mode
+        # 2. 状态融合：只要当前批次中有任何要求跳过防抖的指令，立刻锁定 skip 状态
+        # (修复 Bug：解决普通消息覆盖了 wake_quickly 导致叫名字依然防抖的问题)
+        should_skip = (force_reply is not None and force_reply) or (not debounce_flag) or ice_break
+        if should_skip:
+            self._skip_debounce[cid] = True
 
-        # 3. 取消上一个正在等待的防抖任务（有的话）
-        if cid in self._debounce_tasks:
-            self._debounce_tasks[cid].cancel()
-            self._debounce_tasks.pop(cid)
+        # 3. 核心防抖拦截：取消还在倒计时的旧任务
+        if cid in self._timer_tasks:
+            self._timer_tasks[cid].cancel()
 
-        # 4. 决定本次等待时间
-        if not debounce_flag:
-            wait_time = 0.0
-        else:
-            # 冷启动：距离上次处理完成超过长防抖时间，则使用短防抖
-            last_end = self.last_process_end_time.get(cid, 0)
-            if time.time() - last_end > cfg.DEBOUNCE_TIME:
-                wait_time = 0.3
-            else:
-                wait_time = cfg.DEBOUNCE_TIME
+        # 4. 创建新的控制流 (按序执行：计时 -> 获取锁 -> 消费)
+        async def _wait_and_process():
+            try:
+                # 步骤A：严格防抖。如果在计时期间被新消息 cancel，会直接抛出 CancelledError 重新排队
+                if not self._skip_debounce.get(cid, False):
+                    await asyncio.sleep(cfg.DEBOUNCE_TIME)
 
-        # 5. 创建新的防抖任务：等待后启动 process_loop
-        async def _delayed_process():
-            await asyncio.sleep(wait_time)
-            # 安全删除自身记录
-            self._debounce_tasks.pop(cid, None)
-            # 启动真正的管道处理（会持续消费直到缓冲空）
-            await self.process_loop(cid, mode, debounce_flag=False, force_reply=force_reply, ice_break=ice_break)
+                # 步骤B：计时结束，说明这批消息落定，清空 skip 标志位以备下一轮
+                self._skip_debounce[cid] = False
 
-        task = asyncio.create_task(_delayed_process())
-        self._debounce_tasks[cid] = task
+                # 从定时器字典中将自己摘除，防止在获取锁执行期间，被无关的新消息错误 Cancel
+                if self._timer_tasks.get(cid) == asyncio.current_task():
+                    self._timer_tasks.pop(cid, None)
+
+                # 步骤C：非阻塞排队。如果上一个管线（例如长耗时的工具链调用）还没跑完，这里乖乖等待
+                # (修复 Bug：解决工具链期间新消息直接被消费没有防抖，现在它们会先防抖，然后在这里等锁)
+                async with self._get_lock(cid):
+                    # 获取锁后进行空载检查
+                    if not self.yuki.message_buffer.get(cid) and not force_reply and not ice_break:
+                        return
+                    if mode == "group" and not self.group_active_state.get(cid, True):
+                        return
+
+                    # 执行唯一的一次流转，不使用 while True 死循环
+                    await self.run_once(cid, mode, debounce_flag, force_reply, ice_break)
+
+            except asyncio.CancelledError:
+                # 收到新消息，当前倒计时作废，这属于防抖的正常现象
+                pass
+            except Exception as e:
+                logger.error(f"[Pipeline] 管道处理异常 {cid}: {e}")
+
+        task = asyncio.create_task(_wait_and_process())
+        self._timer_tasks[cid] = task
         return task
 
     def wake_quickly(self, chat_id):
-        """被直接点名时立即以极短延迟启动处理（取消防抖，重新排程）"""
+        """收到呼叫时：直接设置强制跳过防抖状态，并重置控制流"""
         cid = str(chat_id)
-        if cid in self._debounce_tasks:
-            self._debounce_tasks[cid].cancel()
+        self._skip_debounce[cid] = True  # 锁定本轮无视防抖
 
-        mode = self._chat_mode.get(cid, "group")  # 从之前记录的 mode 获取，默认群聊
-
-        async def _fast_start():
-            await asyncio.sleep(0.1)
-            self._debounce_tasks.pop(cid, None)
-            await self.process_loop(cid, mode, debounce_flag=False, force_reply=None, ice_break=False)
-
-        task = asyncio.create_task(_fast_start())
-        self._debounce_tasks[cid] = task
-
-    # ------------------- 管道主循环（无睡眠） -------------------
-    async def process_loop(self, chat_id, mode, debounce_flag=True, force_reply=None, ice_break=False):
-        """持续消费同一 chat_id 的缓冲消息，直到当前缓冲为空。"""
-        cid = str(chat_id)
-        try:
-            while True:
-                await self.run_once(cid, mode, debounce_flag, force_reply, ice_break)
-                debounce_flag = True
-                force_reply = None
-                ice_break = False  # 破冰只在第一轮执行
-
-                if mode == "group" and not self.group_active_state.get(cid, True):
-                    break
-                if not self.yuki.message_buffer.get(cid):
-                    break
-                logger.info(f"[Pipeline] {cid} 检测到处理期间新增消息，准备合并进入下一轮。")
-        finally:
-            current_task = asyncio.current_task()
-            if self.yuki.buffer_tasks.get(cid) is current_task:
-                self.yuki.buffer_tasks.pop(cid, None)
+        mode = self._chat_mode.get(cid, "group")
+        # 直接调用入列方法刷新流程
+        asyncio.create_task(self.enqueue_message(cid, mode, debounce_flag=False, force_reply=True))
 
     async def run_once(self, chat_id, mode, debounce_flag=True, force_reply=None, ice_break=False):
-        """执行一次消息处理，任一阶段标记 stop 后终止本轮。"""
+        """原封不动：执行单次完整的管道流水线"""
         context = {
-            "chat_id": chat_id,
-            "mode": mode,
-            "debounce_flag": debounce_flag,
-            "force_reply": force_reply,
-            "ice_break": ice_break,
-            "debug_started_at": time.time(),
-            "debug_latency": {},
-            "debug_errors": [],
+            "chat_id": chat_id, "mode": mode, "debounce_flag": debounce_flag,
+            "force_reply": force_reply, "ice_break": ice_break,
+            "debug_started_at": time.time(), "debug_latency": {}, "debug_errors": []
         }
         try:
             context["debug_snapshot_id"] = context_snapshot_store.put({
-                "chat_id": str(chat_id),
-                "mode": mode,
-                "stage": "run_once",
-                "should_reply": None,
-                "tool_context": {"pipeline_stages": PIPELINE_STAGES},
+                "chat_id": str(chat_id), "mode": mode, "stage": "run_once",
+                "should_reply": None, "tool_context": {"pipeline_stages": PIPELINE_STAGES}
             })
-        except Exception as exc:
-            logger.debug(f"[ContextDebug] 创建快照失败: {exc}")
+        except Exception:
+            pass
 
         for stage in self.stages:
             stage_name = stage.__name__
@@ -206,30 +180,21 @@ class SessionPipeline:
                 return context
         return context
 
-    # ------------------- 阶段一：准备消息批次（无睡眠） -------------------
+    # ------------------- 阶段一精简 -------------------
     async def prepare_message_batch(self, context):
-        """防抖、静音拦截、读取消息缓冲。"""
-        chat_id = context["chat_id"]
-        mode = context["mode"]
+        """防抖已在外部完成，此处只需极简读取缓冲，无需任何 Sleep 逻辑"""
+        chat_id, mode = context["chat_id"], context["mode"]
 
-        # 破冰模式：跳过防抖和缓冲区读取，构建合成输入
         if context.get("ice_break"):
             recent_msgs = self.history_manager.load().get(str(chat_id), [])[-5:]
-            context_text = "".join([m['content'] for m in recent_msgs if m.get("role") != "system"])
-            context["combined_text"] = context_text or "（群聊安静中）"
+            context["combined_text"] = "".join(
+                [m['content'] for m in recent_msgs if m.get("role") != "system"]) or "（群聊安静中）"
             context["message_objs"] = []
             context["first_time"] = time.time()
             await self.yuki.boost_activity(chat_id)
-            logger.info(f"[Pipeline] {chat_id} 跳过防抖，注入破冰上下文")
             return context
 
-        # 主人私聊：无需任何等待，直接读取缓冲
-        # 群聊/普通私聊：防抖已在外部 enqueue_message 完成，这里直接取缓冲即可
-        # 因此完全不需要任何 sleep
-
-        # 静音检查
         if mode == "group" and not self.group_active_state.get(str(chat_id), True):
-            logger.info(f"[Pipeline] {chat_id} 群已静音，丢弃消息并退出")
             self.yuki.pop_buffer(chat_id)
             context["stop"] = True
             return context
@@ -417,6 +382,7 @@ class SessionPipeline:
             context["relevant_diaries"],
             ice_break=context.get("ice_break", False),
             debug_snapshot_id=context.get("debug_snapshot_id"),
+            message_objs=context.get("message_objs", []),
         )
         logger.info(f"[Pipeline] {cfg.ROBOT_NAME.title()} 回复生成完成")
 
