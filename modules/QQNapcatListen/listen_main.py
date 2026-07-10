@@ -103,6 +103,10 @@ async def handle_poke_event(data: dict, mode: str):
     if not group_active_state.get(gid_str, True):
         return
 
+    # 群聊白名单兜底：非白名单群直接丢弃
+    if cfg.TARGET_GROUPS and group_id not in cfg.TARGET_GROUPS:
+        return
+
     # 查戳人者昵称
     poker_name = "某人"
     poked_name = "某人"
@@ -145,6 +149,7 @@ async def napcat_listen(mode: str):
     while True:
         try:
             async for data in connector.listen():
+                logger.debug(f"[NapCat] 收到原始消息: {data}")
                 # 戳一戳事件拦截（notice/notify/poke）
                 if (data.get("post_type") == "notice"
                         and data.get("notice_type") == "notify"
@@ -247,19 +252,22 @@ async def feed_message(chat_id, content, mode, raw_message="", sender_name="", u
     # if await handle_jm_command(chat_id, raw_message, sender, mode):
     #     return
 
-    if cfg.ROBOT_NAME.lower() in raw_message.lower():
+    # 拦截 Bot 消息（白名单除外）
+    if is_bot and (not user_id or user_id not in cfg.TARGET_WHITELIST):
+        # await session_pipeline.enqueue_message(cid_str, mode, message_obj=None)
+        return
+
+    # 非 Bot 消息且提到 Yuki 时快速唤醒
+    if not is_bot and cfg.ROBOT_NAME.lower() in raw_message.lower():
         session_pipeline.wake_quickly(cid_str)
 
-    if not is_bot or (user_id and user_id in cfg.TARGET_WHITELIST):
-        message_obj = {
-            "name": sender_name,
-            "content": content,
-            "raw_text": raw_message,
-            "is_bot": is_bot,
-            "user_id": user_id,
-            "message_id": message_id,
-        }
-    else:
-        message_obj = None
+    message_obj = {
+        "name": sender_name,
+        "content": content,
+        "raw_text": raw_message,
+        "is_bot": is_bot,
+        "user_id": user_id,
+        "message_id": message_id,
+    }
 
     await session_pipeline.enqueue_message(cid_str, mode, message_obj=message_obj)

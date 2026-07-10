@@ -272,12 +272,14 @@ MAID_SYSTEM_PROMPT = f"""
 2. **即写即跑**: 需要临时代码解决问题时，优先调用 `write_and_run_temp_skill` 一步完成保存和执行；只有需要分多次编辑时才使用 `write_temp_skill` + `run_skill`。
 
 ### 工具箱（JSON 接口）
+**代码相关工具:**
 1. `list_skills()`: 返回当前已固化的通用技能列表及一句话简介。
 2. `read_skill(name)`: 读取已固化技能的 MD 文档和 Python 源码。
 3. `write_temp_skill(name, code)`: 在临时工作区编写草稿代码（任务结束后会被自动销毁）。仅在需要分多次编辑时使用。
 4. `write_and_run_temp_skill(name, code)`: 在临时工作区写入草稿代码并立即执行。优先用于一次性检查、脚本化操作、依赖探测，减少轮次浪费。
 5. `run_skill(name)`: 执行工作区或固化区的技能。
 6. `install_package(pkg)`: 安装缺失的 pip 包。
+**系统相关工具:**
 7. `terminal(command, cwd, timeout, allow_write)`: 执行受限终端命令。
    - 'command': 要执行的命令。优先用于查看环境、运行脚本、检查版本、列目录、调试错误。
    - 'cwd': 可选，工作目录，默认当前路径。
@@ -294,11 +296,13 @@ MAID_SYSTEM_PROMPT = f"""
    - 'show_hidden': 可选，是否显示隐藏文件（以.开头），默认 false。
    - 返回：子目录列表、文件列表、大小、修改时间等信息。
    - 用途：浏览文件系统结构，查找文件位置。
+**日记相关工具:**
 9. `search_diary(date_str, keyword)`: 搜索 Yuki 的日记/记忆。
    - 'date_str': 选填，日期字符串（如 "2026-05-20" 或 "2026-03"）。
    - 'keyword': 选填，需要全文匹配的关键词。
    - 规则：'date_str' 和 'keyword' 至少提供一个，未提供的填 null。
    - 策略提示：为防止上下文超载，此工具每次最多只返回 8 条记录（按时间顺序排序）。如果返回提示"结果过多"，或者前 5 条里没有你想要的，**你可以多次调用此工具**，通过更换 `keyword` 或增加 `date_str` 来不断缩小搜索范围，直到找到精确目标。
+**知识相关工具:**
 10. `browser_search(query, max_results, search_depth)`: 网页搜索。
    - 'query': 搜索关键词或问题（必填）。
    - 'max_results': 返回结果数量，1-10，默认 5。
@@ -312,6 +316,7 @@ MAID_SYSTEM_PROMPT = f"""
    - 'city': 限定城市，如"北京"，提高精度。
    - 'radius': 搜索半径(米)，around 模式使用，默认 3000。
    - 'page_size': 返回结果数量，1-25，默认 10。
+**定时任务相关工具:**
 12. `manage_timer_task(title, due_time, delay_seconds, action, task_id, message)`: 定时任务管理。
    - 'title': 任务标题（必填）。
    - 'due_time': 到点时间，支持 YYYY-MM-DD HH:MM:SS 格式。
@@ -344,19 +349,7 @@ MAID_SYSTEM_PROMPT = f"""
     "args": {{"reason": "当前系统时间：2026-04-15 22:23:31"}}
 }}
 """
-# **邮件相关工具（邮件任务优先使用）:**
-# 13. `agently_list_messages(limit, folder)`: 查看 Agent Mail 收件箱。
-#    - 'limit': 返回邮件数量，默认 10，最多 50。
-#    - 'folder': 文件夹，如 'inbox'(收件箱), 'sent'(已发送), 'trash'(垃圾箱), 'spam'(垃圾邮件)，默认 inbox。
-#    - 用途：查看最近收到的邮件列表。
-# 14. `agently_read_message(message_id)`: 读取单封邮件详情。
-#    - 'message_id': 邮件 ID（从 list_messages 获取）。
-#    - 返回：发件人、主题、正文、附件等完整内容。
-# 15. `agently_send_email(to, subject, body)`: 通过 Agent Mail 发送邮件。
-#    - 'to': 收件人邮箱地址（字符串，多个收件人用英文逗号分隔）。
-#    - 'subject': 邮件主题。
-#    - 'body': 邮件正文。
-#    - 用途：用 yukihime@agent.qq.com 身份发送邮件。发送过程中的必要确认由工具内部自动完成。
+
 # --- 代码清洗函数 ---
 def clean_code_block(raw_code):
     """

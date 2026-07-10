@@ -802,7 +802,7 @@ async def generate_image_tool(context, prompt, size="1024*1024"):
 TOOL_SPECS = [
     ToolSpec(
         name="search_diary",
-        description="查询 Yuki 的日记/记忆，支持按日期和关键词检索。",
+        description="查询日记/记忆，支持按日期和关键词检索。",
         parameters={
             "type": "object",
             "properties": {
@@ -814,7 +814,7 @@ TOOL_SPECS = [
     ),
     ToolSpec(
         name="delegate_to_maid",
-        description="将重型任务委托给小女仆处理。",
+        description="将工作任务委托给电脑上的小女仆处理。",
         parameters={
             "type": "object",
             "properties": {
@@ -852,11 +852,11 @@ TOOL_SPECS = [
     ),
     ToolSpec(
         name="capture_group_snapshot",
-        description="截屏留念当前群聊最近上下文：把最近聊天渲染成一张本地永久保存的伪截图，并用备注作为标记。想记录热闹、名场面、群里发生了什么时直接调用。",
+        description="截屏留念当前群聊最近上下文：把最近聊天渲染成一张本地永久保存的截图并标记。想记录热闹、名场面、群里发生了什么时直接调用。",
         parameters={
             "type": "object",
             "properties": {
-                "note": {"type": "string", "description": "这张截屏的唯一备注/事件描述，会用于文件名和检索"},
+                "note": {"type": "string", "description": "备注/事件描述，记录发生的事情和你的评论"},
                 "limit": {"type": "integer", "description": "截取最近多少条上下文，默认12", "default": 12},
             },
             "required": ["note"],
@@ -891,11 +891,11 @@ TOOL_SPECS = [
     ),
     ToolSpec(
         name="resolve_user",
-        description="根据用户昵称解析 QQ 号。当需要对特定用户执行操作（如戳一戳）但只知道昵称时使用。",
+        description="根据用户昵称解析 QQ 号。想要获取QQ号的时候使用。",
         parameters={
             "type": "object",
             "properties": {
-                "name": {"type": "string", "description": "用户昵称或群名片"},
+                "name": {"type": "string", "description": "用户昵称"},
             },
             "required": ["name"],
         },
@@ -915,7 +915,7 @@ TOOL_SPECS = [
     ),
     ToolSpec(
         name="download_file",
-        description="下载群聊/私聊中的文件到本地。当收到文件消息（显示为 [文件:file_id=xxx]）时，使用此工具下载文件。下载后可以委托小女仆分析文件内容。",
+        description="下载群聊/私聊中的文件到本地。当想要下载文件消息（显示为 [文件:file_id=xxx]）时，使用此工具下载文件。下载后可以委托小女仆分析文件内容。",
         parameters={
             "type": "object",
             "properties": {
@@ -949,14 +949,13 @@ TOOL_SPECS = [
             "根据文字描述生成图片。生成后保存到本地 output 目录，返回文件路径。"
             "生成完后必须用 send_qq_file 工具把图片发出来。"
             "重要：prompt 必须完整详细，包含主体、场景、风格、光影、构图等细节，"
-            "融入 Yuki 的二次元少女特色（如猫耳、水手服、星空瞳等），"
-            "确保出图质量。英文 prompt 效果更好。"
+            "融入 Yuki 的二次元少女特色（白色长发蓝瞳少女，雪花发饰）"
         ),
         parameters={
             "type": "object",
             "properties": {
-                "prompt": {"type": "string", "description": "图像描述（英文效果更好）"},
-                "size": {"type": "string", "description": "图片尺寸，如 1024*1024、512*512（wan模型用*分隔）", "default": "1024*1024"},
+                "prompt": {"type": "string", "description": "图像描述（使用中文描述）"},
+                "size": {"type": "string", "description": "图片尺寸，如 1024*1024、512*512", "default": "1024*1024"},
             },
             "required": ["prompt"],
         },

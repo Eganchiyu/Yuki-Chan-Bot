@@ -199,6 +199,12 @@ class SessionPipeline:
             context["stop"] = True
             return context
 
+        # 发送兜底白名单：非白名单群直接终止，不生成/不发送回复
+        if mode == "group" and cfg.TARGET_GROUPS and int(chat_id) not in cfg.TARGET_GROUPS:
+            self.yuki.pop_buffer(chat_id)
+            context["stop"] = True
+            return context
+
         cid = str(chat_id)
         if cid not in self.yuki.message_buffer:
             self.yuki.message_buffer[cid] = []

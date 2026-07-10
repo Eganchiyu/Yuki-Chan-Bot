@@ -637,19 +637,17 @@ async def maid_worker(engine, yuki_state, sender, history_manager):
 
         # === 关键修改部分 ===
         try:
-            # 1. 加载当前历史
             history_dict = history_manager.load()
             if chat_id not in history_dict:
                 history_dict[chat_id] = [{"role": "system", "content": yuki_state.get_setting(mode)}]
 
             current_time_str = datetime.datetime.now().strftime("%Y年%m月%d日%H:%M")
 
-            # 2. 把小女仆汇报作为 assistant 消息写入历史（这样 {cfg.ROBOT_NAME.title()} 下次看到的就是“自己”的汇报）
             history_dict[chat_id].append({
                 "role": "user",
                 "content": report,
                 "time": current_time_str,
-                "is_maid_report": True   # 可选标记，方便以后过滤
+                "is_maid_report": True
             })
 
             # 3. 保存到 chat_history.json
