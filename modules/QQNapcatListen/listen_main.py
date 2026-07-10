@@ -17,6 +17,7 @@ session_pipeline = None
 group_active_state = None
 logger = None
 meta_getter = None
+napcat_online = True
 
 
 def configure_runtime(components: dict, pipeline, active_state: dict, runtime_logger):
@@ -142,6 +143,7 @@ async def handle_poke_event(data: dict, mode: str):
 
 
 async def napcat_listen(mode: str):
+    global napcat_online
     """NapCat 输入适配层：接收 QQ 消息并 feed 到会话管道。"""
     await start_background_tasks(mode)
 
@@ -151,6 +153,23 @@ async def napcat_listen(mode: str):
             async for data in connector.listen():
                 logger.debug(f"[NapCat] 收到原始消息: {data}")
                 # 戳一戳事件拦截（notice/notify/poke）
+                if data.get("post_type") == "meta_event" and data.get("meta_event_type") == "heartbeat":
+                    status = data.get("status", {})
+                    is_online = status.get("online", False)
+                    
+                    if not is_online and engine.napcat_online:
+                        logger.warning("[NapCat] 检测到客户端离线，已挂起后台破冰与日记任务。")
+                        engine.napcat_online = False
+                            
+                    elif is_online and not engine.napcat_online:
+                        logger.info("[NapCat] 检测到客户端重新上线，恢复后台常驻任务。")
+                        engine.napcat_online = True
+                            
+                    continue  # 心跳包处理完毕，跳过后续逻辑
+
+                if not engine.napcat_online:
+                    continue
+
                 if (data.get("post_type") == "notice"
                         and data.get("notice_type") == "notify"
                         and data.get("sub_type") == "poke"):

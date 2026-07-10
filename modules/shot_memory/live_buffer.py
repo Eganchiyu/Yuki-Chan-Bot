@@ -33,7 +33,7 @@ class ShotLiveBuffer:
         with self._lock:
             self._buffers[str(chat_id)].append(entry)
 
-    def snapshot(self, chat_id, limit: int = 14) -> list[dict]:
+    def snapshot(self, chat_id, limit: int = 20) -> list[dict]:
         limit = max(1, min(int(limit or 14), self.max_messages))
         with self._lock:
             return list(self._buffers.get(str(chat_id), []))[-limit:]

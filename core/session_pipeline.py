@@ -1,6 +1,7 @@
 # core/session_pipeline.py
 import asyncio
 import datetime
+import os
 import re
 import time
 
@@ -23,6 +24,7 @@ class SessionPipeline:
         self.history_manager = components["history_manager"]
         self.memory_rag = components["memory_rag"]
         self.engine = components["engine"]
+        self.sticker_manager = components.get("sticker_manager")
         self.image_store = components.get("image_store")
         self.group_active_state = group_active_state
 
@@ -402,28 +404,98 @@ class SessionPipeline:
         chat_id = context["chat_id"]
         mode = context["mode"]
         answer_text = context["answer_text"]
-        voice = context["voice"]
+        voice = context.get("voice")
 
         # master_private 使用私聊 API 发送
         send_mode = "private" if mode == "master_private" else mode
 
         if mode == "group":
             self.yuki.consume_energy(chat_id)
+
         logger.info(f"[Pipeline] {cfg.ROBOT_NAME.title()} 正在发送消息 (精力: {self.yuki.energy.get(chat_id, 0):.1f})")
 
-        if not voice:
-            parts = re.split(r"(\[CQ:image,[^\]]*?sub_type=1\])", answer_text, flags=re.IGNORECASE)
-            for part in parts:
-                part = part.strip()
-                if not part:
-                    continue
-                await self.sender.send(chat_id, part, mode=send_mode)
-                if part.startswith("[CQ:image"):
-                    await asyncio.sleep(3.0)
-                else:
-                    await asyncio.sleep(1.0)
-        else:
+        # === 1. 语音直接发送 ===
+        if voice:
             await self.sender.send(chat_id, voice, mode=send_mode)
+            logger.info(f"[Pipeline] 发送语音完成")
+            return context
+
+        # === 2. 流式发送文本与表情包 ===
+        # 按 [MEME:xxx] 切分，() 保留分隔符，结果类似于 ['文本1', '[MEME:关键词]', '文本2']
+        parts = re.split(r'(\[MEME:.*?\])', answer_text)
+
+        # 提前引入截屏缓冲模块，避免循环内重复导入
+        try:
+            from modules.shot_memory import shot_live_buffer
+        except ImportError:
+            shot_live_buffer = None
+
+        for part in parts:
+            part = part.strip()
+            if not part:
+                continue
+
+            # 检查当前片段是否为表情包
+            meme_match = re.fullmatch(r'\[MEME:(.+?)\]', part, re.DOTALL)
+
+            if meme_match:
+                # -------- 遇到表情包：现场检索 -> 发送 -> 记录截屏 --------
+                if getattr(self, 'sticker_manager', None):
+                    search_query = meme_match.group(1).strip()
+
+                    # 现场检索，此处的网络/计算耗时天然充当了防风控的延迟
+                    best_meme_data = await self.sticker_manager.get_suitable_sticker(search_query, chat_id)
+
+                    if best_meme_data:
+                        image_path = os.path.abspath(best_meme_data['image_ref'])
+                        self.yuki.last_sent_meme[chat_id] = best_meme_data['id']
+
+                        # 发送 CQ 码
+                        cq_code = f"[CQ:image,file=file:///{image_path},sub_type=1]"
+                        await self.sender.send(chat_id, cq_code, mode=send_mode)
+
+                        # 存入截屏缓冲
+                        if shot_live_buffer:
+                            try:
+                                shot_live_buffer.append(
+                                    chat_id,
+                                    name=cfg.ROBOT_NAME.title(),
+                                    raw_text="[表情包]",
+                                    content="[表情包]",
+                                    segments=[{"type": "image", "data": {"file": image_path}}],
+                                    user_id=cfg.SELF_QQ,
+                                    is_bot=True,
+                                )
+                            except Exception as exc:
+                                logger.debug(f"[ShotMemory] 记录表情包到截屏缓冲失败: {exc}")
+
+                        # 因为检索已经耗时，这里的强制睡眠可以大幅缩短
+                        await asyncio.sleep(2.0)
+            else:
+                # -------- 遇到纯文本：直接发送 -> 记录截屏 --------
+                await self.sender.send(chat_id, part, mode=send_mode)
+
+                if shot_live_buffer:
+                    try:
+                        bot_name = cfg.ROBOT_NAME.title()
+                        shot_live_buffer.append(
+                            chat_id,
+                            name=bot_name,
+                            raw_text=part,
+                            # 保持与接收消息相同的 content 格式习惯，方便后续统一读取
+                            content=f'【"{bot_name}"】说: {part}',
+                            # 严格遵守 Napcat 文本分段格式
+                            segments=[{'type': 'text', 'data': {'text': part}}],
+                            user_id=cfg.SELF_QQ,
+                            is_bot=True,
+                            # 机器人的发送没有真实 message_id，可以留空或填入自定义的标识
+                            message_id=None
+                        )
+                    except Exception as exc:
+                        logger.debug(f"[ShotMemory] 记录文本到截屏缓冲失败: {exc}")
+
+                # 文本发送极快，给一个极短的睡眠防止被平台判定为刷屏
+                await asyncio.sleep(0.5)
 
         logger.info(f"[Pipeline] 发送完成，内容: {answer_text[:80]}")
         return context

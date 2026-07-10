@@ -33,6 +33,7 @@ class YukiEngine:
         self.tool_registry = FunctionRegistry()
         self.tool_registry.scan_and_register(TOOL_SPECS)
         self.tool_manager = ToolCallManager(self.tool_registry)
+        self.napcat_online = True
 
     @staticmethod
     def _clean_visible_reply(content):
@@ -216,37 +217,7 @@ class YukiEngine:
             Yuki_Answer = re.sub(r'<layout>.*?</layout>', '', Yuki_Answer, flags=re.DOTALL).strip()
             Yuki_Answer = re.sub(r'\n+', ' ', Yuki_Answer).strip()
 
-            # === 拦截表情包搜索请求 ===
-            meme_match = re.search(r'\[MEME:(.+?)\]', Yuki_Answer, re.DOTALL)
-            if meme_match and getattr(self, 'sticker_manager', None):
-                search_query = meme_match.group(1).strip()
 
-                # 呼叫大管家：进行 RAG 检索 + 积热重排
-                best_meme_data = await self.sticker_manager.get_suitable_sticker(search_query, chat_id)
-
-                if best_meme_data:
-                    import os
-                    image_path = os.path.abspath(best_meme_data['image_ref'])
-                    # 记录这次发了啥，为后续捕捉正反馈做准备
-                    self.yuki.last_sent_meme[chat_id] = best_meme_data['id']
-
-                    # 原地替换：MEME 标签 -> CQ 码，保留位置信息
-                    cq_code = f"[CQ:image,file=file:///{image_path},sub_type=1]"
-                    Yuki_Answer = Yuki_Answer.replace(meme_match.group(0), cq_code, 1)
-                    try:
-                        from modules.shot_memory import shot_live_buffer
-                        shot_live_buffer.append(
-                            chat_id,
-                            name=cfg.ROBOT_NAME.title(),
-                            raw_text="[表情包]",
-                            content="[表情包]",
-                            segments=[{"type": "image", "data": {"file": image_path}}],
-                            user_id=cfg.SELF_QQ,
-                            is_bot=True,
-                        )
-                    except Exception as exc:
-                        logger.debug(f"[ShotMemory] 记录表情包到截屏缓冲失败: {exc}")
-                Yuki_Answer = re.sub(r'\[MEME:.+?\]', '', Yuki_Answer, flags=re.DOTALL).strip()
 
             # ==============================
             # # ==========================================
@@ -538,6 +509,8 @@ class YukiEngine:
         """后台任务，每30秒检查一次空闲群聊"""
         while True:
             await asyncio.sleep(30)  # 检查间隔，可根据需要调整
+            if not getattr(self, 'napcat_online', True):
+                continue
             now = time.time()
             logger.debug(f"[Engine] 后台检查中... {now}")
             history_dict = self.history.load()
@@ -572,6 +545,8 @@ class YukiEngine:
     async def ice_break_monitor(self):
         while True:
             await asyncio.sleep(random.randint(600, 1800))
+            if not getattr(self, 'napcat_online', True):
+                continue
             target_list = [str(gid) for gid in cfg.TARGET_GROUPS]
             logger.info(f"[Engine] 已加载 {len(target_list)} 个目标群组")
             pending_ice_break = []
@@ -652,6 +627,8 @@ async def maid_worker(engine, yuki_state, sender, history_manager):
 
             # 3. 保存到 chat_history.json
             history_manager.save(history_dict)
+            while not getattr(engine, 'napcat_online', True):
+                await asyncio.sleep(20)
 
             # 4. 强制触发 main_process，让 {cfg.ROBOT_NAME.title()} 自然思考并决定是否回复
             #    （main_process 会读取最新历史、检索 RAG、决定是否发言等）
