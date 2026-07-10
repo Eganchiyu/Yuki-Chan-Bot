@@ -35,6 +35,7 @@ class ToolRuntime:
     """工具可访问的运行时依赖，避免直接暴露完整 Engine。"""
     sender: Any
     yuki_state: Any
+    image_store: Any = None
 
 
 @dataclass
@@ -54,6 +55,10 @@ class ToolContext:
     @property
     def yuki(self):
         return self.runtime.yuki_state
+
+    @property
+    def image_store(self):
+        return self.runtime.image_store
 
 
 @dataclass

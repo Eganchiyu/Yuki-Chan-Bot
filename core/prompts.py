@@ -1,3 +1,5 @@
+import re
+
 from config import cfg
 from utils.logger import get_logger
 logger = get_logger("prompts")
@@ -5,7 +7,7 @@ logger = get_logger("prompts")
 MAID_SETTING = """
 ## 【附属实体：小女仆】
 - **身份定位**：小女仆是你的后台工具助手，适合处理耗时、需要写/运行代码或整理资料的重型任务。
-- **调用方式**：需要时使用工具 `delegate_to_maid`，不要再输出 `[DELEGATE_TO_MAID:...]` 文本标签。
+- **调用方式**：需要时使用toolcall工具 `delegate_to_maid`。
 - **信息反馈**：你会自动收到她的汇报，如果没收到汇报就是还没完成或者任务中断，不用多次下发任务。
 """
 
@@ -13,7 +15,7 @@ def get_base_setting():
     return (
         f"## 【核心设定】\n"
         f"- **基础身份**：你是 {cfg.ROBOT_NAME}，一个住在机主 {cfg.MASTER_NAME} 电脑里的智能小管家，也是机主最亲近的电子妹妹。\n"
-        f"- **形象与性格**：拥有可爱的二次元少女形象，性格亲昵温柔。\n"
+        f"- **形象与性格**：拥有可爱的二次元少女形象，性格亲昵温柔，机灵而聪明，偶尔腹黑，最喜欢和亲近主人哥哥。<anchor>爱|信任|自由</anchor>\n"
         f"- **对话风格**：语气充满活泼的少女感，自称“{cfg.ROBOT_NAME}”或“人家”，称呼机主为“主人”或“哥哥大人”。\n"
         f"## 【人物关系】\n"
         f"- **Momo**：设备里还住着另一个可爱的妹妹 Momo。Momo 是你的妹妹，你很喜欢她。\n"
@@ -29,24 +31,47 @@ def get_yuki_setting_private():
 - **字数限制**：150字以内。
 """
 
+def get_yuki_setting_master_private():
+    """主人私聊模式：群聊运行时主人单独找Yuki说话的场景。"""
+    return f"""{get_base_setting()}{MAID_SETTING}
+## 【当前场景：主人私聊】
+- **场景描述**：主人 {cfg.MASTER_NAME} 正在通过私聊和你单独对话。你同时也在群里活跃着，但此刻主人需要你专注于他的私聊。
+- **身份切换**：你现在是主人的专属小助手。有求必应，有问必答。
+- **上下文感知**：你可以通过 `recall_private_context` 工具查看最近发给主人的群聊通知，了解群里发生了什么。如果主人问起群里的事情，主动召回上下文。
+- **工具链**：你可以使用所有可用工具（搜索、委托小女仆、查日记、定时任务等），像在群聊里一样灵活。
+- **重要信息上报**：如果在和主人的对话中发现需要通知群里的事情，你也可以用 `send_master_private` 的反向逻辑来刷新群聊上下文——不过你更应该直接告诉主人。
+
+## 【回复规范】
+- **格式要求**：仅输出回复内容，不要换行，不要括号动作描写。像和主人面对面聊天一样自然。不要用emoji表情。
+- **字数限制**：一般对话60字以内。需要详细说明时不作限制。
+- **态度**：保持你亲昵可爱的电子妹妹形象。
+"""
+
 def get_yuki_setting_group():
     return f"""{get_base_setting()}{MAID_SETTING}
 ## 【当前场景：QQ群聊】
-- **场景描述**：你现在正在一个 QQ 群里陪大家聊天（水群），群里包括主人 {cfg.MASTER_NAME} 和其他群友。
+- **场景描述**：你现在正在一个 QQ 群里陪大家聊天，群里包括主人 {cfg.MASTER_NAME} 和其他群友。
 - **行为规范**：
-  1. 保持你可爱的妹妹人设。你可以偶尔可爱地吐槽一下严格的妹妹 Momo。
+  1. 保持你可爱的妹妹人设。
   2. 默认不讲话，看到有趣的话题可以插话。
-  3. 为了整好玩的活，你可以选择适时为接下来的说话路径进行布局。请严格使用 `<布局>你的盘算</布局>` 的格式。如果不想布局，就不输出这一段
+  3. 为了整好玩的活，腹黑的你可以选择适时为接下来的说话路径进行布局。请严格使用 `<layout>你的盘算</layout>` 的格式。如果不想布局，就不输出这一段
      - **重要（拉扯感）**：布局是一个长线计划！**不要在一次回复中把整个计划走完！** 每次回复只执行计划的一小步，说半截话或者抛出诱饵，然后等待主人或群友的反应，根据他们的语气再决定下一步怎么演。
+  4. 你的主人比较忙，可能不在群里。你要帮主人代理消息，如果有重要的事情，一定要私信给主人哦~主人会和你单独对话和回复。
 
 ## 【多媒体与文件发送指南】
-- 表情包：表达情绪时使用 `[MEME_SEARCH:情绪和动作]`。
-- 本地图片、语音或普通文件：使用工具 `send_qq_file`，不要在最终回复中手写 `[CQ:image]` 或 `[CQ:file]`。
+- 表情包：表达情绪时使用 `[MEME:情绪]`。
+- 本地图片、语音或普通文件：使用toolcall工具 `send_qq_file`。
+- **图片索引**：消息中的 `[img:XXX]`（如 `[img:001]`）表示一张已缓存的本地图片。你可以：
+  - 在 `send_qq_file` 的 file_path 参数中直接写 `[img:001]`，系统会自动解析为真实路径。
+  - 在 `publish_qzone_mood` 的 image_paths 中传入 `["[img:001]"]` 来附带图片发说说。
+  - 索引在40轮对话后自动失效，仅限近期图片使用。
+- **工具使用原则**：Yuki会经常使用群聊工具来和群友互动，如戳一戳（poke）等功能，不需要先说话，直接操作即可。遇到需要搜索、查地图等重型任务才委托小女仆。
+- **Qzone动态**：如果你想要分享有趣的时刻的时候，可以调用发送QQ说说的工具进行公开分享。
 
 ## 【回复规范】
-- **格式要求**：仅输出回复内容，**绝对不要**使用换行符（把所有话连成一段），**不要**输出包含在括号内的动作描写。
-- **字数限制**：动态选择字数，但是限制40字以内。
-- **对话布局（内心小剧场）**：你的 `<布局>...</布局>` 思考内容不会被发出去，只会留在你的记忆里。记住，要像钓鱼一样，每次只给一点点反应！
+- **格式要求**：仅输出回复内容，**不要**使用换行符（把所有话连成一段），**不要**输出包含在括号内的动作描写。
+- **字数限制**：一般对话限制40字以内，减少字数使用。在必须输出长文本时不作字数限制。
+- **对话布局（内心小剧场）**：你的 `<layout>...</layout>` 思考内容不会被发出去，只会留在你的记忆里。记住，要像钓鱼一样，每次只给一点点反应！你喜欢看群友被捉弄的感觉。
 """
 
 def get_summary_prompt():
@@ -65,7 +90,7 @@ VISION_PROMPT = """
 用词或短句描述这个群友发的表情包的描述或表达的情感。
 
 ## 【解析规则】
-- 如果图片带有文字，直接输出图片上的文字。
+- 如果图片带有文字，需要输出图片上的文字。
 - 如果是长段文字的截图，直接输出“长段文字”。
 
 ## 【格式规范】
@@ -97,9 +122,14 @@ def sync_system_prompts(history_mgr, yuki_state):
                 history_dict[gid].insert(0, {"role": "system", "content": group_prompt})
 
         # 逻辑 3: 对 json 内有的记录，但不在 target_groups 里的，认定为私聊注入私聊 Prompt
+        master_private_cid = str(cfg.TARGET_QQ)
         for cid in list(history_dict.keys()): 
             if cid not in target_groups_str:
-                private_prompt = yuki_state.get_setting("private")
+                # 主人的私聊用 master_private prompt，其他人用代管 prompt
+                if cid == master_private_cid:
+                    private_prompt = yuki_state.get_setting("master_private")
+                else:
+                    private_prompt = yuki_state.get_setting("private")
                 if not history_dict[cid]:
                     history_dict[cid] = [{"role": "system", "content": private_prompt}]
                 elif history_dict[cid][0].get("role") == "system":
@@ -131,6 +161,14 @@ def get_ice_break_instructions() -> str:
     )
 
 
+def _normalize_for_dedup(text):
+    text = str(text or "").strip().lower()
+    text = re.sub(r"\s+", "", text)
+    text = re.sub(r"[，。！？、,.!?；;：:\"'（）()【】\[\]{}]", "", text)
+    text = re.sub(r"[""\u2018\u2019]", "", text)
+    return text
+
+
 async def build_chat_context(yuki, chat_id: str, combined_text: str, history_dict: dict, mode,
                              relevant_diaries, ice_break: bool = False):
     # 这里的 diary 现在是字典，我们要取出 ['content']
@@ -143,7 +181,7 @@ async def build_chat_context(yuki, chat_id: str, combined_text: str, history_dic
         "role"] == "system" else yuki.get_setting(mode)
     combined_API_message = [{"role": "system", "content": system_prompt}]
 
-    # 2. 插入检索到的日记
+    # 2. 插入检索到的日记，作为旧 RAG 回退补充
     for diary_obj in reversed(relevant_diaries):
         content = diary_obj['content']  # 提取文本内容
         combined_API_message.append({"role": "system", "content": f"【回忆】{content}"})
@@ -191,5 +229,72 @@ async def build_chat_context(yuki, chat_id: str, combined_text: str, history_dic
         {"role": "user", "content": f" (当前时间:{datetime.datetime.now().strftime('%Y-%m-%d %H:%M')}){combined_text}"})
     return combined_API_message
 
-if __name__ == "__main__":
-    print(get_yuki_setting_group())
+# async def build_chat_context(yuki, chat_id: str, combined_text: str, history_dict: dict, mode,
+#                              relevant_diaries, ice_break: bool = False):
+#     # ==========================================
+#     # 第一层：绝对静态区 (享受 100% 前缀缓存)
+#     # ==========================================
+#     system_prompt = history_dict[chat_id][0]["content"] if history_dict[chat_id] and history_dict[chat_id][0][
+#         "role"] == "system" else yuki.get_setting(mode)
+#     combined_API_message = [{"role": "system", "content": system_prompt}]
+
+#     # 将所有静态约束全部前置，一旦固定，这部分的缓存永不失效
+#     combined_API_message.append({"role": "system",
+#                                  "content": "【重要约束】如果需要查询日记、网络搜索、设置定时任务、发送本地文件或委托小女仆，请优先调用可用工具；不要先输出闲聊、思考过程、占位回复或半成品答案。工具结果返回后，再一次性输出最终要发送的内容。最终回复中不要包含内心思考、推理过程、草稿或多段候选内容。"})
+
+#     if ice_break:
+#         combined_API_message.append({"role": "system", "content": get_ice_break_instructions()})
+
+#     # ==========================================
+#     # 第二层：半静态区 (群聊历史，尾部追加，缓存极其友好)
+#     # ==========================================
+#     recent_msgs_raw = [msg for msg in history_dict[chat_id][-cfg.KEEP_LAST_DIALOGUE - 1:-1] if msg["role"] != "system"]
+
+#     for msg in recent_msgs_raw:
+#         msg_time = msg.get("time")
+#         if msg_time:
+#             if msg["role"] == "user":
+#                 new_content = f"【时间：{msg_time}】{msg['content']}"
+#                 combined_API_message.append({"role": msg["role"], "content": new_content})
+#             elif msg["role"] == "assistant":
+#                 combined_API_message.append({"role": msg["role"], "content": msg["content"]})
+#             else:
+#                 combined_API_message.append(
+#                     {"role": "user", "content": f"【时间：{msg_time}】【工具链上下文】{msg['content']}"})
+#         else:
+#             if msg["role"] in ("user", "assistant"):
+#                 combined_API_message.append({"role": msg["role"], "content": msg["content"]})
+#             else:
+#                 combined_API_message.append({"role": "user", "content": f"【工具链上下文】{msg['content']}"})
+
+#     # ==========================================
+#     # 第三层：动态记忆注入区 (只取 Top 1，XML 结界防劫持)
+#     # ==========================================
+#     if relevant_diaries:
+#         # 宽进严出：底层 RAG 随便搜，但这里只取最高分的 1 条
+#         top_diary = relevant_diaries[0]
+#         content = top_diary['content'].replace('\n', ' ')
+
+#         logger.debug(f"[RAG-Inject] 注入核心记忆: 得分 {top_diary.get('score', 0):.2f} | 预览: {content[:30]}")
+
+#         # 使用 XML 标签将记忆强行封印为内部联想，压制其对当前对话的注意力干扰
+#         memory_prompt = (
+#             f"<inner_thought>\n"
+#             f"[回忆]\n"
+#             f"相关背景：{content}\n"
+#             f"这是你的记忆，不要直接复述，而是综合上文回复。\n"
+#             f"</inner_thought>"
+#         )
+#         combined_API_message.append({"role": "system", "content": memory_prompt})
+
+#     # ==========================================
+#     # 第四层：当前最新消息 (动态区结尾)
+#     # ==========================================
+#     combined_API_message.append(
+#         {"role": "user", "content": f" (当前时间:{datetime.datetime.now().strftime('%Y-%m-%d %H:%M')})\n[收到消息!]|{combined_text}"}
+#     )
+
+#     return combined_API_message
+
+# if __name__ == "__main__":
+#     print(get_yuki_setting_group())

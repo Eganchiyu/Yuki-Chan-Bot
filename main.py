@@ -4,6 +4,8 @@ import asyncio
 import sys
 import time
 
+from sympy import true
+
 from config import cfg
 from core.brain import YukiState
 from core.engine import YukiEngine
@@ -36,7 +38,11 @@ def initialize_components():
     connector = BotConnector(cfg.NAPCAT_WS_URL, cfg.NAPCAT_WS_TOKEN)
     sender = MessageSender(connector)
     parser = CQCodeParser(connector)
-    meme_processor = MemeProcessor()
+
+    from modules.vision.image_store import ImageStore
+    image_store = ImageStore()
+    meme_processor = MemeProcessor(image_store=image_store)
+
     yuki = YukiState()
     history_manager = HistoryManager()
     sync_system_prompts(history_manager, yuki)
@@ -50,6 +56,7 @@ def initialize_components():
 
     engine = YukiEngine(memory_rag, history_manager, yuki, sender)
     engine.sticker_manager = sticker_manager
+    engine.image_store = image_store
 
     end_time = time.time()
     logger.info(f"[System] 初始化完成，耗时 {end_time - start_time:.1f} 秒")
@@ -59,6 +66,7 @@ def initialize_components():
         "sender": sender,
         "parser": parser,
         "meme_processor": meme_processor,
+        "image_store": image_store,
         "yuki": yuki,
         "history_manager": history_manager,
         "memory_rag": memory_rag,
@@ -79,6 +87,22 @@ def warmup_groups(yuki, history_manager):
             f"初始欲望 {yuki.desire_to_start_topic.get(str(cid), 0)}%"
         )
     logger.debug(f"已预载 {len(yuki.last_message_time)} 个群组到巡检名单")
+
+
+def start_context_debug_webui_if_enabled():
+    """按环境变量在主进程内启动 Context Debug WebUI。"""
+    import os
+
+    # enabled = os.getenv("YUKI_CONTEXT_DEBUG_WEBUI", "").strip().lower()
+
+    host = os.getenv("YUKI_CONTEXT_DEBUG_HOST", "127.0.0.1")
+    port = int(os.getenv("YUKI_CONTEXT_DEBUG_PORT", "8777"))
+    try:
+        from modules.debug.webui_server import start_background_server
+        start_background_server(host=host, port=port)
+        logger.info(f"[ContextDebug] WebUI 已启动: http://{host}:{port}/")
+    except Exception as exc:
+        logger.error(f"[ContextDebug] WebUI 启动失败: {exc}")
 
 
 async def main_process(
@@ -146,6 +170,7 @@ if __name__ == "__main__":
         session_pipeline = SessionPipeline(components, group_active_state)
         components["engine"].process_callback = main_process
         configure_runtime(components, session_pipeline, group_active_state, logger)
+        start_context_debug_webui_if_enabled()
 
         choice = input("[System] 选择模式：1. 私聊模式  2. 群聊模式（默认）\n请输入数字: ").strip()
         mode = "private" if choice == "1" else "group"

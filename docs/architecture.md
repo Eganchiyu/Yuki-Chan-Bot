@@ -31,6 +31,7 @@ YukiV6/
 │   ├── tools.py               # 标准工具集合、schema 与 handler
 │   ├── history_manager.py     # 历史记录管理
 │   ├── maid.py                # 小女仆子代理系统
+│   ├── private_context.py     # 主人私聊上下文快照与召回系统
 │   └── prompts.py             # 提示词模板管理
 │
 ├── modules/                   # 功能模块
@@ -149,7 +150,7 @@ maid_task_queue: asyncio.Queue     # 小女仆任务队列
 - LLM 决策与响应处理
 - 工具链多轮调用与结果回流
 - 工具调用期间新消息合并
-- 指令标签解析（`[DELEGATE_TO_MAID]`, `[MEME_SEARCH]`）
+- 指令标签解析（`[DELEGATE_TO_MAID]`, `[MEME]`）
 - 日记归档触发
 
 **关键方法**：
@@ -166,7 +167,7 @@ maid_task_queue: asyncio.Queue     # 小女仆任务队列
 
 ---
 
-### 3.4 core/history_manager.py - 历史记录管理
+### 3.5 core/history_manager.py - 历史记录管理
 
 **职责**：
 - 对话历史的持久化存储
@@ -186,7 +187,7 @@ maid_task_queue: asyncio.Queue     # 小女仆任务队列
 
 ---
 
-### 3.5 core/toolchain.py 与 core/tools.py - Function Call 工具链
+### 3.6 core/toolchain.py 与 core/tools.py - Function Call 工具链
 
 **职责**：
 - `FunctionRegistry` 负责注册 `ToolSpec` 并向 LLM 提供 schema
@@ -205,7 +206,7 @@ maid_task_queue: asyncio.Queue     # 小女仆任务队列
 
 ---
 
-### 3.6 core/maid.py - 小女仆系统
+### 3.7 core/maid.py - 小女仆系统
 
 **职责**：
 - 子代理任务执行
@@ -219,7 +220,37 @@ maid_task_queue: asyncio.Queue     # 小女仆任务队列
 
 ---
 
-### 3.7 modules/memory/rag.py - RAG 记忆系统
+### 3.8 core/private_context.py - 主人私聊上下文管理器
+
+**职责**：
+- 当群聊中 `send_master_private` 工具被调用时，保存当时的群聊上下文快照到 `data/private_context.json`
+- 主人私聊时通过 `recall_private_context` 工具召回快照
+- 格式化快照为可注入 prompt 的文本块
+
+**存储结构**：
+```json
+{
+  "snapshots": [
+    {
+      "id": "snap_20260626_180000",
+      "timestamp": "2026-06-26 18:00:00",
+      "source_chat_id": "123456",
+      "reason": "有人提到主人",
+      "message": "发送给主人的私信内容",
+      "context": [{"role": "user", "content": "...", "time": "..."}]
+    }
+  ]
+}
+```
+
+**关键方法**：
+- `save_context_snapshot()`: 保存快照（最多 50 条，自动裁剪）
+- `recall_context()`: 召回快照，支持按群聊过滤
+- `format_context_for_prompt()`: 格式化为 prompt 文本块
+
+---
+
+### 3.9 modules/memory/rag.py - RAG 记忆系统
 
 **类**：`MemoryRAG`（单例）
 
@@ -242,12 +273,13 @@ maid_task_queue: asyncio.Queue     # 小女仆任务队列
 
 ---
 
-### 3.8 modules/QQNapcatListen/listen_main.py - 输入适配层
+### 3.10 modules/QQNapcatListen/listen_main.py - 输入适配层
 
 **职责**：
 - WebSocket 消息监听
 - 群聊开关控制（`/关闭`, `/开启`）
 - QQ 消息标准化并 feed 到 `SessionPipeline`
+- **双模路由**：群聊模式下同时接收主人私聊消息，路由为 `master_private` 模式
 - RLHF 正反馈捕捉
 - 帮助指令拦截
 
@@ -260,7 +292,7 @@ maid_task_queue: asyncio.Queue     # 小女仆任务队列
 
 ---
 
-### 3.9 network/ - 网络通信层
+### 3.11 network/ - 网络通信层
 
 #### ws_connection.py - WebSocket 连接
 
@@ -293,7 +325,7 @@ maid_task_queue: asyncio.Queue     # 小女仆任务队列
 
 ---
 
-### 3.10 utils/llm_client.py - LLM 客户端
+### 3.12 utils/llm_client.py - LLM 客户端
 
 **职责**：
 - 发送 OpenAI 兼容格式的对话补全请求
@@ -316,7 +348,7 @@ maid_task_queue: asyncio.Queue     # 小女仆任务队列
 
 ---
 
-### 3.11 config.py - 配置管理
+### 3.13 config.py - 配置管理
 
 **职责**：
 - YAML 配置文件读写
@@ -381,7 +413,7 @@ cfg (全局单例)
 │  ├── LLM 生成回复                                               │
 │  ├── 指令标签解析                                               │
 │  │   ├── [DELEGATE_TO_MAID] → 小女仆队列                       │
-│  │   └── [MEME_SEARCH] → 表情包搜索                            │
+│  │   └── [MEME] → 表情包搜索                            │
 │  ├── 消息发送                                                   │
 │  └── 历史保存                                                   │
 └─────────────────────────────────────────────────────────────────┘

@@ -43,12 +43,14 @@ data/
 *.sqlite3
 
 # 项目运行时目录
-yuki_memory/
+/yuki_memory/
 skills/
 core/skills
 logs/
 core/tasks
 *.log
+temp_images/
+memory/
 
 # 配置文件目录：只保留 README.md，其他全部忽略
 configs/*
@@ -82,7 +84,11 @@ Desktop.ini
 *.backup
 temp_expression.png
 window_list.txt
-
+output/
 # UV 包管理器
 .uv/
 uv.lock
+
+#其他文件
+
+yuki.bat

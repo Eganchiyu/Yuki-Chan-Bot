@@ -41,14 +41,29 @@ class CQProtocol:
 
     @staticmethod
     def replace_other_CQ_codes(text: str) -> str:
-        """把所有多媒体码换成占位符"""
+        """把所有多媒体码换成占位符，保留关键 ID 信息"""
         text = re.sub(r'\[CQ:image[^\]]*\]', '[图片]', text)
         text = re.sub(r'\[CQ:face[^\]]*\]', '[表情]', text)
-        text = re.sub(r'\[CQ:record[^\]]*\]', '[语音]', text)
+        # 语音：保留 file_id，后续可以转写
+        text = re.sub(
+            r'\[CQ:record,file=([^\],]+)[^\]]*\]',
+            r'[语音:file_id=\1]',
+            text
+        )
         text = re.sub(r'\[CQ:video[^\]]*\]', '[视频]', text)
-        text = re.sub(r'\[CQ:file[^\]]*\]', '[文件]', text)
+        # 文件：保留 file_id 信息，方便后续下载
+        text = re.sub(
+            r'\[CQ:file,id=([^],]+)[^\]]*\]',
+            r'[文件:file_id=\1]',
+            text
+        )
         text = re.sub(r'\[CQ:json[^\]]*\]', '[小程序]', text)
         return text
+
+    @staticmethod
+    def extract_file_ids(text: str) -> list:
+        """提取文本中所有文件 ID"""
+        return re.findall(r'\[文件:file_id=([^\]]+)\]', text)
 
     @staticmethod
     def is_at_me(text: str, self_id: str) -> bool:

@@ -55,6 +55,8 @@
 | `runtime` | `ToolRuntime` | 工具运行时依赖 |
 | `metadata` | `dict` | 可选扩展元数据 |
 
+> `metadata` 中的 `history_manager` 键可用于工具跨会话写入历史记录。
+
 `ToolRuntime` 当前包含：
 
 | 字段 | 说明 |
@@ -175,12 +177,15 @@ ToolCallManager.execute_tool_calls()
 | 工具名 | handler | 功能 |
 |--------|---------|------|
 | `search_diary` | `search_diary_tool` | 查询 Yuki 日记/记忆，支持日期与关键词 |
-| `manage_timer_task` | `manage_timer_task_tool` | 创建、取消或列出轻量定时任务记录 |
 | `delegate_to_maid` | `delegate_to_maid_tool` | 将重型任务委托给小女仆，支持后台队列或 inline 执行 |
-| `send_master_private` | `send_master_private_tool` | 向主人私聊发送私密信息 |
-| `browser_search` | `browser_search_tool` | 生成 Bing 搜索入口 URL |
-| `send_qq_file` | `send_qq_file_tool` | 发送图片或语音文件 |
-| `inject_external_content` | `inject_external_content_tool` | 向当前对话历史注入外部内容 |
+| `send_master_private` | `send_master_private_tool` | 向主人私聊发送私密信息，自动保存群聊上下文快照，同步写入私聊历史 |
+| `recall_private_context` | `recall_private_context_tool` | 召回最近发给主人的群聊上下文快照，了解群里发生了什么 |
+| `send_qq_file` | `send_qq_file_tool` | 发送本地图片、语音或普通文件，支持 [img:XXX] 索引 |
+| `resolve_user` | `resolve_user_tool` | 根据用户昵称解析 QQ 号 |
+| `poke` | `poke_tool` | 戳一戳指定用户 |
+| `download_file` | `download_file_tool` | 下载群聊/私聊中的文件到本地 |
+| `publish_qzone_mood` | `publish_qzone_mood_tool` | 发布 QQ 空间说说，支持纯文本和带图 |
+| `generate_image` | `generate_image_tool` | 调用图像生成模型生成图片 |
 
 ---
 
@@ -192,38 +197,53 @@ ToolCallManager.execute_tool_calls()
 - 行为：使用 `asyncio.to_thread()` 调用 `search_diary_fast()`，避免阻塞事件循环。
 - 失败条件：日期和关键词都为空时返回 `missing_date_or_keyword`。
 
-### 5.2 manage_timer_task
-
-- 参数：`title` 必填，`due_time` 可选，`action` 支持 `create`、`cancel`、`list`。
-- 状态存储：`context.yuki.maid_current_tasks["__timers__"]`。
-- 注意：当前是轻量状态入口，不包含真实定时调度器。
-
-### 5.3 delegate_to_maid
+### 5.2 delegate_to_maid
 
 - 参数：`goal` 必填，`run_inline` 可选。
 - 调用前先使用 `MaidCapabilityBoundary.judge()` 进行能力边界判定。
 - `run_inline=True` 时直接等待 `maid_evolution_loop()` 结果。
 - 默认后台模式会构造 maid task 并放入 `context.yuki.maid_task_queue`。
 
-### 5.4 send_master_private
+### 5.3 send_master_private
 
-- 参数：`message` 必填。
+- 参数：`message` 必填，`reason` 可选（默认"重要信息"）。
 - 行为：通过 `context.sender.send(cfg.TARGET_QQ, message, mode="private")` 发送给主人。
+- 附带行为：自动保存群聊上下文快照到 `data/private_context.json`；将消息同步写入主人私聊的 `chat_history.json`（标记为 `[群聊通知]`）。
 
-### 5.5 browser_search
+### 5.4 recall_private_context
 
-- 参数：`query` 必填。
-- 行为：生成 Bing 搜索 URL，不直接抓取网页内容。
+- 参数：`limit` 可选（默认5），`source_chat_id` 可选。
+- 行为：从 `data/private_context.json` 召回最近的群聊上下文快照，返回格式化的上下文文本块。
 
-### 5.6 send_qq_file
+### 5.5 send_qq_file
 
-- 参数：`file_path` 必填，`file_type` 支持 `image` 或 `voice`。
-- 行为：根据类型调用 sender 的本地图片或语音发送接口。
+- 参数：`file_path` 必填，`file_type` 支持 `image`、`voice` 或 `file`。
+- 行为：根据类型调用 sender 的本地图片、语音或文件发送接口。支持 `[img:XXX]` 索引。
 
-### 5.7 inject_external_content
+### 5.6 resolve_user
 
-- 参数：`content` 必填，`source` 可选。
-- 行为：向 `context.history_dict[context.chat_id]` 追加一条用户消息，格式为 `【source 内容注入】content`。
+- 参数：`nickname` 必填。
+- 行为：根据用户昵称在当前群聊中查找匹配的 QQ 号。
+
+### 5.7 poke
+
+- 参数：`target_qq` 必填。
+- 行为：戳一戳指定用户。
+
+### 5.8 download_file
+
+- 参数：`file_url` 必填，`save_path` 可选。
+- 行为：下载群聊/私聊中的文件到本地。
+
+### 5.9 publish_qzone_mood
+
+- 参数：`content` 必填，`images` 可选。
+- 行为：发布 QQ 空间说说，支持纯文本和带图。
+
+### 5.10 generate_image
+
+- 参数：`prompt` 必填。
+- 行为：调用图像生成模型生成图片。
 
 ---
 
@@ -297,7 +317,7 @@ handler 内部应优先返回结构化 `ToolResult`，不要直接抛出可预�
 当前 `api_reply()` 仍保留两类标签式兼容逻辑：
 
 - `[DELEGATE_TO_MAID:...]`：旧式小女仆委托标签。
-- `[MEME_SEARCH:...]`：旧式表情包搜索标签。
+- `[MEME:...]`：旧式表情包搜索标签。
 
 Function Call 工具链是新的标准调用入口，但这些标签逻辑仍在最终回复阶段解析，用于兼容历史提示词或模型输出习惯。
 

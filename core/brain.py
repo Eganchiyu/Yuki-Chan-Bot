@@ -6,10 +6,74 @@ from collections import defaultdict
 from concurrent.futures.thread import ThreadPoolExecutor
 
 from config import cfg
-from core.prompts import get_yuki_setting_private, get_yuki_setting_group
+from core.prompts import get_yuki_setting_private, get_yuki_setting_group, get_yuki_setting_master_private
 from utils.logger import get_logger
 
 logger = get_logger("brain")
+
+
+class UserMapping:
+    """用户昵称到QQ号的临时映射表，支持多轮管线持久化。"""
+
+    def __init__(self, ttl_rounds=10):
+        # {chat_id: {sender_name: {"user_id": int, "ttl": int}}}
+        self._map = defaultdict(dict)
+        self.ttl_rounds = ttl_rounds
+
+    def update(self, chat_id: str, sender_name: str, user_id: int):
+        """更新或新增映射。"""
+        if not sender_name or not user_id:
+            return
+        cid = str(chat_id)
+        self._map[cid][sender_name] = {
+            "user_id": user_id,
+            "ttl": self.ttl_rounds,
+        }
+        logger.debug(f"[UserMapping] {cid} 更新映射: {sender_name} -> {user_id}")
+
+    def resolve(self, chat_id: str, name: str) -> int | None:
+        """根据昵称解析 QQ 号，支持精确匹配和模糊匹配。"""
+        cid = str(chat_id)
+        user_map = self._map.get(cid, {})
+        if not user_map:
+            return None
+
+        # 精确匹配
+        if name in user_map:
+            return user_map[name]["user_id"]
+
+        # 模糊匹配：目标包含在昵称中，或昵称包含在目标中
+        for nick, info in user_map.items():
+            if name in nick or nick in name:
+                return info["user_id"]
+
+        return None
+
+    def tick(self, chat_id: str):
+        """管线轮次递减，清理过期映射。"""
+        cid = str(chat_id)
+        if cid not in self._map:
+            return
+
+        expired_keys = []
+        for name, info in self._map[cid].items():
+            info["ttl"] -= 1
+            if info["ttl"] <= 0:
+                expired_keys.append(name)
+
+        for key in expired_keys:
+            del self._map[cid][key]
+            logger.debug(f"[UserMapping] {cid} 过期移除: {key}")
+
+        # 如果该群聊映射为空，清理整个条目
+        if not self._map[cid]:
+            del self._map[cid]
+
+    def get_all(self, chat_id: str) -> dict:
+        """获取指定群聊的所有映射（用于调试）。"""
+        cid = str(chat_id)
+        return {name: info["user_id"] for name, info in self._map.get(cid, {}).items()}
+
 
 class YukiState:
     def __init__(self):
@@ -29,11 +93,14 @@ class YukiState:
         self.maid_current_tasks = {}  # chat_id -> 当前任务描述（让Yuki知道她在干什么）
         self.maid_executor = ThreadPoolExecutor(max_workers=2)  # 并行执行小女仆
 
+        # --- 新增：用户昵称到QQ号的映射 ---
+        self.user_mapping = UserMapping(ttl_rounds=10)
+
         # --- 新增：活跃度感知 ---
         # chat_id: float (0.0 ~ 10.0, 10 代表极度刷屏)
 
         self.group_activity = {}
-        # # 记录每个群上一次“升温”的时间，用于计算自然冷却
+        # # 记录每个群上一次"升温"的时间，用于计算自然冷却
         # self.last_activity_update = {}
 
     async def boost_activity(self, chat_id, sensitivity = cfg.SENSITIVITY) -> None:
@@ -75,6 +142,8 @@ class YukiState:
 
     @staticmethod
     def get_setting(mode):
+        if mode == "master_private":
+            return get_yuki_setting_master_private()
         return get_yuki_setting_private() if mode == "private" else get_yuki_setting_group()
 
     def update_energy(self, chat_id):
@@ -103,7 +172,7 @@ class YukiState:
         cid = str(chat_id)
 
         # 2. 获取该群的实时活跃度，并归一化到 0.0~1.0
-        # 假设热度 5.0 是我们定义的“非常活跃”基准
+        # 假设热度 5.0 是我们定义的"非常活跃"基准
         raw_activity = self.group_activity.get(cid, 0.0)
         recent_activity_level = min(raw_activity / 5.0, 1.0)
 

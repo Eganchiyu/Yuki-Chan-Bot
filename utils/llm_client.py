@@ -81,7 +81,8 @@ async def chat_completion_raw(
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
     }
-    payload = {"model": model, "messages": messages, **kwargs}
+    # 显式禁用 SSE 流式，避免部分 API 默认返回 text/event-stream
+    payload = {"model": model, "messages": messages, "stream": False, **kwargs}
     payload = _sanitize_payload(model, payload)
 
     client_timeout = aiohttp.ClientTimeout(total=timeout, connect=10)
@@ -161,11 +162,12 @@ async def llm_chat_raw(
 
     try:
         backup_key = cfg.BACKUP_API_KEY or cfg.LLM_API_KEY
+        # 备用线路始终使用自身模型名，不继承主线路的 model 参数
         return await chat_completion_raw(
             base_url=cfg.BACKUP_BASE_URL,
             api_key=backup_key,
             messages=messages,
-            model=model or cfg.BACKUP_MODEL,
+            model=cfg.BACKUP_MODEL,
             timeout=60.0,
             **kwargs,
         )

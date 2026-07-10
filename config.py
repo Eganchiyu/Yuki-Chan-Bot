@@ -118,6 +118,16 @@ class APIConfig:
         comment="图像处理 API Key",
         section="api"
     )
+    image_gen_url: str = config_field(
+        "https://dashscope.aliyuncs.com/compatible-mode/v1",
+        comment="图像生成 API 地址",
+        section="api"
+    )
+    image_gen_api_key: str = config_field(
+        "",
+        comment="图像生成 API Key",
+        section="api"
+    )
 
 
 @dataclass
@@ -136,6 +146,11 @@ class ModelConfig:
     vision: str = config_field(
         "qwen3-vl-flash",
         comment="视觉/多模态模型；如不需要可留空",
+        section="model"
+    )
+    image_gen: str = config_field(
+        "wan2.7-image",
+        comment="图像生成模型",
         section="model"
     )
     disable_thinking: bool = config_field(
@@ -161,6 +176,11 @@ class ConnectionConfig:
     max_retries: int = config_field(
         3,
         comment="最大重试次数",
+        section="connection"
+    )
+    qq: int = config_field(
+        0,
+        comment="机器人 QQ 号",
         section="connection"
     )
 
@@ -208,6 +228,11 @@ class DiaryConfig:
 @dataclass
 class RAGConfig:
     """RAG 记忆配置"""
+    enabled: bool = config_field(
+        True,
+        comment="RAG 日记检索开关（关闭后跳过日记检索，直接使用上下文对话）",
+        section="rag"
+    )
     retrieval_top_k: int = config_field(
         20,
         comment="检索返回的最大日记条数",
@@ -497,6 +522,16 @@ class Config:
         return self.api.image_process_api_key
 
     @property
+    def IMAGE_GEN_URL(self) -> str:
+        """图像生成 API 地址"""
+        return self.api.image_gen_url
+
+    @property
+    def IMAGE_GEN_API_KEY(self) -> str:
+        """图像生成 API Key"""
+        return self.api.image_gen_api_key
+
+    @property
     def LLM_MODEL(self) -> str:
         """主对话模型"""
         return self.model.llm
@@ -510,6 +545,11 @@ class Config:
     def VISION_MODEL(self) -> str:
         """视觉模型"""
         return self.model.vision
+
+    @property
+    def IMAGE_GEN_MODEL(self) -> str:
+        """图像生成模型"""
+        return self.model.image_gen
 
     @property
     def DISABLE_THINKING(self) -> bool:
@@ -531,6 +571,11 @@ class Config:
     def MAX_RETRIES(self) -> int:
         """最大重试次数"""
         return self.connection.max_retries
+
+    @property
+    def SELF_QQ(self) -> int:
+        """机器人 QQ 号"""
+        return int(self.connection.qq)
 
     @property
     def TARGET_QQ(self) -> int:
@@ -606,6 +651,11 @@ class Config:
     def KEEP_LAST_DIALOGUE(self) -> int:
         """保留近期对话条数"""
         return self.rag.keep_last_dialogue
+
+    @property
+    def RAG_ENABLED(self) -> bool:
+        """RAG 日记检索开关"""
+        return self.rag.enabled
 
     @property
     def RETRIEVAL_TOP_K(self) -> int:

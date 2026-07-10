@@ -1,9 +1,12 @@
 import asyncio
 import time
 
+import core.brain
 from config import cfg
 from init import save_group_state
 from modules.message.CQProtocol import smart_truncate
+from modules.message.GetMeta import MetaGetter
+from modules.shot_memory import shot_live_buffer
 
 connector = None
 sender = None
@@ -13,12 +16,13 @@ history_manager = None
 session_pipeline = None
 group_active_state = None
 logger = None
+meta_getter = None
 
 
 def configure_runtime(components: dict, pipeline, active_state: dict, runtime_logger):
     """注入运行期组件，避免监听层反向导入 main.py。"""
     global connector, sender, yuki, engine, history_manager
-    global session_pipeline, group_active_state, logger
+    global session_pipeline, group_active_state, logger, meta_getter
 
     connector = components["connector"]
     sender = components["sender"]
@@ -28,6 +32,7 @@ def configure_runtime(components: dict, pipeline, active_state: dict, runtime_lo
     session_pipeline = pipeline
     group_active_state = active_state
     logger = runtime_logger
+    meta_getter = MetaGetter(connector)
 
 
 async def start_background_tasks(mode: str):
@@ -38,6 +43,15 @@ async def start_background_tasks(mode: str):
     asyncio.create_task(engine.ice_break_monitor())
     from core.engine import maid_worker
     asyncio.create_task(maid_worker(engine, yuki, sender, history_manager))
+
+    # QZone 社交监控（暂时关闭）
+    # try:
+    #     from modules.qzone.monitor import ensure_monitor_started
+    #     asyncio.create_task(ensure_monitor_started(connector, engine, getattr(engine, 'rag', None)))
+    #     logger.info("[NapCat] QZone 社交监控已启动")
+    # except Exception as e:
+    #     logger.warning(f"[NapCat] QZone 监控启动失败: {e}")
+
     logger.info("[NapCat] 已启动后台辅助任务 (日记检查/破冰/精力衰减)")
 
 
@@ -72,6 +86,61 @@ def handle_group_switch(group_id, gid_str, user_id, raw_msg):
     return False
 
 
+async def handle_poke_event(data: dict, mode: str):
+    """处理戳一戳事件，将被戳信息注入消息管线。"""
+    group_id = data.get("group_id")
+    poker_id = data.get("user_id")       # 戳人者
+    target_id = data.get("target_id")    # 被戳者
+
+    # # 只处理戳到 Yuki 的事件
+    # if not target_id or int(target_id) != cfg.TARGET_QQ:
+    #     return
+    # # 私聊模式不处理群戳一戳
+    # if mode == "private" or not group_id:
+    #     return
+
+    gid_str = str(group_id)
+    if not group_active_state.get(gid_str, True):
+        return
+
+    # 群聊白名单兜底：非白名单群直接丢弃
+    if cfg.TARGET_GROUPS and group_id not in cfg.TARGET_GROUPS:
+        return
+
+    # 查戳人者昵称
+    poker_name = "某人"
+    poked_name = "某人"
+    if poker_id and meta_getter:
+        member_info = await meta_getter.get_group_member_info(gid_str, str(poker_id))
+        if member_info:
+            poker_name = (member_info.get("card")
+                          or member_info.get("nickname")
+                          or "某人")
+    
+    if target_id == cfg.SELF_QQ:
+        poked_name = cfg.ROBOT_NAME
+    elif target_id and meta_getter:
+        member_info = await meta_getter.get_group_member_info(gid_str, str(target_id))
+        if member_info:
+            poked_name = (member_info.get("card")
+                            or member_info.get("nickname")
+                            or "某人")
+        
+    logger.info(f"[NapCat] 戳一戳事件: {poker_name}({poker_id}) 戳了戳 {poked_name}({target_id}) (群:{gid_str})")
+
+
+
+    message_obj = {
+        "name": poker_name,
+        "content": f'[{poker_name} 戳了戳 {poked_name}]',
+        "raw_text": "[戳一戳]",
+        "is_bot": False,
+        "user_id": int(poker_id) if poker_id else None,
+        "message_id": None,
+    }
+    await session_pipeline.enqueue_message(gid_str, mode, message_obj=message_obj)
+
+
 async def napcat_listen(mode: str):
     """NapCat 输入适配层：接收 QQ 消息并 feed 到会话管道。"""
     await start_background_tasks(mode)
@@ -80,6 +149,14 @@ async def napcat_listen(mode: str):
     while True:
         try:
             async for data in connector.listen():
+                logger.debug(f"[NapCat] 收到原始消息: {data}")
+                # 戳一戳事件拦截（notice/notify/poke）
+                if (data.get("post_type") == "notice"
+                        and data.get("notice_type") == "notify"
+                        and data.get("sub_type") == "poke"):
+                    asyncio.create_task(handle_poke_event(data, mode))
+                    continue
+
                 if data.get("post_type") != "message":
                     continue
 
@@ -89,6 +166,10 @@ async def napcat_listen(mode: str):
 
                 if mode == "private" and msg_type == "private" and user_id == cfg.TARGET_QQ:
                     await feed_message(user_id, raw_msg, mode)
+
+                # 群聊模式下，同时接收主人的私聊消息
+                elif mode == "group" and msg_type == "private" and user_id == cfg.TARGET_QQ:
+                    await feed_message(user_id, raw_msg, "master_private")
 
                 elif mode == "group" and msg_type == "group":
                     group_id = data.get("group_id")
@@ -100,7 +181,9 @@ async def napcat_listen(mode: str):
                         continue
                     if not group_active_state.get(gid_str, True):
                         continue
-
+                    
+                    # logger.debug(f"[NapCat] 收到原始消息: {data}")
+                    
                     sender_info = data.get("sender", {})
                     name = sender_info.get("card") or sender_info.get("nickname") or "路人"
                     is_fake = name == cfg.MASTER_NAME and user_id != cfg.TARGET_QQ
@@ -110,6 +193,17 @@ async def napcat_listen(mode: str):
                         )
                         name = f"{name}(冒充)"
 
+                    shot_live_buffer.append(
+                        gid_str,
+                        name=name,
+                        raw_text=raw_msg,
+                        content=f'【"{name}"】说: {raw_msg}',
+                        segments=data.get("message"),
+                        user_id=int(user_id),
+                        message_id=data.get("message_id"),
+                        is_bot=False,
+                    )
+
                     await feed_message(
                         group_id,
                         f'【"{name}"】说: {raw_msg}',
@@ -117,6 +211,7 @@ async def napcat_listen(mode: str):
                         raw_message=raw_msg,
                         sender_name=name,
                         user_id=int(user_id),
+                        message_id=data.get("message_id"),
                     )
 
         except Exception as e:
@@ -125,7 +220,7 @@ async def napcat_listen(mode: str):
             await asyncio.sleep(5)
 
 
-async def feed_message(chat_id, content, mode, raw_message="", sender_name="", user_id=None):
+async def feed_message(chat_id, content, mode, raw_message="", sender_name="", user_id=None, message_id=None):
     """将标准化后的消息放入对应 chat_id 的会话缓冲，并按需唤醒会话泵。"""
     cid_str = str(chat_id)
     is_bot = "BOT" in sender_name or "机器人" in sender_name
@@ -152,17 +247,27 @@ async def feed_message(chat_id, content, mode, raw_message="", sender_name="", u
         history_manager.append_chat(chat_id, "assistant", "(已发送帮助文档图片)")
         return
 
-    if cfg.ROBOT_NAME.lower() in raw_message.lower():
+    # ── /jm 指令拦截（暂时禁用）──
+    # from modules.jm_downloader import handle_jm_command
+    # if await handle_jm_command(chat_id, raw_message, sender, mode):
+    #     return
+
+    # 拦截 Bot 消息（白名单除外）
+    if is_bot and (not user_id or user_id not in cfg.TARGET_WHITELIST):
+        # await session_pipeline.enqueue_message(cid_str, mode, message_obj=None)
+        return
+
+    # 非 Bot 消息且提到 Yuki 时快速唤醒
+    if not is_bot and cfg.ROBOT_NAME.lower() in raw_message.lower():
         session_pipeline.wake_quickly(cid_str)
 
-    if not is_bot or (user_id and user_id in cfg.TARGET_WHITELIST):
-        message_obj = {
-            "name": sender_name,
-            "content": content,
-            "raw_text": raw_message,
-            "is_bot": is_bot,
-        }
-    else:
-        message_obj = None
+    message_obj = {
+        "name": sender_name,
+        "content": content,
+        "raw_text": raw_message,
+        "is_bot": is_bot,
+        "user_id": user_id,
+        "message_id": message_id,
+    }
 
     await session_pipeline.enqueue_message(cid_str, mode, message_obj=message_obj)

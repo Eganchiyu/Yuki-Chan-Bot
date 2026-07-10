@@ -1,8 +1,84 @@
 # YukiV6 开发规划
 
-## 一、当前阶段：架构重构（进行中）
+## 一、当前阶段：Yuki-Memory 分阶段重构（进行中）
 
-### 1.1 目标
+### 1.1 当前程序运行状态
+
+| 项目 | 状态 | 说明 |
+|------|------|------|
+| 主程序运行 | ✅ 正常 | 当前主流程仍使用旧 `MemoryRAG`，未切换到新 yuki-memory，因此现有机器人行为不受新库影响 |
+| 旧 RAG 记忆 | ✅ 正常 | `modules/memory/rag.py` 仍保留并作为运行时主记忆系统 |
+| 新 yuki-memory 数据层 | ✅ 正常 | `YukiMemoryStore` 可初始化、保存和检索 summary |
+| 旧日记迁移 | ✅ 已完成 | 3244 条旧日记已迁移到 `yuki_memory` collection，旧 `diaries` collection 未修改 |
+| 主流程接入新记忆 | ⏳ 未开始 | `SessionPipeline.retrieve_memories()` 仍调用旧 `MemoryRAG.search_diaries()` |
+| 长上下文策略 | ⏳ 未开始 | 仍使用现有短上下文与日记触发策略 |
+| Cache-friendly Prompt | ⏳ 未开始 | Prompt 结构仍未切换为稳定前缀/动态上下文/当前输入三段式 |
+
+### 1.2 分阶段计划
+
+| 阶段 | 目标 | 状态 | 验收标准 |
+|------|------|------|----------|
+| A | 建立 `modules/yuki_memory` 新库骨架 | ✅ 已完成 | 可初始化 `YukiMemoryStore()`，可保存/搜索 summary，不影响旧 `MemoryRAG` |
+| B | 迁移 3244 条旧日记到 `yuki_memory` | ✅ 已完成 | 目标 collection count = 3244，旧 `diaries` collection 不被修改 |
+| C | 增强旧日记 L2/L3 候选离线提取 | 🚧 提取中 | 脚本已完成；20条小批量验证通过；主群聊 1955 条正在后台断点提取，目前已有 705 条日记输出，错误 1 条 |
+| D | 候选审核和去重 | ✅ 脚本完成 | 已新增审核去重脚本；当前 650 条输出审核为 approved 1779 / needs_review 336 / rejected 133 / duplicates 10 |
+| E | 导入 L2/L3 结构化记忆 | ✅ dry-run 完成 | 已新增导入脚本；当前 approved 1779 条 dry-run 转换成功，0 失败，尚未真实写入结构化记忆 |
+| F | 长上下文 Session 改造 | ⏳ 待开始 | 支持较长 session 窗口，减少频繁裁剪 |
+| G | 每日/半日整理器 | ⏳ 待开始 | 替代高频 idle diary，总结频率降至每日 1-2 次 |
+| H | Cache-friendly Prompt Builder | ⏳ 待开始 | 稳定 prefix 一天最多更新 1-2 次，当前时间和动态检索后置 |
+| I | 主流程接入 YukiMemory | ⏳ 待开始 | 新库 summary search 可替代旧 search_diaries，回复流程不崩 |
+
+### 1.3 近期执行顺序
+
+1. 等待阶段 C 主群聊后台提取完成；完成后对完整输出重新执行阶段 D 审核。
+2. 先人工抽查 `needs_review` 与 `rejected`，确认审核规则不过滤关键长期记忆。
+3. 执行阶段 E 真实导入低风险 approved 结构化记忆，profile candidate 默认暂不导入。
+4. 在新库具备 summary + fact/preference/relationship/event/todo 后，再进入阶段 I 的主流程过渡接入。
+5. 最后做阶段 F/H/G，避免在数据层不稳定时改动运行时主链路。
+
+### 1.4 下一步详细执行清单
+
+#### 阶段 C：完成结构化候选提取
+
+- 继续等待 `chat_id=1057020972` 主群聊 1955 条旧日记提取完成。
+- 提取完成后检查 `mimo_1057020972_errors.jsonl`，对失败记录单独判断是否需要换 key 后重跑。
+- 对其他群聊按数据量顺序继续提取：`1034986009` → 其他中小群。
+- 所有提取命令必须继续使用 `--resume`，避免重复处理已完成日记。
+- 如果触发 `fatal_llm_auth_error`，暂停提取并更换 API Key 后继续。
+
+#### 阶段 D：完整审核与去重
+
+- 使用完整候选文件重新运行 `review_memory_candidates.py`。
+- 保留 `approved` 作为自动导入来源。
+- 抽查 `needs_review`：重点检查 `profile_candidate`、`todo`、`risk=medium`。
+- 抽查 `rejected`：确认低置信度但重要的关系/事件没有被误删。
+- 必要时调整 `--min-confidence` 或低价值事件过滤规则后重跑审核。
+
+#### 阶段 E：结构化记忆真实导入
+
+- 先对完整 `approved` 结果执行 `import_memory_candidates.py --dry-run`。
+- dry-run 0 失败后，再真实导入 `fact/preference/relationship/event/todo`。
+- `profile_candidate` 默认暂不导入，待人工审核或后续 L3 identity/snapshot 生成器处理。
+- 导入后抽样检索 `YukiMemoryStore.search_facts()`，确认结构化记忆可召回。
+
+#### 阶段 I：主流程过渡接入
+
+- 先在 `SessionPipeline.retrieve_memories()` 增加只读试运行路径，不立刻替换旧 `MemoryRAG`。
+- 对比旧 `search_diaries()` 与新 `YukiMemoryStore.search()` 的召回结果。
+- 稳定后再让主流程优先使用 yuki-memory，并保留旧 RAG 作为兼容回退。
+
+#### 阶段 F/H/G：运行时体验改造
+
+- 阶段 F：拉长 session 上下文窗口，目标参考 `max_messages=120`、`max_chars=24000`。
+- 阶段 H：实现 cache-friendly prompt builder，拆分 stable prefix / dynamic context / current turn。
+- 阶段 G：将频繁 idle diary 改为每日/半日 consolidation，目标每日 1-2 次整理。
+- 这些阶段必须在结构化记忆导入和主流程只读验证后再开始，避免同时改动数据层和运行时链路。
+
+---
+
+## 二、架构重构（持续维护）
+
+### 2.1 目标
 将现有的单体脚本重构为模块化的插件架构，实现：
 - LLM 中枢与插件解耦
 - Function Call 标准化
@@ -318,5 +394,5 @@ brain/
 ---
 
 **文档版本**：v1.0  
-**最后更新**：2026-06-01  
+**最后更新**：2026-06-09  
 **维护人员**：项目开发团队

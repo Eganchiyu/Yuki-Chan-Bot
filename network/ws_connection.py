@@ -1,6 +1,7 @@
 # ws_connection.py
 import json
 import asyncio
+import uuid
 import websockets
 from urllib.parse import urlparse, urlencode, parse_qs, urlunparse
 from typing import Optional, Dict
@@ -89,6 +90,16 @@ class BotConnector:
                 self.websocket = None
                 await asyncio.sleep(3)
 
+    async def get_cookies(self, domain: str = "user.qzone.qq.com") -> Optional[Dict]:
+        """通过 NapCat 获取指定域名的 Cookie（含 bkn）。"""
+        echo = f"cookies_{uuid.uuid4().hex[:8]}"
+        return await self.send_request("get_cookies", {"domain": domain}, echo)
+
+    async def get_login_info(self) -> Optional[Dict]:
+        """获取当前登录账号信息（user_id, nickname）。"""
+        echo = f"login_{uuid.uuid4().hex[:8]}"
+        return await self.send_request("get_login_info", {}, echo)
+
     async def close(self):
         """优雅关闭"""
         async with self._lock:
@@ -96,7 +107,7 @@ class BotConnector:
                 await self.websocket.close()
                 self.websocket = None
 
-    async def send_request(self, action: str, params: dict, echo: str) -> Optional[Dict]:
+    async def send_request(self, action: str, params: dict, echo: str, timeout: float = 5.0) -> Optional[Dict]:
         try:
             ws = await self.ensure_connection()
 
@@ -110,7 +121,7 @@ class BotConnector:
 
             try:
                 # 2. 等待结果 (这里才需要 await)
-                return await asyncio.wait_for(future, timeout=5.0)
+                return await asyncio.wait_for(future, timeout=timeout)
             except asyncio.TimeoutError:
                 logger.warning(f"请求 {action} 超时 (echo: {echo})")
                 return None
