@@ -186,7 +186,7 @@ if __name__ == "__main__":
 
     # 动态获取项目根目录
     project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-    stickers_path = os.path.join(project_root, "data", "stickers")
+    stickers_path = os.path.join(project_root, "data", "../modules/stickers")
     
     demo.launch(
         inbrowser=True,
