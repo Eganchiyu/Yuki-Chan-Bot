@@ -1,8 +1,11 @@
 import aiohttp
+import ast
 import httpx
 import asyncio
 import json
 import os
+import sys
+import venv
 from pathlib import Path
 import re
 import shutil
@@ -81,8 +84,9 @@ SKILLS_DIR = "skills"      # 存放长期通用技能 (.py 和 .md)
 WORKSPACE_DIR = "workspace" # 存放当前任务的临时草稿 (.py)
 TASKS_DIR = "tasks"
 LOGS_DIR = "logs"
+MAID_VENV_DIR = "maid_venv" # 存放小女仆独立运行环境的目录
 
-for d in [SKILLS_DIR, WORKSPACE_DIR, TASKS_DIR, LOGS_DIR]:
+for d in [SKILLS_DIR, WORKSPACE_DIR, TASKS_DIR, LOGS_DIR, MAID_VENV_DIR]:
     os.makedirs(d, exist_ok=True)
 
 
@@ -90,6 +94,87 @@ MAX_TOOL_OUTPUT_CHARS = 12000
 TERMINAL_DEFAULT_TIMEOUT = 30
 TERMINAL_MAX_TIMEOUT = 120
 MAX_MAID_ROUNDS = 20
+
+
+async def _ensure_maid_env() -> str:
+    """获取小女仆专属虚拟环境的 Python 执行路径。如果不存在则自动创建。"""
+    if os.name == 'nt':
+        python_exec = os.path.join(MAID_VENV_DIR, "Scripts", "python.exe")
+    else:
+        python_exec = os.path.join(MAID_VENV_DIR, "bin", "python")
+
+    if not os.path.exists(python_exec):
+        logger.info("[Maid] 检测到无虚拟环境，正在创建专属虚拟环境 (初次创建可能需要几秒钟)...")
+        await asyncio.to_thread(venv.create, MAID_VENV_DIR, with_pip=True)
+        logger.info("[Maid] 专属虚拟环境创建完毕。")
+
+    return python_exec
+
+
+async def _ensure_skill_deps(script_path: str, python_exec: str):
+    """解析脚本依赖，自动安装缺失的包。安装过的直接跳过。"""
+    try:
+        with open(script_path, "r", encoding="utf-8") as f:
+            code = f.read()
+        tree = ast.parse(code)
+    except Exception as e:
+        logger.debug(f"[Maid] 解析脚本依赖跳过: {e}")
+        return
+
+    imports = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                imports.add(alias.name.split('.')[0])
+        elif isinstance(node, ast.ImportFrom):
+            if node.module:
+                imports.add(node.module.split('.')[0])
+
+    if hasattr(sys, "stdlib_module_names"):
+        stdlib = set(sys.stdlib_module_names)
+    else:
+        stdlib = {"os", "sys", "time", "re", "json", "asyncio", "datetime", "subprocess", "shutil", "pathlib", "math", "random"}
+
+    third_party = imports - stdlib
+    if not third_party:
+        return
+
+    pip_exec = os.path.join(os.path.dirname(python_exec), "pip.exe" if os.name == 'nt' else "pip")
+
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            pip_exec, "list", "--format=json",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE
+        )
+        stdout, _ = await proc.communicate()
+        if proc.returncode == 0:
+            installed_pkgs = {item["name"].lower() for item in json.loads(stdout.decode('utf-8'))}
+        else:
+            installed_pkgs = set()
+    except Exception:
+        installed_pkgs = set()
+
+    aliases = {"cv2": "opencv-python", "bs4": "beautifulsoup4", "pil": "pillow", "yaml": "pyyaml"}
+
+    to_install = []
+    for pkg in third_party:
+        pkg_lower = pkg.lower()
+        install_name = aliases.get(pkg_lower, pkg_lower)
+        if install_name not in installed_pkgs:
+            to_install.append(install_name)
+
+    if to_install:
+        logger.info(f"[Maid] 自动为脚本补充安装环境依赖: {to_install}")
+        try:
+            install_proc = await asyncio.create_subprocess_exec(
+                pip_exec, "install", *to_install,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+            await install_proc.communicate()
+        except Exception as e:
+            logger.error(f"[Maid] 自动安装依赖异常: {e}")
 
 
 def _truncate_text(text: str, limit: int = MAX_TOOL_OUTPUT_CHARS) -> str:
@@ -400,9 +485,12 @@ async def run_skill(name):
 
     try:
         import sys
+        python_exec = await _ensure_maid_env()
+        await _ensure_skill_deps(path, python_exec)
+
         # 2. 使用异步子进程创建，避免阻塞整个事件循环
         process = await asyncio.create_subprocess_exec(
-            sys.executable, path,
+            python_exec, path,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE
         )
@@ -436,13 +524,33 @@ async def run_skill(name):
         # 这里会捕获到类似 'NoneType' 的报错并返回给 AI
         return f"系统异常：{str(e)}"
 
-def install_package(pkg):
+async def install_package(pkg):
     try:
-        import sys
-        subprocess.check_call([sys.executable, "-m", "pip", "install", pkg])
-        return f"成功安装依赖包: {pkg}"
+        python_exec = await _ensure_maid_env()
+        pip_exec = os.path.join(os.path.dirname(python_exec), "pip.exe" if os.name == 'nt' else "pip")
+
+        check_proc = await asyncio.create_subprocess_exec(
+            pip_exec, "show", pkg,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE
+        )
+        await check_proc.communicate()
+        if check_proc.returncode == 0:
+            return f"成功：依赖包 {pkg} 已经安装过，无需重复安装。"
+
+        install_proc = await asyncio.create_subprocess_exec(
+            pip_exec, "install", pkg,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE
+        )
+        stdout, stderr = await install_proc.communicate()
+
+        if install_proc.returncode == 0:
+            return f"成功安装依赖包: {pkg}"
+        else:
+            return f"安装失败: {_decode_process_output(stderr)}"
     except Exception as e:
-        return f"安装失败: {str(e)}"
+        return f"安装异常: {str(e)}"
 
 
 def list_skills():
@@ -886,7 +994,7 @@ async def maid_evolution_loop(user_goal: str, chat_id: str = None):
             elif tool == "install_package":
                 pkg_name = args.get('pkg') or args.get('pkg_name')
                 logger.info(f"[Maid] 正在安装依赖: {pkg_name}")
-                res = install_package(pkg_name.strip()) if pkg_name else "错误：未提供包名"
+                res = await install_package(pkg_name.strip()) if pkg_name else "错误：未提供包名"
             elif tool == "terminal":
                 command = args.get("command", "")
                 cwd = args.get("cwd")
