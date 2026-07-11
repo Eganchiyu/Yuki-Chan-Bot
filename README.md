@@ -1,6 +1,6 @@
 # 🌸 Yuki-Chan-Chat (Project Yuki)
 
-# Yuki V8.0 — Maid-Evolution
+# Yuki V8.1 — Dual-Mode Evolution
 
 [![Python Version](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![DeepSeek](https://img.shields.io/badge/LLM-DeepSeek--V3-green.svg)](https://www.deepseek.com/)
@@ -65,6 +65,12 @@ Yuki 具备标准化的工具调用能力，通过 Function Call 机制扩展 LL
 - **无防抖延迟**：主人的私聊消息跳过消息缓冲与防抖聚合，即时处理、即时响应。
 - **私聊 API 通道**：回复通过 `send_private_msg` API 直接发送至私聊，而非群聊 API，确保对话的私密性。
 
+### 📊 调试与观测系统
+
+- **Context Debug WebUI**：本地只读 Web 界面，实时观察 Yuki 状态、完整 LLM 构建上下文、旧 RAG 与 Yuki-Memory 召回结果，支持上下文复制导出与敏感字段脱敏。
+- **轻量 Debug Snapshot**：`SessionPipeline` 自动记录输入合并、回复决策、RAG/Yuki-Memory 召回、完整 LLM messages 与 pipeline 阶段耗时，不改变主回复流程。
+- **执行日志观测**：记录工具调用的参数、耗时和成功状态，便于排查工具链问题。
+
 ### ⚡ 稳健的异步架构
 
 - **主备 API 熔断切换**：主线路失败时无缝降级至备用线路。
@@ -121,45 +127,91 @@ Yuki 具备标准化的工具调用能力，通过 Function Call 机制扩展 LL
 
 ```
 YukiV6/
-├── main.py                      # 程序入口，组件初始化与运行时注入
-├── config.py                    # 热重载配置中心 (YAML 单例)
-├── configs/
-│   ├── config.yaml              # 运行时配置（含 API Key，不提交 Git）
-│   └── README.md                # 配置系统说明文档
-├── core/
-│   ├── engine.py                # 决策引擎：回复判定、破冰唤醒、日记总结
-│   ├── brain.py                 # 状态管理：精力值、活跃度、欲望计算、生物钟
-│   ├── maid.py                  # 小女仆系统：自主编程循环、技能调度
-│   ├── prompts.py               # 系统提示词构建
-│   ├── history_manager.py       # 对话历史管理（原子化读写）
-│   ├── session_pipeline.py      # 按 chat_id 串行运行的持久会话管道
-│   ├── toolchain.py             # Function Call 注册中心与工具调用执行器
-│   ├── tools.py                 # 标准工具定义（Schema 与 Handler）
-│   └── private_context.py       # 主人私聊上下文快照与召回系统
-├── modules/                     # 功能模块
-│   ├── QQNapcatListen/          # QQ 消息监听（输入适配层）
-│   ├── message/                 # 消息解析 (CQ码)
-│   ├── memory/                  # RAG 记忆检索
-│   ├── stickers/                # 表情包管理
-│   └── vision/                  # 视觉/表情包处理
-├── network/                     # 网络层
-│   ├── ws_connection.py         # NapCat WebSocket 连接
-│   └── ws_sender.py             # 消息发送
-├── utils/                       # 工具函数
-│   ├── llm_client.py            # LLM 客户端（含主备故障转移）
-│   └── logger.py                # 日志系统
-├── models/                      # 本地嵌入模型 (text2vec-base-chinese)
-├── yuki_memory/                 # ChromaDB 向量数据库
-├── skills/                      # 小女仆技能存储
-├── data/                        # 运行时数据
-│   ├── chat_history.json        # 对话历史
-│   ├── yuki_log.txt             # 运行日志
-│   ├── meme_cache.json          # 表情包缓存
-│   └── stickers/                # 本地表情包文件
-├── scripts/                     # 独立工具脚本
-│   └── 03_RAG_Tools/            # 记忆库管理工具
-├── setup.py                     # 一键配置向导
-└── pyproject.toml               # 项目依赖 (uv/pip)
+├── main.py                          # 程序入口，组件初始化与运行时注入
+├── config.py                        # 热重载配置中心 (YAML 单例)
+├── init.py                          # 初始化状态加载
+├── setup.py                         # 一键配置向导
+├── pyproject.toml                   # 项目依赖 (uv/pip)
+├── requirements.txt                 # 传统依赖声明
+├── blacklist.txt                    # 记忆检索黑名单
+├── configs/                         # 配置文件目录
+│   ├── config.yaml                  # 运行时配置（含 API Key，不提交 Git）
+│   └── README.md                    # 配置系统说明文档
+├── core/                            # 核心引擎
+│   ├── engine.py                    # 决策引擎：回复判定、破冰唤醒、日记总结
+│   ├── brain.py                     # 状态管理：精力值、活跃度、欲望计算、生物钟
+│   ├── maid.py                      # 小女仆系统：自主编程循环、技能调度
+│   ├── prompts.py                   # 系统提示词构建
+│   ├── history_manager.py           # 对话历史管理（原子化读写）
+│   ├── session_pipeline.py          # 按 chat_id 串行运行的持久会话管道
+│   ├── toolchain.py                 # Function Call 注册中心与工具调用执行器
+│   ├── tools.py                     # 标准工具定义（Schema 与 Handler）
+│   └── private_context.py           # 主人私聊上下文快照与召回系统
+├── modules/                         # 功能模块
+│   ├── QQNapcatListen/              # QQ 消息监听（输入适配层）
+│   ├── message/                     # 消息解析 (CQ码)
+│   ├── memory/                      # 旧版 RAG 记忆检索
+│   ├── yuki_memory/                 # Yuki-Memory 结构化记忆（新增）
+│   ├── stickers/                    # 表情包管理
+│   ├── vision/                      # 视觉/表情包处理
+│   ├── debug/                       # Debug WebUI 与快照工具（新增）
+│   ├── github_monitor/              # GitHub 监控模块（新增）
+│   ├── jm_downloader/               # JM 下载器模块（新增）
+│   ├── qzone/                       # QQ 空间监控与发布（新增）
+│   └── shot_memory/                 #  Shot Memory 实时记忆渲染（新增）
+├── network/                         # 网络层
+│   ├── ws_connection.py             # NapCat WebSocket 连接
+│   └── ws_sender.py                 # 消息发送
+├── utils/                           # 工具函数
+│   ├── llm_client.py                # LLM 客户端（含主备故障转移）
+│   ├── logger.py                    # 日志系统
+│   └── download_model.py            # 嵌入模型下载工具
+├── models/                          # 本地嵌入模型 (text2vec-base-chinese)
+├── yuki_memory/                     # ChromaDB 向量数据库（结构化记忆）
+├── skills/                          # 小女仆技能存储
+├── data/                            # 运行时数据
+│   ├── chat_history.json            # 对话历史
+│   ├── yuki_log.txt                 # 运行日志
+│   ├── meme_cache.json              # 表情包缓存
+│   ├── private_context.json         # 主人私聊上下文快照
+│   └── stickers/                    # 本地表情包文件
+├── scripts/                         # 独立工具脚本
+│   ├── 01_api_test_tools/           # API 对比测试工具
+│   ├── 02_energy_tools/             # 精力值可视化工具
+│   ├── 03_RAG_Tools/                # 记忆库管理工具（含 Yuki-Memory 整理）
+│   ├── 04_meme_cache_tools/         # 表情包缓存管理工具
+│   ├── 05_config_test_tools/        # 配置测试工具
+│   ├── 06_sticker_manager/          # 表情包管理工具
+│   └── debug_tools/                 # Debug WebUI 启动工具
+├── docs/                            # 项目文档
+│   ├── architecture.md              # 架构文档
+│   ├── changelog.md                 # 更新日志
+│   ├── development-plan.md          # 开发规划
+│   ├── api-reference.md             # API 参考
+│   ├── toolchain-usage.md           # 工具链使用指南
+│   ├── context-debug-webui-plan.md  # Debug WebUI 规划
+│   ├── yuki-memory-runtime-guide.md # Yuki-Memory 运行手册
+│   ├── yuki-memory-plugin-guide.md  # Yuki-Memory 插件指南
+│   └── ...
+├── tests/                           # 自动化测试
+│   ├── test_config.py
+│   ├── test_llm_client.py
+│   ├── test_maid.py
+│   ├── test_toolchain.py
+│   ├── test_github_monitor.py
+│   ├── test_ice_break_pipeline.py
+│   ├── test_maid_search_diary.py
+│   └── ...
+├── backup/                          # 历史备份
+├── future addons/                   # 未来扩展计划
+│   └── webpage_agent/               # 网页代理原型
+├── .github/                         # GitHub 配置
+│   ├── ISSUE_TEMPLATE/
+│   └── PULL_REQUEST_TEMPLATE.md
+└── .trae/                           # IDE 规则配置
+    └── rules/
+        ├── project_rules.md
+        └── refactoring_principles.md
 ```
 
 ---
@@ -224,6 +276,52 @@ python scripts/04_meme_cache_tools/reset_and_import_meme.py
 
 ---
 
+## 📖 文档
+
+### 项目文档
+
+详细文档位于 [docs/](docs/) 目录：
+
+| 文档 | 说明 |
+|------|------|
+| [architecture.md](docs/architecture.md) | 系统架构与模块职责 |
+| [changelog.md](docs/changelog.md) | 版本更新日志 |
+| [development-plan.md](docs/development-plan.md) | 开发规划与里程碑 |
+| [api-reference.md](docs/api-reference.md) | 核心 API 参考 |
+| [toolchain-usage.md](docs/toolchain-usage.md) | Function Call 工具链使用指南 |
+| [context-debug-webui-plan.md](docs/context-debug-webui-plan.md) | Debug WebUI 规划文档 |
+| [yuki-memory-runtime-guide.md](docs/yuki-memory-runtime-guide.md) | Yuki-Memory 运行手册 |
+| [yuki-memory-plugin-guide.md](docs/yuki-memory-plugin-guide.md) | Yuki-Memory 插件接入指南 |
+| [troubleshooting.md](docs/troubleshooting.md) | 常见问题排查 |
+| [deployment-guide.md](docs/deployment-guide.md) | 部署指南 |
+
+### 运行测试
+
+```bash
+# 运行全部测试
+pytest tests/
+
+# 运行指定测试文件
+pytest tests/test_maid.py
+pytest tests/test_toolchain.py
+pytest tests/test_yuki_memory_store.py
+pytest tests/test_github_monitor.py
+```
+
+**测试文件说明：**
+
+| 测试文件 | 覆盖模块 |
+|----------|----------|
+| `test_config.py` | 配置系统 |
+| `test_llm_client.py` | LLM 客户端与故障转移 |
+| `test_maid.py` | 小女仆系统 |
+| `test_maid_search_diary.py` | 日记搜索 |
+| `test_toolchain.py` | Function Call 工具链 |
+| `test_github_monitor.py` | GitHub 监控模块 |
+| `test_ice_break_pipeline.py` | 破冰唤醒流程 |
+
+---
+
 ## 📅 开发计划
 
 - [x] 全链路异步化重构
@@ -236,16 +334,14 @@ python scripts/04_meme_cache_tools/reset_and_import_meme.py
 - [x] 简化 LLM 客户端（内联 provider 逻辑）
 - [x] 群聊动态开关（静音/唤醒）
 - [x] 系统提示词热同步
-- [x] Function Call 工具链系统（7 个标准工具）
+- [x] Function Call 工具链系统（10 个标准工具）
 - [x] 主人私聊双模系统（群聊+私聊并行）
 - [x] 私聊上下文快照与召回
-- [x] 工具链扩展至 10 个标准工具
-- [ ] 🚧 小女仆代码结构重构，增强安全性与容错率
-- [ ] 🚧 多模态表情包系统完善：入库、理解与动态打分
+- [x] Debug WebUI 与轻量调试快照
+- [x] 小女仆代码结构重构，增强安全性与容错率
+- [x] 多模态表情包系统完善：入库、理解与动态打分
+- [x] 接入外部文档知识库查询
 - [ ] 引入生物遗忘曲线：基于活跃时间戳的记忆唤醒与沉底
-- [ ] 接入外部文档知识库查询
-
----
 
 ## 💌 寄语
 
@@ -253,4 +349,4 @@ python scripts/04_meme_cache_tools/reset_and_import_meme.py
 
 ---
 
-_Last Update: 2026/06/26 - Eganchiyu (V8.1 Dual-Mode Update)_
+_Last Update: 2026/07/11 - Eganchiyu (V8.1 Dual-Mode Update)_
