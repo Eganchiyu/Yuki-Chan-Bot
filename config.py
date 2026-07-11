@@ -380,6 +380,71 @@ class TimingConfig:
     )
 
 
+@dataclass
+class GitHubMonitorRepoConfig:
+    """GitHub 监控仓库配置"""
+    owner: str = config_field(
+        "",
+        comment="仓库所有者",
+        section="github_monitor"
+    )
+    repo: str = config_field(
+        "",
+        comment="仓库名",
+        section="github_monitor"
+    )
+    token: str = config_field(
+        "",
+        comment="该仓库专用的 GitHub PAT（留空则使用 github_token）",
+        section="github_monitor"
+    )
+    poll_interval: int = config_field(
+        300,
+        comment="轮询间隔（秒）",
+        section="github_monitor"
+    )
+    chat_id: str = config_field(
+        "",
+        comment="推送到的群号/QQ号（留空则使用 default_chat_ids）",
+        section="github_monitor"
+    )
+    modes: List[str] = config_field_factory(
+        lambda: ["group"],
+        comment="推送模式（group / private）",
+        section="github_monitor"
+    )
+
+
+@dataclass
+class GitHubMonitorConfig:
+    """GitHub 仓库监控配置"""
+    enabled: bool = config_field(
+        False,
+        comment="是否启用 GitHub 仓库监控",
+        section="github_monitor"
+    )
+    github_token: str = config_field(
+        "",
+        comment="GitHub PAT（用于 Events API 认证，提高速率限制）",
+        section="github_monitor"
+    )
+    default_chat_ids: List[str] = config_field_factory(
+        list,
+        comment="默认推送群号列表（仓库未单独配置 chat_id 时使用）",
+        section="github_monitor"
+    )
+    poll_interval: int = config_field(
+        300,
+        comment="默认轮询间隔（秒）",
+        section="github_monitor"
+    )
+    repos: List[GitHubMonitorRepoConfig] = config_field_factory(
+        list,
+        comment="监控仓库列表",
+        section="github_monitor"
+    )
+
+
 # ==================== 主配置类 ====================
 
 @dataclass
@@ -465,6 +530,11 @@ class Config:
         TimingConfig,
         comment="时间/超时配置",
         section="timing"
+    )
+    github_monitor: GitHubMonitorConfig = config_field_factory(
+        GitHubMonitorConfig,
+        comment="GitHub 仓库监控配置",
+        section="github_monitor"
     )
 
     # 并发/调试

@@ -53,6 +53,15 @@ async def start_background_tasks(mode: str):
     # except Exception as e:
     #     logger.warning(f"[NapCat] QZone 监控启动失败: {e}")
 
+    # GitHub 仓库监控
+    if getattr(getattr(cfg, "github_monitor", None), "enabled", False):
+        try:
+            from modules.github_monitor import ensure_monitor_started
+            asyncio.create_task(ensure_monitor_started(session_pipeline))
+            logger.info("[NapCat] GitHub 仓库监控已启动")
+        except Exception as e:
+            logger.warning(f"[NapCat] GitHub 监控启动失败: {e}")
+
     logger.info("[NapCat] 已启动后台辅助任务 (日记检查/破冰/精力衰减)")
 
 

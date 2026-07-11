@@ -85,6 +85,7 @@ Desktop.ini
 temp_expression.png
 window_list.txt
 output/
+workspace/
 # UV 包管理器
 .uv/
 uv.lock
