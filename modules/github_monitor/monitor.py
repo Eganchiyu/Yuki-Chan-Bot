@@ -142,6 +142,7 @@ class GitHubMonitor:
         if not events:
             return
 
+        logger.debug("[GitHubMonitor] 原始事件数: %d", len(events))
         seen_ids = set(self._state.get("repos", {}).get(repo.key, {}).get("seen_ids", []))
         new_events: List[dict] = []
 
@@ -169,6 +170,7 @@ class GitHubMonitor:
             logger.info("[GitHubMonitor] %s 首次同步完成，已标记 %d 条历史事件", repo.key, len(events))
             return
 
+        logger.debug("[GitHubMonitor] 新事件详情: %s", new_events)
         logger.info(
             "[GitHubMonitor] %s 发现 %d 条新事件", repo.key, len(new_events)
         )
@@ -187,6 +189,8 @@ class GitHubMonitor:
                     repo_state["last_event_id"] = evt_id
                     save_state(self._state)
 
+    # modules/github_monitor/monitor.py
+
     async def _dispatch_event(self, repo: GitHubRepoConfig, ev: dict) -> None:
         """将单个事件推送到消息管道。"""
         event_type = ev.get("type", "")
@@ -201,22 +205,66 @@ class GitHubMonitor:
             "IssueCommentEvent",
             "PullRequestReviewCommentEvent",
             "PushEvent",
+            "DiscussionEvent",
+            "DiscussionCommentEvent",
         }:
             return
 
-        action = payload.get("action", "")
-        # 过滤无意义的事件
-        if event_type == "PushEvent" and action == "published":
+        # ---------- Push 事件单独构建消息 ----------
+        if event_type == "PushEvent":
+            commits = payload.get("commits", [])
+            ref = payload.get("ref", "")
+            branch = ref.replace("refs/heads/", "") if ref else "unknown"
+            forced = payload.get("forced", False)
+            commit_count = len(commits)
+            first_msg = (commits[0].get("message", "")[:80] + "...") if commits else "no commits"
+            action_desc = "强制推送了" if forced else "推送了"
+            content = (
+                f"[GitHub] [{repo.key}] {actor} {action_desc} "
+                f"{commit_count} commit(s) to {branch}: {first_msg}\n{repo_url}"
+            )
+            # 直接推送消息后返回，不再走通用 title/action 流程
+            await self._send_to_chats(repo, content)
             return
 
-        # 构建消息内容
+        # ---------- Discussion 事件 ----------
+        if event_type == "DiscussionEvent":
+            discussion = payload.get("discussion", {})
+            title = discussion.get("title", "")
+            action = payload.get("action", "")
+            # 格式：actor 动作 Discussion: 标题
+            action_str = self._format_action(event_type, action)
+            content = f"[GitHub] [{repo.key}] {actor} {action_str}: {title}\n{repo_url}"
+            await self._send_to_chats(repo, content)
+            return
+
+        if event_type == "DiscussionCommentEvent":
+            discussion = payload.get("discussion", {})
+            comment = payload.get("comment", {})
+            title = discussion.get("title", "")
+            action = payload.get("action", "")
+            action_str = self._format_action(event_type, action)
+            # 截取评论前80字作为预览
+            body_preview = (comment.get("body", "") or "")[:80]
+            if body_preview:
+                content = f"[GitHub] [{repo.key}] {actor} {action_str} Discussion: {title}\n> {body_preview}\n{repo_url}"
+            else:
+                content = f"[GitHub] [{repo.key}] {actor} {action_str} Discussion: {title}\n{repo_url}"
+            await self._send_to_chats(repo, content)
+            return
+
+        # ---------- 通用 Issue/PR/Comment 事件 ----------
+        action = payload.get("action", "")
+
         title = self._extract_title(payload, event_type)
         if not title:
             return
 
         content = f"[GitHub] [{repo.key}] {actor} {self._format_action(event_type, action)}: {title}\n{repo_url}"
+        await self._send_to_chats(repo, content)
 
-        # 推送到每个关联的 chat_id
+    async def _send_to_chats(self, repo: GitHubRepoConfig, content: str) -> None:
+        """将构建好的内容推送到关联的 chat_ids。"""
         chat_ids = [repo.chat_id] if repo.chat_id else getattr(
             getattr(cfg, "github_monitor", None), "default_chat_ids", []
         ) or []
@@ -261,6 +309,12 @@ class GitHubMonitor:
             commits = payload.get("commits", [])
             if commits:
                 return commits[0].get("message", "")[:80]
+        if event_type == "DiscussionEvent":
+            discussion = payload.get("discussion", {})
+            return discussion.get("title", "")
+        if event_type == "DiscussionCommentEvent":
+            discussion = payload.get("discussion", {})
+            return discussion.get("title", "")
         return ""
 
     @staticmethod
@@ -288,6 +342,24 @@ class GitHubMonitor:
             },
             "PullRequestReviewCommentEvent": {
                 "created": "评论了 PR",
+            },
+            "DiscussionEvent": {
+                "created": "创建了讨论",
+                "edited": "编辑了讨论",
+                "deleted": "删除了讨论",
+                "locked": "锁定了讨论",
+                "unlocked": "解锁了讨论",
+                "transferred": "转移了讨论",
+                "pinned": "置顶了讨论",
+                "unpinned": "取消置顶讨论",
+                "labeled": "给讨论加了标签",
+                "unlabeled": "移除了讨论标签",
+                "category_changed": "修改了讨论分类",
+            },
+            "DiscussionCommentEvent": {
+                "created": "评论了讨论",
+                "edited": "编辑了讨论评论",
+                "deleted": "删除了讨论评论",
             },
             "PushEvent": {
                 "": "推送了代码",
