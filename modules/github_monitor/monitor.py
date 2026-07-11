@@ -134,6 +134,7 @@ class GitHubMonitor:
         """单次轮询一个仓库。"""
         try:
             events = await fetch_repo_events(self._client, repo.owner, repo.repo)
+            logger.debug("[GitHubMonitor] 完整数据: %s", events)
         except Exception as e:
             logger.error(f"[GitHubMonitor] {repo.key} 轮询异常: {e}")
             return
