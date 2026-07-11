@@ -21,12 +21,8 @@ from config import cfg
 from modules.github_monitor.client import GitHubClient, github_headers
 from modules.github_monitor.events import fetch_repo_events
 from modules.github_monitor.state import (
-    add_seen_event_id,
-    get_last_event_id,
-    get_seen_event_ids,
     load_state,
     save_state,
-    update_last_event_id,
 )
 from utils.logger import get_logger
 
@@ -34,8 +30,6 @@ logger = get_logger("github_monitor")
 
 # 默认轮询间隔（秒）
 _DEFAULT_POLL_INTERVAL = 300
-# 首次同步时跳过多少条历史事件
-_HISTORY_SKIP_COUNT = 30
 
 
 class GitHubRepoConfig:
@@ -82,6 +76,9 @@ class GitHubMonitor:
         self.repos: List[GitHubRepoConfig] = repos or []
         self._running = False
         self._task: Optional[asyncio.Task] = None
+        self._state = load_state()
+        self._state_lock = asyncio.Lock()
+        self._client: Optional[GitHubClient] = None
 
     def add_repo(self, repo: GitHubRepoConfig) -> None:
         self.repos.append(repo)
@@ -93,6 +90,8 @@ class GitHubMonitor:
             logger.warning("[GitHubMonitor] 没有配置任何仓库，不启动监控")
             return
         self._running = True
+        token = getattr(getattr(cfg, "api", None), "github_token", "") or ""
+        self._client = GitHubClient(token=token)
         self._task = asyncio.create_task(self._main_loop())
         logger.info("[GitHubMonitor] 监控已启动，共 %d 个仓库", len(self.repos))
 
@@ -101,6 +100,9 @@ class GitHubMonitor:
         if self._task:
             self._task.cancel()
             self._task = None
+        if self._client:
+            await self._client.close()
+            self._client = None
         logger.info("[GitHubMonitor] 监控已停止")
 
     async def _main_loop(self) -> None:
@@ -130,12 +132,8 @@ class GitHubMonitor:
 
     async def _poll_repo(self, repo: GitHubRepoConfig) -> None:
         """单次轮询一个仓库。"""
-        token = repo.token or getattr(getattr(cfg, "api", None), "github_token", "") or ""
-        state = load_state()
-
         try:
-            async with GitHubClient(token=token) as client:
-                events = await fetch_repo_events(client, repo.owner, repo.repo)
+            events = await fetch_repo_events(self._client, repo.owner, repo.repo)
         except Exception as e:
             logger.error(f"[GitHubMonitor] {repo.key} 轮询异常: {e}")
             return
@@ -143,14 +141,12 @@ class GitHubMonitor:
         if not events:
             return
 
-        seen_ids = get_seen_event_ids(state, repo.key)
+        seen_ids = set(self._state.get("repos", {}).get(repo.key, {}).get("seen_ids", []))
         new_events: List[dict] = []
 
         for ev in events:
             evt_id = str(ev.get("id", ""))
-            if not evt_id:
-                continue
-            if evt_id in seen_ids:
+            if not evt_id or evt_id in seen_ids:
                 continue
             new_events.append(ev)
 
@@ -158,16 +154,19 @@ class GitHubMonitor:
             logger.debug("[GitHubMonitor] %s 无新事件", repo.key)
             return
 
-        # 首次同步：跳过最早的历史事件，避免开群就刷屏
-        last_id = get_last_event_id(state, repo.key)
+        # 首次同步：将所有已拉取事件标记为已读，避免下次重复推送
+        last_id = self._state.get("repos", {}).get(repo.key, {}).get("last_event_id")
+
         if last_id is None:
-            new_events = new_events[_HISTORY_SKIP_COUNT:]
-            if not new_events:
-                logger.info("[GitHubMonitor] %s 首次同步完成，已跳过历史事件", repo.key)
-                # 仍然记录最新的 id 避免下次再扫
+            async with self._state_lock:
+                repo_state = self._state.setdefault("repos", {}).setdefault(repo.key, {})
+                repo_state["seen_ids"] = [str(e.get("id", "")) for e in events if e.get("id")]
                 if events:
-                    update_last_event_id(state, repo.key, str(events[0].get("id", "")))
-                return
+                    repo_state["last_event_id"] = str(events[0].get("id", ""))
+                save_state(self._state)
+
+            logger.info("[GitHubMonitor] %s 首次同步完成，已标记 %d 条历史事件", repo.key, len(events))
+            return
 
         logger.info(
             "[GitHubMonitor] %s 发现 %d 条新事件", repo.key, len(new_events)
@@ -176,9 +175,16 @@ class GitHubMonitor:
         for ev in reversed(new_events):  # 从旧到新推送
             await self._dispatch_event(repo, ev)
             evt_id = str(ev.get("id", ""))
+
             if evt_id:
-                add_seen_event_id(state, repo.key, evt_id)
-                update_last_event_id(state, repo.key, evt_id)
+                async with self._state_lock:
+                    repo_state = self._state.setdefault("repos", {}).setdefault(repo.key, {})
+                    seen = repo_state.get("seen_ids", [])
+                    if evt_id not in seen:
+                        seen.append(evt_id)
+                        repo_state["seen_ids"] = seen[-200:]
+                    repo_state["last_event_id"] = evt_id
+                    save_state(self._state)
 
     async def _dispatch_event(self, repo: GitHubRepoConfig, ev: dict) -> None:
         """将单个事件推送到消息管道。"""
