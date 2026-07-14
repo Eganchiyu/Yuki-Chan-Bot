@@ -101,7 +101,7 @@ yuki.bat
 # ============================================
 modules/LiveYukiL2D/frontend/minimal/node_modules/
 modules/LiveYukiL2D/frontend/vendor/
-
+modules/LiveYukiL2D/reference/Open-LLM-VTuber/
 # ============================================
 # 11. 临时文件和输出目录
 # ============================================
