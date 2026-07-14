@@ -46,6 +46,7 @@
 - 新增 `modules/yuki_memory/` 第一阶段骨架，提供 `MemoryRecord`、`YukiMemoryStore` 和 `LegacyDiaryMigrator`，支持独立保存/检索标准记忆
 
 ### 移除
+- 清理 `modules/LiveYukiL2D/liveyuki_l2d` 中未接入的独立 LLM 管线、运行时状态和未使用协议 helper
 - 移除语音转写功能（`parse_Audio_CQ_codes`、`fetch_ptt_text` 调用），修复运行异常问题
 - 移除 `CQParser.sender` 延迟初始化依赖
 - 移除 `CQProtocol.extract_audio_file_ids` 方法

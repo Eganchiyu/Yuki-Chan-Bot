@@ -324,8 +324,8 @@ class SessionPipeline:
         if context.get("ice_break"):
             return context
 
-        # 主人私聊模式：永远回复，跳过决策
-        if context["mode"] == "master_private":
+        # 主人私聊和桌宠模式：永远回复，跳过群聊潜水决策
+        if context["mode"] in {"master_private", "desktop_pet"}:
             self._update_snapshot(context, should_reply=True)
             return context
 
@@ -413,6 +413,16 @@ class SessionPipeline:
             self.yuki.consume_energy(chat_id)
 
         logger.info(f"[Pipeline] {cfg.ROBOT_NAME.title()} 正在发送消息 (精力: {self.yuki.energy.get(chat_id, 0):.1f})")
+
+        if mode == "desktop_pet":
+            try:
+                from modules.LiveYukiL2D.server import broadcast
+                await broadcast({"type": "state", "state": "speaking"})
+                await broadcast({"type": "say", "text": answer_text})
+                await broadcast({"type": "state", "state": "idle"})
+            except Exception as exc:
+                logger.error(f"[DesktopPet] 发送到 Live2D 失败: {exc}")
+            return context
 
         # === 1. 语音直接发送 ===
         if voice:

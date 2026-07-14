@@ -82,9 +82,13 @@ class YukiEngine:
         if tool_names and "delegate_to_maid" in tool_names:
             display_content = clean_content + " | (๑•̀ㅂ•́)و💻"
         if display_content:
-            # master_private 使用私聊 API 发送
-            send_mode = "private" if mode == "master_private" else mode
-            await self.sender.send(chat_id, display_content, mode=send_mode)
+            if mode == "desktop_pet":
+                from modules.LiveYukiL2D.server import broadcast
+                await broadcast({"type": "say", "text": display_content})
+            else:
+                # master_private 使用私聊 API 发送
+                send_mode = "private" if mode == "master_private" else mode
+                await self.sender.send(chat_id, display_content, mode=send_mode)
         sent_thoughts.add(clean_content)
         logger.info(f"[ToolChain] 实时发送阶段性文本 chat_id={chat_id}: {clean_content}")
         return clean_content

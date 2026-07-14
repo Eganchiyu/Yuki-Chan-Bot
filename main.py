@@ -105,6 +105,28 @@ def start_context_debug_webui_if_enabled():
         logger.error(f"[ContextDebug] WebUI 启动失败: {exc}")
 
 
+def start_desktop_pet_if_enabled(pipeline, pipeline_loop):
+    """启动 Live2D 桌宠窗口，并把输入接入主会话管线。"""
+    import os
+
+    enabled = os.getenv("YUKI_DESKTOP_PET", "1").strip().lower()
+    if enabled in {"0", "false", "no", "off"}:
+        logger.info("[DesktopPet] 已通过 YUKI_DESKTOP_PET 关闭")
+        return
+
+    try:
+        from modules.LiveYukiL2D.desktop_electron import main as run_desktop_pet
+        run_desktop_pet(session_pipeline=pipeline, pipeline_loop=pipeline_loop)
+        logger.info("[DesktopPet] Live2D 桌宠已启动")
+    except Exception as exc:
+        logger.error(f"[DesktopPet] 启动失败: {exc}")
+
+
+async def run_runtime(mode: str) -> None:
+    start_desktop_pet_if_enabled(session_pipeline, asyncio.get_running_loop())
+    await napcat_listen(mode)
+
+
 async def main_process(
     chat_id,
     mode,
@@ -178,7 +200,7 @@ if __name__ == "__main__":
         if mode == "group":
             warmup_groups(components["yuki"], components["history_manager"])
 
-        asyncio.run(napcat_listen(mode))
+        asyncio.run(run_runtime(mode))
 
     except KeyboardInterrupt:
         logger.info("[Main] 收到中断信号，正在退出...")
