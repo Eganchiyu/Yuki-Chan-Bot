@@ -7,7 +7,7 @@ if project_root not in sys.path:
     sys.path.append(project_root)
 
 # 现在 Python 能看到根目录的 config.py 了，再正常导入就没问题啦
-from core.maid import search_diary_fast
+from core.maid.maid import search_diary_fast
 
 def run_tests():
     print(f"{' Yuki 记忆检索引擎测试 ':=^40}")

@@ -293,7 +293,7 @@ function setupEditWindowControls() {
     const api = getWebviewApi();
     if (!api?.setWindowPosition) return;
 
-    const windowPos = await getWindowPosition();
+    const windowPos = await api.getWindowPosition?.() ?? { x: window.screenX, y: window.screenY };
     dragOffset = { x: event.screenX - windowPos.x, y: event.screenY - windowPos.y };
     dragging = true;
     event.preventDefault();
@@ -356,4 +356,4 @@ exposeDebug();
 setupEditWindowControls();
 setupEditMode();
 connectWebSocket();
-startMouseFollowLoop();
+startMouseFollowLoop(canvasEl);

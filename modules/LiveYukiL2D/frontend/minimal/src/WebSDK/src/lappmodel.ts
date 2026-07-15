@@ -273,10 +273,8 @@ export class LAppModel extends CubismUserModel {
 
     // EyeBlink
     const setupEyeBlink = (): void => {
-      if (this._modelSetting.getEyeBlinkParameterCount() > 0) {
-        this._eyeBlink = CubismEyeBlink.create(this._modelSetting);
-        this._state = LoadStep.SetupBreath;
-      }
+      this._eyeBlink = CubismEyeBlink.create(this._modelSetting);
+      this._state = LoadStep.SetupBreath;
 
       // callback
       setupBreath();
@@ -288,16 +286,16 @@ export class LAppModel extends CubismUserModel {
 
       const breathParameters: csmVector<BreathParameterData> = new csmVector();
       breathParameters.pushBack(
-        new BreathParameterData(this._idParamAngleX, 0.0, 15.0, 6.5345, 0.5)
+        new BreathParameterData(this._idParamAngleX, 0.0, 8.0, 6.5345, 0.5)
       );
       breathParameters.pushBack(
-        new BreathParameterData(this._idParamAngleY, 0.0, 8.0, 3.5345, 0.5)
+        new BreathParameterData(this._idParamAngleY, 0.0, 5.0, 4.5345, 0.5)
       );
       breathParameters.pushBack(
-        new BreathParameterData(this._idParamAngleZ, 0.0, 10.0, 5.5345, 0.5)
+        new BreathParameterData(this._idParamAngleZ, 0.0, 6.0, 5.5345, 0.5)
       );
       breathParameters.pushBack(
-        new BreathParameterData(this._idParamBodyAngleX, 0.0, 4.0, 15.5345, 0.5)
+        new BreathParameterData(this._idParamBodyAngleX, 0.0, 2.5, 15.5345, 0.5)
       );
 
       // Add null check for CubismFramework.getIdManager()
@@ -362,6 +360,22 @@ export class LAppModel extends CubismUserModel {
         this._eyeBlinkIds.pushBack(
           this._modelSetting.getEyeBlinkParameterId(i)
         );
+      }
+
+      if (this._eyeBlinkIds.getSize() === 0) {
+        const idManager = CubismFramework.getIdManager();
+        if (idManager) {
+          const fallbackIds = [
+            idManager.getId('ParamEyeLOpen'),
+            idManager.getId('ParamEyeROpen'),
+          ];
+          for (const id of fallbackIds) {
+            if (id && this._model.getParameterIndex(id) !== -1) {
+              this._eyeBlinkIds.pushBack(id);
+            }
+          }
+          this._eyeBlink?.setParameterIds(this._eyeBlinkIds);
+        }
       }
 
       this._state = LoadStep.SetupLipSyncIds;
@@ -601,7 +615,18 @@ export class LAppModel extends CubismUserModel {
     this._model.addParameterValueById(this._idParamEyeBallX, this._dragX); // -1から1の値を加える
     this._model.addParameterValueById(this._idParamEyeBallY, this._dragY);
 
-    // 呼吸など
+    const idleWave = Math.sin(this._userTimeSeconds * 1.7);
+    this._model.addParameterValueById(
+      this._idParamMouthForm,
+      0.16 + idleWave * 0.035,
+      0.35
+    );
+    this._model.addParameterValueById(
+      this._idParamMouthOpenY,
+      0.045 + Math.max(0, idleWave) * 0.025,
+      0.25
+    );
+
     if (this._breath != null) {
       this._breath.updateParameters(this._model, deltaTimeSeconds);
     }
@@ -1292,6 +1317,10 @@ export class LAppModel extends CubismUserModel {
       this._idParamBodyAngleX = idManager.getId(
         CubismDefaultParameterId.ParamBodyAngleX
       );
+      this._idParamMouthForm = idManager.getId('ParamMouthForm');
+      this._idParamMouthOpenY = idManager.getId(
+        CubismDefaultParameterId.ParamMouthOpenY
+      );
     } else {
       // Initialize handles with null to avoid undefined errors
       this._idParamAngleX = null;
@@ -1300,6 +1329,8 @@ export class LAppModel extends CubismUserModel {
       this._idParamEyeBallX = null;
       this._idParamEyeBallY = null;
       this._idParamBodyAngleX = null;
+      this._idParamMouthForm = null;
+      this._idParamMouthOpenY = null;
     }
 
     if (LAppDefine.MOCConsistencyValidationEnable) {
@@ -1334,6 +1365,8 @@ export class LAppModel extends CubismUserModel {
   _idParamEyeBallX: CubismIdHandle; // パラメータID: ParamEyeBallX
   _idParamEyeBallY: CubismIdHandle; // パラメータID: ParamEyeBAllY
   _idParamBodyAngleX: CubismIdHandle; // パラメータID: ParamBodyAngleX
+  _idParamMouthForm: CubismIdHandle;
+  _idParamMouthOpenY: CubismIdHandle;
 
   _state: LoadStep; // 現在のステータス管理用
   _expressionCount: number; // 表情データカウント

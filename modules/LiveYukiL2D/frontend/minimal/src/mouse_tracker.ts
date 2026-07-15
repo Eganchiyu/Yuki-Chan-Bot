@@ -58,10 +58,12 @@ export function startMouseFollowLoop(canvasEl: HTMLCanvasElement): void {
     while (true) {
       const start = performance.now();
       
+      // 每帧都拉取全局光标：fetchCursorPosition 内部会优先使用原生接口
+      // (Electron screen.getCursorScreenPoint / 后端 GetCursorPos)，
+      // 保证窗口外也能有效追踪，窗口内再由 mousemove 高频补充。
       const [winPos, curPos] = await Promise.all([
         fetchWindowPosition(),
-        // 仅在原生 API 不可用时，才通过网络轮询，降低网络开销
-        !getWebviewApi()?.getCursorPosition ? fetchCursorPosition() : Promise.resolve(null)
+        fetchCursorPosition()
       ]);
 
       if (winPos) windowPosition = winPos;
@@ -103,7 +105,7 @@ export function startMouseFollowLoop(canvasEl: HTMLCanvasElement): void {
 
     // C. 归一化并应用边缘衰减效应 (使用 Math.tanh)
     // tanh 函数曲线可以提供最丝滑的边缘衰减：越靠近中心呈线性，越靠近边缘变化率越小，最终无限逼近边界 1 和 -1
-    const intensity = 2.0; // 敏感度参数，数值越大，小幅度移动反应越强
+    const intensity = 1.55;
     const smoothFactorX = Math.tanh((deltaX / (screenW * 0.5)) * intensity);
     const smoothFactorY = Math.tanh((deltaY / (screenH * 0.5)) * intensity);
 
@@ -125,7 +127,7 @@ export function startMouseFollowLoop(canvasEl: HTMLCanvasElement): void {
     lastFrameAt = now;
 
     // stiffness 阻尼系数 (原为 18)。改为 12 能让动作更加柔和不生硬
-    const stiffness = 12; 
+    const stiffness = 9;
     const alpha = 1 - Math.exp(-dt * stiffness);
 
     currentViewPoint.x += (nextPoint.x - currentViewPoint.x) * alpha;

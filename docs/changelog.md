@@ -10,6 +10,7 @@
 ## [未发布]
 
 ### 新增
+- 增强 LiveYukiL2D minimal 桌宠的待机微笑张嘴、标准眼睛参数眨眼回退与轻微风场物理效果
 - 新增 `docs/core-technical-debt.md`，梳理 `core/` 模块当前技术债、影响范围、整改优先级与短期落地清单
 - 新增 `skills/video_understanding.py` 视频理解 skill：读取视频信息、均匀采样 4 帧、拼接四宫格压缩后调用配置中的视觉模型进行概括或问答，并加入文件类型、大小、时长、提示词长度和请求超时限制
 - 新增主人私聊双模系统（`master_private` 模式）：群聊运行时自动接受主人私聊消息，维护独立的私聊上下文，使用专属个人助手 prompt，必回、无防抖、带完整工具链
@@ -20,6 +21,7 @@
 - 新增 `config.py` 中 `StructuredMemoryConfig` 配置组，支持通过 `config.yaml` 控制结构化记忆开关和召回数量参数（`enabled`、`max_profiles`、`max_facts`、`max_summaries`），默认关闭
 
 ### 变更
+- 调整 minimal Live2D 呼吸幅度、鼠标跟随灵敏度与阻尼，使头部和身体待机动作更自然
 - 将 `core/maid.py` 解耦为边界判定、通用常量、运行时工具、外部工具、提示词、主循环和 Worker 模块，保留 `core.maid` 兼容导出
 - 将 `core/engine.py` 解耦为回复工具链、回复决策、日记摘要和后台监控 service，保留 `YukiEngine` 门面调用方式不变
 - 二次重新评估 `docs/core-technical-debt.md`：将当前重点调整为历史并发一致性、消息失败恢复、后台任务生命周期、Maid 执行边界和核心行为测试缺口，并更新 P0/P1/P2 整改顺序与状态清单
