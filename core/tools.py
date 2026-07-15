@@ -8,7 +8,7 @@ from urllib.parse import quote_plus
 import aiohttp
 
 from config import cfg
-from core.maid import MaidCapabilityBoundary, build_maid_task, maid_evolution_loop, search_diary_fast
+from core.maid.maid import MaidCapabilityBoundary, build_maid_task, maid_evolution_loop, search_diary_fast
 from core.toolchain import ToolResult, ToolSpec
 from modules.shot_memory import ShotMemoryStore, render_snapshot, shot_live_buffer
 from utils.logger import get_logger

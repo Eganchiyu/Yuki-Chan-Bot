@@ -4,9 +4,9 @@ import asyncio
 import sys
 import time
 
-from config import cfg
+from config import cfg, save_config
 from core.brain import YukiState
-from core.engine import YukiEngine
+from core.engine.engine import YukiEngine
 from core.history_manager import HistoryManager
 from core.prompts import sync_system_prompts
 from core.session_pipeline import SessionPipeline
@@ -162,7 +162,7 @@ def _do_cleanup():
     _cleanup_done = True
     logger.info("[Main] 正在清理资源...")
     try:
-        cfg._save_raw()
+        save_config(cfg)
         logger.info("[Main] 配置已自动对齐保存")
     except Exception as e:
         logger.error(f"[Main] 保存配置时出错: {e}")

@@ -43,7 +43,7 @@ async def start_background_tasks(mode: str):
         asyncio.create_task(yuki.decay_heartbeat())
     asyncio.create_task(engine.idle_diary_checker())
     asyncio.create_task(engine.ice_break_monitor())
-    from core.maid import maid_worker
+    from core.maid.maid_worker import maid_worker
     asyncio.create_task(maid_worker(engine, yuki, sender, history_manager))
 
     # QZone 社交监控（暂时关闭）
