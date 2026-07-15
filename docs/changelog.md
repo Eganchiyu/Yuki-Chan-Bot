@@ -20,6 +20,9 @@
 - 新增 `config.py` 中 `StructuredMemoryConfig` 配置组，支持通过 `config.yaml` 控制结构化记忆开关和召回数量参数（`enabled`、`max_profiles`、`max_facts`、`max_summaries`），默认关闭
 
 ### 变更
+- 将 `core/maid.py` 解耦为边界判定、通用常量、运行时工具、外部工具、提示词、主循环和 Worker 模块，保留 `core.maid` 兼容导出
+- 将 `core/engine.py` 解耦为回复工具链、回复决策、日记摘要和后台监控 service，保留 `YukiEngine` 门面调用方式不变
+- 二次重新评估 `docs/core-technical-debt.md`：将当前重点调整为历史并发一致性、消息失败恢复、后台任务生命周期、Maid 执行边界和核心行为测试缺口，并更新 P0/P1/P2 整改顺序与状态清单
 - 统一 `ToolResult` 工具结果协议，使用稳定错误码，增加参数校验、超时保护和异常脱敏
 - 删除 `HistoryManager` 的 `get_chat` / `append_chat` 历史兼容别名，统一使用 session 级接口
 - 删除 `prompts.py` 中废弃的重复上下文构建实现，保留唯一生效路径
@@ -96,6 +99,8 @@
   - 破冰回复现在享受完整的工具链能力（表情包搜索、小女仆委托、RAG 记忆检索等）
 
 ### 修复
+- 修复启动后台任务时小女仆 Worker 导入到同名模块导致 `'module' object is not callable` 的问题
+- 修复退出清理阶段调用不存在的 `cfg._save_raw()` 导致配置保存报错的问题
 - 修复 GitHub PushEvent 的 Events API 不返回 commits 详情导致通知显示 0 条提交的问题，改用 Compare API 获取并展示提交信息
 - 修复 `prompts.py` 中 f-string 内中文引号导致的语法错误
 - 修复后台定时、破冰和小女仆回调可能绕过普通消息缓冲入口的问题，统一经 `SessionPipeline.enqueue_message()` 串行调度

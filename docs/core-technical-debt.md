@@ -15,37 +15,37 @@
 
 ## 2. 总体结论
 
-`core/` 已经完成了从单体脚本到分层管线的第一轮重构，但仍存在明显的技术债积累：
-- 职责边界已经拆开，但跨模块状态仍然分散
-- 工具链、会话管线、小女仆、历史存储之间仍有重复状态和隐式耦合
-- 部分实现保留了兼容旧逻辑的分支，导致维护成本上升
-- 运行时稳定性依赖较多“约定式约束”，缺少统一的状态模型和测试覆盖
+`core/` 已完成第一轮结构性重构，当前不能再按“单体脚本、完全没有边界”评价。会话级历史 API、统一工具结果协议、按会话串行化、破冰主管道和小女仆 Worker 边界已经形成，上一轮最突出的“写入入口分散”和“功能旁路”风险明显下降。
 
-这些债务目前不一定直接导致故障，但会持续放大后续改动成本。
+当前风险重心已经转移到运行时可靠性：
+- 后台摘要可能用旧快照覆盖新消息，历史持久化失败也没有明确的脏状态和恢复语义
+- 消息从缓冲区取出后，管线失败缺少统一重试、恢复或死信策略
+- `YukiState` 仍混合业务状态、会话状态和后台任务状态，且 `chat_id` 键类型不完全统一
+- 无限循环和 `asyncio.create_task()` 缺少统一的启动、取消、等待和异常回收机制
+- Maid 仍暴露终端、文件和依赖安装等高风险执行面，关键词拦截不能替代权限隔离
+- 核心行为测试覆盖不足，部分测试仍是失败占位或使用过期的管线假设
 
-## 2.1 本轮已处理内容
+因此，当前阶段的首要目标不是继续增加功能，而是建立可证明的历史一致性、消息可靠性、任务生命周期和执行边界。
 
-本轮继续处理“会话历史写入分散”“旧写入路径重复”和“引擎混入小女仆 Worker”三类高优先级问题，保持现有文件数量，优先收敛数据所有权。
+## 2.1 相较上一轮的变化
 
-**已落地方案**
-- 在 [history_manager.py](file:///d:/Projects/YukiV6/core/history_manager.py) 中新增 `get_session()` 与 `append_session_message()`，作为会话级读写入口。
-- [session_pipeline.py](file:///d:/Projects/YukiV6/core/session_pipeline.py) 的会话初始化改为通过 `HistoryManager.get_session()` 补齐 system prompt，减少重复初始化逻辑。
-- [engine.py](file:///d:/Projects/YukiV6/core/engine.py) 删除私有重复方法 `_append_session_message()`，工具链阶段性文本、工具结果、小女仆回调统一委托 `HistoryManager.append_session_message()` 写入。
-- [tools.py](file:///d:/Projects/YukiV6/core/tools.py) 中 `send_master_private` 不再整份 `load()` / `save()` 主人私聊历史，改为追加单条会话消息。
-- `append_session_message()` 自动补齐 `time` 字段并立即落盘，保证工具链、小女仆和私聊同步写入格式一致。
-- `HistoryManager.load()` 与 `get_session()` 返回独立快照，新增 `replace_session()` 和 `session_exists()`，避免外部直接修改缓存对象。
-- `ToolContext` 改为只持有当前 `session`，查询类工具通过 session 快照读取历史，不再接收完整 `history_dict`。
-- `maid_worker()` 迁移到 `maid.py`，监听层改为从小女仆模块导入，引擎不再承担后台任务消费职责。
-- `YukiState` 显式声明 `topic_hormone`，移除由决策逻辑动态扩展状态字段的隐式约定。
+**已明显缓解**
+- `HistoryManager.get_session()`、`append_session_message()`、`replace_session()` 已成为主要会话读写入口，工具链、小女仆回调和主人私聊同步不再高频读写整份 `history_dict`。
+- `ToolResult`、参数校验、超时保护和异常脱敏已在 `ToolCallManager` 中统一，基础协议测试已覆盖。
+- 破冰流程已纳入 `SessionPipeline`，不再维护独立的旁路回复链。
+- `maid_worker()` 已迁移到 [maid.py](file:///d:/Projects/YukiV6/core/maid.py)，`engine.py` 不再承担后台任务消费入口。
 
-**验证结果**
-- `python -m pytest tests/test_toolchain.py -q`：9 个测试通过。
-- `python tests/test_ice_break_pipeline.py`：15 个脚本入口测试通过。
-- 直接用 `pytest tests/test_ice_break_pipeline.py` 仍依赖异步测试插件，当前环境会报插件缺失，这不是本轮代码断言失败。
+**仍未解决且风险上升为主要问题**
+- 会话 API 解决了可变对象越权修改，但没有解决摘要、批量替换和写盘失败之间的版本一致性问题。
+- 按会话锁只覆盖部分管线处理，跨后台任务、工具回调和文件存储的并发语义仍不完整。
+- `engine.py`、`maid.py` 的单文件职责仍然过重；Worker 迁移只是边界修正，不是文件级拆分的完成。
+- 工具协议测试集中在执行器，尚未覆盖工具副作用、发送失败、私聊快照并发和 Maid 安全策略。
+
+本次评估为静态审查结论，未将未执行的测试结果视为验证证据。
 
 ## 3. 主要技术债
 
-### 3.1 状态分散，跨模块同步成本高
+### 3.1 运行时状态分散，键规范不统一
 
 **涉及文件**
 - [brain.py](file:///d:/Projects/YukiV6/core/brain.py)
@@ -55,67 +55,60 @@
 - [engine.py](file:///d:/Projects/YukiV6/core/engine.py)
 
 **现状**
-- `YukiState` 同时保存精力、活跃度、消息缓冲、任务队列、用户映射、破冰计数等多类状态
-- `HistoryManager` 使用 `_cache` 缓存历史，`SessionPipeline` 又直接操作 `history_dict`
-- 工具层又把部分会话状态放进 `maid_current_tasks`、`maid_task_queue`、`_timer_tasks`、`_timer_handles`
-- `engine.py`、`tools.py`、`session_pipeline.py` 都会读写会话相关数据
+- `YukiState` 同时保存精力、活跃度、消息缓冲、定时器、小女仆任务、用户映射和破冰计数等多类状态。
+- 部分状态由 `YukiState` 持有，部分由 `SessionPipeline`、`tools.py` 和 `HistoryManager` 分别持有，尚无明确的 runtime/session/persistent 所有权模型。
+- 不同入口对 `chat_id` 的处理不完全一致，存在原始类型和 `str(chat_id)` 混用的风险。
 
 **问题**
-- 状态来源不唯一，容易出现“内存态”和“历史态”不同步
-- 功能修改时必须同时理解多个存储点，认知负担高
-- 后续若引入并发或多进程，当前模式很难直接扩展
+- 状态来源不唯一，容易出现内存态、会话快照和持久化历史不同步。
+- 同一个会话可能因为键类型不同落入多个运行时条目，导致防抖、能量和任务状态表现不一致。
+- 后续引入并发或多进程时，当前模型缺少统一的状态边界和冲突处理方式。
 
 **建议**
 - 统一会话上下文模型，明确哪些状态属于 `session`，哪些属于 `runtime`，哪些属于 `persistent`
 - 尽量让 `SessionPipeline` 成为唯一的会话编排入口，其他模块只消费上下文，不直接改会话主结构
 - 小女仆、定时任务、私聊快照等独立能力改成各自的状态仓库
 
-**本轮进展**：已进一步解决
-- `ToolResult` 统一成功/失败结构，失败结果使用稳定错误码；执行器不再把内部异常详情返回给模型。
-- 工具调用增加 JSON 对象参数校验、handler 返回值校验和超时保护。
-- 已补充工具异常脱敏测试，现有工具链回归通过。
-- 已将会话历史读取、初始化和追加收敛到 `HistoryManager.get_session()` / `append_session_message()`。
-- `engine.py`、`tools.py` 中高频历史追加路径已不再直接拼接和保存整份 `history_dict`。
-- 仍未完全解决 `YukiState` 内 runtime 状态过多的问题，小女仆任务、定时任务、活跃度等状态后续仍需要独立仓库或更清晰的数据结构。
-- `HistoryManager` 现在以独立 session 快照作为模块间数据流，管线通过 `replace_session()` 提交批量变更，降低可变缓存被越权修改的风险。
+**已有缓解**
+- 会话历史的主要读写已收敛到 `HistoryManager` 的 session API，降低了可变缓存被直接修改的风险。
+- `YukiState` 已显式声明 `topic_hormone`，减少了动态扩展字段的隐式约定。
 
-**优先级**：高
+**下一步**：增加统一 `normalize_chat_id()`，按领域拆分 runtime state，并明确每个状态的唯一 owner。
 
-### 3.2 兼容旧逻辑过多，行为路径不够单一
+**优先级**：P1
+
+### 3.2 历史一致性与持久化失败语义不足
 
 **涉及文件**
+- [history_manager.py](file:///d:/Projects/YukiV6/core/history_manager.py)
+- [session_pipeline.py](file:///d:/Projects/YukiV6/core/session_pipeline.py)
 - [engine.py](file:///d:/Projects/YukiV6/core/engine.py)
-- [maid.py](file:///d:/Projects/YukiV6/core/maid.py)
-- [tools.py](file:///d:/Projects/YukiV6/core/tools.py)
-- [prompts.py](file:///d:/Projects/YukiV6/core/prompts.py)
 
 **现状**
-- `engine.py` 中保留了大量注释掉的旧实现和备用方案
-- `maid.py` 仍兼容旧工具名、旧提示词输出和临时/固化技能两套路径
-- `tools.py` 中部分工具同时保留“返回字符串”和“返回结构化结果”的历史痕迹
-- `prompts.py` 里存在多个相近场景的 prompt 变体，风格与约束重复
+- `finalize_conversation()` 和后台摘要会基于会话快照执行批量替换，但当前没有会话版本号或 compare-and-swap 保护。
+- 摘要任务开始后若同一会话产生新消息，后台结果可能以旧快照为基础回写并覆盖新内容。
+- `_save_locked()` 更新内存缓存后写盘失败，缺少 dirty 标记、重试和明确的持久化失败状态；重启后可能回退到旧文件。
+- `HistoryManager` 仍以全量 JSON 文件和内存 `_cache` 为基础，没有变更通知或跨进程协调。
 
 **问题**
-- 旧路径越积越多，容易让新改动误命中过时分支
-- 行为不够确定，排查问题时必须先判断当前走的是哪条兼容链路
-- 代码可读性下降，单个文件承担了过多“历史包袱”
+- 后写的后台结果可能覆盖较新的用户消息或工具结果。
+- 写盘失败时调用方难以区分“内存已更新”和“数据已持久化”。
+- 工具、摘要和管线收口并发执行时，缺少冲突检测和合并规则。
 
 **建议**
-- 逐步删除不再使用的旧分支、注释块和兼容别名
-- 明确每个工具和每个场景只有一条推荐路径
-- 先清理高频路径，再清理长尾兼容逻辑
+- 为 session 增加版本或变更序号，批量替换使用 compare-and-swap。
+- 写盘失败时保留 dirty 状态，提供重试、告警和明确的调用方失败语义。
+- 对摘要结果定义冲突合并策略，禁止旧快照无条件覆盖新消息。
 
-**本轮进展**：已进一步解决
-- 已删除 `prompts.py` 中废弃的重复 `build_chat_context()` 实现，仅保留当前生效路径。
-- 已删除 `HistoryManager.get_chat()` / `append_chat()` 兼容别名，调用方统一使用会话级命名。
-- 已移除 `YukiEngine._append_session_message()` 这条旧的私有写入路径，统一改用 `HistoryManager.append_session_message()`。
-- 已清理 `send_master_private` 中“整份读取主人私聊历史再手动 append/save”的旧路径。
-- 仍未处理 `maid.py`、`prompts.py` 中更大范围的旧工具名、旧 prompt 变体和注释块，后续应继续按高频路径分批删除。
-- 小女仆 Worker 已从 `engine.py` 移至 `maid.py`，后台任务消费和对话生成的公开入口已分离。
+**已有缓解**
+- session 快照、`append_session_message()` 和 `replace_session()` 已减少直接修改共享字典的路径。
+- 空闲摘要已使用 `replace_session()`，但这只能降低全量读写范围，不能替代版本校验。
 
-**优先级**：高
+**下一步**：为 session 增加版本或变更序号；摘要回写前做 compare-and-swap，写盘失败保留脏状态并支持重试或阻断后续覆盖。
 
-### 3.3 `engine.py` 职责过重，聚合了过多业务
+**优先级**：P0
+
+### 3.3 消息处理失败后缺少可靠恢复语义
 
 **涉及文件**
 - [engine.py](file:///d:/Projects/YukiV6/core/engine.py)
@@ -124,28 +117,23 @@
 - [maid.py](file:///d:/Projects/YukiV6/core/maid.py)
 
 **现状**
-- `YukiEngine` 负责对话生成、工具调用、多轮工具链、消息合并、破冰、日记总结、后台小女仆回调
-- `engine.py` 末尾还额外放了 `maid_worker()`，进一步扩大了职责范围
-- 工具链执行、消息生成、状态处理、后台任务调度都被塞进同一模块
+- `prepare_message_batch()` 会从缓冲区取出消息，随后 `run_once()` 的准备、决策、生成、发送或收口阶段均可能失败。
+- 外层主要记录异常，当前没有统一的失败消息重新入队、有限重试、死信或失败状态记录。
 
 **问题**
-- 单文件过大，局部修改容易引发非预期联动
-- 单元测试难度高，因为需要同时模拟 LLM、工具链、历史和任务回调
-- 后续若要拆分运行时调度和回复生成，会比较痛
+- 用户消息可能已经从缓冲区消费，但没有生成或发送成功的回复，且不会再次处理。
+- 发送失败、历史保存失败和 LLM 失败的恢复策略不同，却没有被建模为明确的状态。
 
 **建议**
-- 将“对话生成”“工具执行”“后台任务桥接”拆成更清晰的服务层
-- `maid_worker()` 独立出去，避免 engine 继续膨胀
-- 先抽离低耦合逻辑，再处理高耦合链路
+- 为消息批次定义处理状态和幂等标识。
+- 对 LLM、工具、发送和持久化失败分别定义有限重试与不可恢复路径。
+- 保留失败批次的诊断信息，避免仅依赖日志定位丢消息。
 
-**本轮进展**：已进一步缓解
-- 已删除 `engine.py` 内部重复的历史追加 helper，降低 `YukiEngine` 对历史数据结构细节的直接负责程度。
-- `maid_worker()` 已迁移到 `maid.py`，`listen_main.py` 通过明确的模块边界启动 Worker。
-- `engine.py` 仍包含回复决策、日记和破冰监控，后续可以在不改变会话接口的前提下继续拆分服务职责。
+**下一步**：定义消息处理状态，明确“已消费、生成失败、发送失败、保存失败”的语义；为可恢复错误增加有限重试，为不可恢复错误进入死信或诊断队列。
 
-**优先级**：高
+**优先级**：P1
 
-### 3.4 历史记录与缓存的一致性风险较高
+### 3.4 后台任务缺少统一生命周期管理
 
 **涉及文件**
 - [history_manager.py](file:///d:/Projects/YukiV6/core/history_manager.py)
@@ -153,27 +141,26 @@
 - [engine.py](file:///d:/Projects/YukiV6/core/engine.py)
 
 **现状**
-- `HistoryManager` 直接把整个 history 缓存在内存 `_cache`
-- `SessionPipeline` 中存在多处 `load()` / `save()` 混用
-- `engine.py` 也会在工具期间直接追加 session 消息
+- `idle_diary_checker()`、`ice_break_monitor()` 和 `decay_heartbeat()` 是长期运行的无限循环。
+- 摘要、破冰回调、定时任务和工具回调通过 `asyncio.create_task()` 创建，但没有统一保存、取消、等待和异常汇总机制。
+- 服务停止、模块重载或测试结束时，后台任务可能残留；任务异常也可能只表现为未处理的后台错误。
 
 **问题**
-- 并发修改时容易出现后写覆盖前写
-- 缓存和磁盘状态没有统一的版本控制或变更通知
-- 工具调用期间插入消息时，如果回写顺序错乱，历史可能被污染
+- 进程关闭时无法保证任务完成、取消或释放资源。
+- 后台任务异常缺少统一观测入口，难以判断功能是否已经停止工作。
+- 测试无法可靠清理任务，容易产生跨测试污染和事件循环残留。
 
 **建议**
-- 让历史写入集中在管线收口点
-- 增加最小粒度的 session 级变更封装，避免模块之间直接操作同一字典
-- 后续考虑引入更明确的持久化接口，替代“谁拿到字典谁都能改”的模式
+- 统一登记所有后台 `Task`，提供启动、取消、等待和异常汇总入口。
+- 为无限循环增加停止事件，并在服务关闭时等待任务退出。
+- 回收摘要、定时任务和工具回调任务，避免事件循环残留。
 
-**本轮进展**：已进一步解决
-- 已新增最小粒度的 session 级封装：`HistoryManager.get_session()` 负责会话初始化，`HistoryManager.append_session_message()` 负责追加消息、补时间戳并落盘。
-- 工具链期间插入的阶段性文本、工具结果、工具期间新增消息和小女仆回调，已改为通过统一接口写入。
-- `SessionPipeline.finalize_conversation()`、后台摘要回写已改为 session 级接口；仅系统提示同步仍使用全量保存接口。
-- 管线收口与摘要回写通过 `replace_session()` 完成，仅系统提示同步仍使用全量保存接口。
+**已有缓解**
+- Worker 已迁移到 `maid.py`，减少了引擎中的一类后台消费职责。
 
-**优先级**：高
+**下一步**：建立任务 supervisor，统一登记 `Task`，提供 stop event、取消、等待和异常报告；所有无限循环都必须有可测试的停止条件。
+
+**优先级**：P1
 
 ### 3.5 工具链能力扩张快，但边界和测试不足
 
@@ -199,6 +186,8 @@
 
 **优先级**：中高
 
+**本轮重新评估**：工具执行器协议已达到可用基线，但工具副作用边界仍未形成分类和权限模型。当前重点从“统一返回结构”转为覆盖真实工具行为，尤其是发送、定时任务、文件、网络和小女仆委托。
+
 ### 3.6 `maid.py` 同时承担协议、执行、适配和安全控制
 
 **涉及文件**
@@ -219,6 +208,8 @@
 - 让 `maid.py` 只保留子代理运行时核心逻辑
 
 **优先级**：中高
+
+**本轮重新评估**：这是当前的高风险执行面，优先级上调为 P0/P1。关键词黑名单、超时和默认禁止写入只能作为应用层防线，不能视为沙箱。短期应限制工作目录、读取范围、依赖来源并补安全测试；中期应使用低权限进程或容器隔离。
 
 ### 3.7 prompt 体系仍偏分散，约束容易重复或冲突
 
@@ -243,6 +234,8 @@
 
 **优先级**：中
 
+**本轮重新评估**：prompt 重复仍是维护债务，但相较历史一致性、消息恢复和执行安全属于 P2。应在核心运行时稳定后，按稳定人设、场景差异和工具约束分层组合。
+
 ### 3.8 私聊上下文快照能力已可用，但数据模型还偏轻
 
 **涉及文件**
@@ -266,23 +259,30 @@
 
 **优先级**：中
 
+**本轮重新评估**：私聊快照仍适合低频轻量场景，但当前全量 JSON 写入无锁、无临时文件替换，并发时可能丢快照或损坏文件。优先补原子写入和进程内锁，再决定是否迁移统一记忆存储。
+
 ## 4. 推荐整改顺序
 
-1. 先收敛会话状态和历史写入路径，降低并发和同步风险。
-2. 再拆 `engine.py` 和 `maid.py` 的职责边界，减少单文件过重。
-3. 接着清理兼容旧逻辑和重复 prompt，缩短维护链路。
-4. 最后补工具层测试与返回格式统一，让扩张速度可控。
+1. **P0：先修历史一致性和执行边界。** 为 session 增加版本校验，处理写盘失败；同时限制 Maid 的工作目录、文件读取、依赖安装和终端执行范围。
+2. **P1：补消息可靠性和后台任务生命周期。** 定义批次失败状态、重试与死信；建立统一 task supervisor，支持停止、取消、等待和异常报告。
+3. **P1：统一 runtime 状态模型。** 规范 `chat_id`，拆分消息管线、行为模拟、定时任务和小女仆状态的 owner。
+4. **P1：补关键行为测试。** 覆盖摘要并发、写盘失败、消息恢复、状态键规范、Maid 安全策略、私聊快照和发送失败；处理 [tests/test_maid.py](file:///d:/Projects/YukiV6/tests/test_maid.py) 的失败占位。
+5. **P2：再清理职责和兼容逻辑。** 拆分 `engine.py`、`maid.py`，删除未启用旧决策实现、空兼容接口和旧工具名分支，随后组合 prompt。
+6. **P2：同步架构文档。** 更新 [docs/architecture.md](file:///d:/Projects/YukiV6/docs/architecture.md)，使主流程、工具链和后台任务描述与当前 `SessionPipeline` 实现一致。
 
-## 5. 短期落地清单
+## 5. 当前状态清单
 
-- [x] 部分统一 `SessionPipeline` 与 `HistoryManager` 的写入边界：已新增会话级 `get_session()` / `append_session_message()`，并迁移工具链、小女仆回调和主人私聊同步写入路径
-- [x] 把 `maid_worker()` 从 `engine.py` 中拆出：已迁移到 `core/maid.py`，监听层使用明确的模块入口
-- [x] 部分清理 `engine.py` 中不再使用的旧实现：已删除 `_append_session_message()` 重复写入逻辑
-- [x] 已验证 `send_master_private`、`manage_timer_task`、`send_qq_file` 所在工具链 smoke test：`tests/test_toolchain.py` 通过；`delegate_to_maid` 仍建议补专门测试
-- [x] 整理 `prompts.py` 中重复的回复规范：已删除废弃的重复上下文构建实现
-- [x] 统一工具返回结构与错误码风格：已增加错误码、超时和异常脱敏处理
+- [x] 会话历史主要读写路径收敛到 `HistoryManager` 的 session API
+- [x] 工具结果协议、参数校验、超时和异常脱敏已形成基础实现
+- [x] 破冰流程纳入 `SessionPipeline`，小女仆 Worker 移出 `engine.py`
+- [ ] 为 session 增加版本控制和摘要 compare-and-swap，定义写盘失败语义
+- [ ] 为消息批次增加失败恢复、有限重试和死信/诊断路径
+- [ ] 建立后台任务 supervisor，统一停止、取消、等待和异常报告
+- [ ] 统一 `chat_id` 规范并拆分 `YukiState` 中的 runtime 状态
+- [ ] 收紧 Maid 文件、终端和依赖安装边界，补充安全测试
+- [ ] 补齐 HistoryManager、Engine、Maid、私聊快照和发送失败测试
+- [ ] 清理旧兼容路径并同步 `docs/architecture.md`
 
 ## 6. 结语
 
-`core/` 的问题不是“功能不够”，而是“功能已经多到开始互相牵扯”。
-下一阶段的重点不是再堆能力，而是把状态、职责和边界收紧，否则后续每加一个新能力，维护成本都会成倍上升。
+`core/` 已经具备继续演进的结构基础，但还没有达到并发可靠、状态单一归属、后台任务可控、执行权限可审计和测试可防回归的成熟度。下一阶段应优先处理 P0/P1 风险，再进行大范围文件拆分和兼容逻辑清理。
