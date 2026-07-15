@@ -196,7 +196,7 @@ async def send_master_private_tool(context, message, reason="重要信息"):
     try:
         from core.private_context import save_context_snapshot
         cid = str(context.chat_id)
-        recent_msgs = context.history_dict.get(cid, [])[-10:]
+        recent_msgs = context.session[-10:]
         slim_msgs = []
         for msg in recent_msgs:
             if msg.get("role") in ("user", "assistant"):
@@ -401,7 +401,7 @@ async def capture_group_snapshot_tool(context, note, limit=12):
 
     chat_id = str(context.chat_id)
     limit = max(4, min(int(limit or 12), 20))
-    history = context.history_dict.get(chat_id, [])[-limit:]
+    history = context.session[-limit:]
     message_objs = context.metadata.get("message_objs") or []
     live_messages = shot_live_buffer.snapshot(chat_id, limit=limit)
     connector = getattr(context.sender, "connector", None)

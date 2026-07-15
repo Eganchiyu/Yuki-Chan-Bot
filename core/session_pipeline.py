@@ -251,7 +251,7 @@ class SessionPipeline:
         chat_id, mode = context["chat_id"], context["mode"]
 
         if context.get("ice_break"):
-            recent_msgs = self.history_manager.load().get(str(chat_id), [])[-5:]
+            recent_msgs = self.history_manager.get_session(chat_id)[-5:]
             context["combined_text"] = "".join(
                 [m['content'] for m in recent_msgs if m.get("role") != "system"]) or "（群聊安静中）"
             context["message_objs"] = []
@@ -359,23 +359,17 @@ class SessionPipeline:
         mode = context["mode"]
         system_prompt = self.yuki.get_setting(mode)
 
-        history_dict = self.history_manager.load()
-        history_dict[chat_id] = self.history_manager.get_session(chat_id, system_prompt)
-
+        session = self.history_manager.get_session(chat_id, system_prompt)
         current_time_str = datetime.datetime.now().strftime("%Y年%m月%d日%H:%M")
-        history_dict[chat_id].append({
-            "role": "user",
-            "content": context["combined_text"],
-            "time": current_time_str,
-        })
+        session.append({"role": "user", "content": context["combined_text"], "time": current_time_str})
 
         context["chat_id"] = chat_id
-        context["history_dict"] = history_dict
+        context["session"] = session
         context["current_time_str"] = current_time_str
         self._update_snapshot(
             context,
             current_time_str=current_time_str,
-            message_count=len(history_dict.get(chat_id, [])),
+            message_count=len(session),
         )
         logger.info("[Pipeline] 上下文加载完成")
         return context
@@ -393,7 +387,7 @@ class SessionPipeline:
 
         chat_id = context["chat_id"]
         mode = context["mode"]
-        history_dict = context["history_dict"]
+        session = context["session"]
 
         # 从已检索的 RAG 结果中计算话题兴趣度
         rag_interest = 0.0
@@ -402,13 +396,13 @@ class SessionPipeline:
             rag_interest = sum(d.get("score", 0) for d in relevant_diaries) / len(relevant_diaries)
 
         if mode == "group" and not await self.engine.decide_to_reply(
-            history_dict[chat_id],
+            session,
             context["message_objs"],
             chat_id,
             force_reply=context["force_reply"],
             rag_interest=rag_interest,
         ):
-            self.history_manager.save(history_dict)
+            self.history_manager.replace_session(chat_id, session)
             logger.info(f"[Pipeline] {cfg.ROBOT_NAME.title()} 决定继续潜水")
             context["stop"] = True
             self._update_snapshot(context, should_reply=False)
@@ -447,7 +441,7 @@ class SessionPipeline:
         answer_raw, answer_text, voice = await self.engine.api_reply(
             chat_id,
             context["combined_text"],
-            context["history_dict"],
+            context["session"],
             context["mode"],
             context["relevant_diaries"],
             ice_break=context.get("ice_break", False),
@@ -575,17 +569,13 @@ class SessionPipeline:
     async def finalize_conversation(self, context):
         """保存回复上下文，并在历史过长时触发总结。"""
         chat_id = context["chat_id"]
-        history_dict = context["history_dict"]
         answer_text = context["answer_text"]
 
         logger.info(f"[Pipeline] {cfg.ROBOT_NAME.title()} 正在保存上下文")
         self.history_manager.append_to_log(chat_id, cfg.ROBOT_NAME.title(), answer_text)
-        history_dict[chat_id].append({
-            "role": "assistant",
-            "content": context["answer_raw"],
-            "time": context["current_time_str"],
-        })
-        self.history_manager.save(history_dict)
+        session = self.history_manager.append_session_message(
+            chat_id, "assistant", context["answer_raw"], time=context["current_time_str"]
+        )
         logger.info("[Pipeline] 上下文保存完成")
 
         # 记录本次处理完成时间，用于冷启动判断
@@ -598,10 +588,9 @@ class SessionPipeline:
         if self.image_store:
             self.image_store.tick()
 
-        if len(history_dict[chat_id]) > cfg.DIARY_MAX_LENGTH:
-            history_snapshot = history_dict[chat_id].copy()
-            history_dict[chat_id] = [history_dict[chat_id][0]]  # 保留系统提示词
-            self.history_manager.save(history_dict)
+        if len(session) > cfg.DIARY_MAX_LENGTH:
+            history_snapshot = session.copy()
+            self.history_manager.replace_session(chat_id, [session[0]])
 
             asyncio.create_task(self._background_summarize(chat_id, history_snapshot))
 
@@ -617,9 +606,7 @@ class SessionPipeline:
         """后台处理摘要，不阻塞主流程。"""
         try:
             summarized_list = await self.engine.do_summarize(chat_id, history_snapshot)
-            history_dict = self.history_manager.load()
-            history_dict[chat_id] = summarized_list
-            self.history_manager.save(history_dict)
+            self.history_manager.replace_session(chat_id, summarized_list)
             logger.info(f"[Pipeline] [{chat_id}] 日记写入完成，历史已同步")
         except Exception as e:
             logger.error(f"[Pipeline] [{chat_id}] 后台摘要失败: {e}")

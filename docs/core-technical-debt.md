@@ -25,7 +25,7 @@
 
 ## 2.1 本轮已处理内容
 
-本轮已先处理“会话历史写入分散”和“旧写入路径重复”两类高优先级问题，未一次性拆散所有模块，避免引入过多新文件和迁移风险。
+本轮继续处理“会话历史写入分散”“旧写入路径重复”和“引擎混入小女仆 Worker”三类高优先级问题，保持现有文件数量，优先收敛数据所有权。
 
 **已落地方案**
 - 在 [history_manager.py](file:///d:/Projects/YukiV6/core/history_manager.py) 中新增 `get_session()` 与 `append_session_message()`，作为会话级读写入口。
@@ -33,6 +33,10 @@
 - [engine.py](file:///d:/Projects/YukiV6/core/engine.py) 删除私有重复方法 `_append_session_message()`，工具链阶段性文本、工具结果、小女仆回调统一委托 `HistoryManager.append_session_message()` 写入。
 - [tools.py](file:///d:/Projects/YukiV6/core/tools.py) 中 `send_master_private` 不再整份 `load()` / `save()` 主人私聊历史，改为追加单条会话消息。
 - `append_session_message()` 自动补齐 `time` 字段并立即落盘，保证工具链、小女仆和私聊同步写入格式一致。
+- `HistoryManager.load()` 与 `get_session()` 返回独立快照，新增 `replace_session()` 和 `session_exists()`，避免外部直接修改缓存对象。
+- `ToolContext` 改为只持有当前 `session`，查询类工具通过 session 快照读取历史，不再接收完整 `history_dict`。
+- `maid_worker()` 迁移到 `maid.py`，监听层改为从小女仆模块导入，引擎不再承担后台任务消费职责。
+- `YukiState` 显式声明 `topic_hormone`，移除由决策逻辑动态扩展状态字段的隐式约定。
 
 **验证结果**
 - `python -m pytest tests/test_toolchain.py -q`：9 个测试通过。
@@ -66,10 +70,11 @@
 - 尽量让 `SessionPipeline` 成为唯一的会话编排入口，其他模块只消费上下文，不直接改会话主结构
 - 小女仆、定时任务、私聊快照等独立能力改成各自的状态仓库
 
-**本轮进展**：已部分解决
+**本轮进展**：已进一步解决
 - 已将会话历史读取、初始化和追加收敛到 `HistoryManager.get_session()` / `append_session_message()`。
 - `engine.py`、`tools.py` 中高频历史追加路径已不再直接拼接和保存整份 `history_dict`。
 - 仍未完全解决 `YukiState` 内 runtime 状态过多的问题，小女仆任务、定时任务、活跃度等状态后续仍需要独立仓库或更清晰的数据结构。
+- `HistoryManager` 现在以独立 session 快照作为模块间数据流，管线通过 `replace_session()` 提交批量变更，降低可变缓存被越权修改的风险。
 
 **优先级**：高
 
@@ -97,10 +102,11 @@
 - 明确每个工具和每个场景只有一条推荐路径
 - 先清理高频路径，再清理长尾兼容逻辑
 
-**本轮进展**：已部分解决
+**本轮进展**：已进一步解决
 - 已移除 `YukiEngine._append_session_message()` 这条旧的私有写入路径，统一改用 `HistoryManager.append_session_message()`。
 - 已清理 `send_master_private` 中“整份读取主人私聊历史再手动 append/save”的旧路径。
 - 仍未处理 `maid.py`、`prompts.py` 中更大范围的旧工具名、旧 prompt 变体和注释块，后续应继续按高频路径分批删除。
+- 小女仆 Worker 已从 `engine.py` 移至 `maid.py`，后台任务消费和对话生成的公开入口已分离。
 
 **优先级**：高
 
@@ -127,10 +133,10 @@
 - `maid_worker()` 独立出去，避免 engine 继续膨胀
 - 先抽离低耦合逻辑，再处理高耦合链路
 
-**本轮进展**：已部分缓解
+**本轮进展**：已进一步缓解
 - 已删除 `engine.py` 内部重复的历史追加 helper，降低 `YukiEngine` 对历史数据结构细节的直接负责程度。
-- `maid_worker()` 仍保留在 `engine.py`，因为当前 `modules/QQNapcatListen/listen_main.py` 仍直接导入该符号；本轮为了避免扩大改动面，暂未迁移文件位置。
-- 下一步更适合先调整导入边界，再将 `maid_worker()` 迁移到 `maid.py` 或独立 worker 模块。
+- `maid_worker()` 已迁移到 `maid.py`，`listen_main.py` 通过明确的模块边界启动 Worker。
+- `engine.py` 仍包含回复决策、日记和破冰监控，后续可以在不改变会话接口的前提下继续拆分服务职责。
 
 **优先级**：高
 
@@ -156,10 +162,11 @@
 - 增加最小粒度的 session 级变更封装，避免模块之间直接操作同一字典
 - 后续考虑引入更明确的持久化接口，替代“谁拿到字典谁都能改”的模式
 
-**本轮进展**：已部分解决
+**本轮进展**：已进一步解决
 - 已新增最小粒度的 session 级封装：`HistoryManager.get_session()` 负责会话初始化，`HistoryManager.append_session_message()` 负责追加消息、补时间戳并落盘。
 - 工具链期间插入的阶段性文本、工具结果、工具期间新增消息和小女仆回调，已改为通过统一接口写入。
 - `SessionPipeline.finalize_conversation()`、摘要回写等主流程收口点仍保留整份 `history_dict` 保存，这是当前管线批量变更的必要路径；后续可继续拆成 session 级事务接口。
+- 管线收口与摘要回写已改为 `replace_session()`，仅系统提示同步仍使用全量保存接口。
 
 **优先级**：高
 

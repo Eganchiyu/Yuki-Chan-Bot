@@ -43,10 +43,14 @@ class ToolContext:
     """工具调用上下文，保持多轮工具调用期间的会话状态。"""
     chat_id: str
     mode: str
-    history_dict: dict
+    session: list
     combined_text: str
     runtime: ToolRuntime
     metadata: dict = field(default_factory=dict)
+
+    @property
+    def history(self):
+        return self.session
 
     @property
     def sender(self):

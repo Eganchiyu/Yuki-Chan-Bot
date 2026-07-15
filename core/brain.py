@@ -86,6 +86,7 @@ class YukiState:
         self.writing_diary = set()  # chat_id
         self.desire_to_start_topic = {} # chat_id
         self.ice_break_fail_count = {}  # {chat_id: count} 新增：破冰无人理睬计数
+        self.topic_hormone = {}
         # --- 新增：记录刚才发了什么表情包，用于正反馈捕捉 ---
         self.last_sent_meme = {}  # {chat_id: doc_id}
         # 在 __init__ 里添加

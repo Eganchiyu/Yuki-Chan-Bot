@@ -10,7 +10,6 @@ import time
 from typing import Any, Optional
 
 from config import cfg
-from core.maid import build_maid_report, maid_evolution_loop
 from core.prompts import get_base_setting, get_summary_prompt, build_chat_context
 from core.toolchain import FunctionRegistry, ToolCallManager, ToolContext, ToolRuntime
 from core.tools import TOOL_SPECS
@@ -44,7 +43,7 @@ class YukiEngine:
         clean_content = re.sub(r'<layout>.*?</layout>', '', clean_content, flags=re.DOTALL).strip()
         return clean_content
 
-    def _merge_pending_messages(self, chat_id, history_dict, tool_messages):
+    def _merge_pending_messages(self, chat_id, tool_messages):
         """工具调用间隙合并同群新消息，避免消息流分叉。"""
         pending_objs = self.yuki.message_buffer.get(chat_id) or self.yuki.message_buffer.get(str(chat_id))
         if not pending_objs:
@@ -78,12 +77,12 @@ class YukiEngine:
         logger.info(f"[ToolChain] 实时发送阶段性文本 chat_id={chat_id}: {clean_content}")
         return clean_content
 
-    async def _chat_with_tools(self, chat_id, combined_text, history_dict, mode, messages, message_objs=None):
+    async def _chat_with_tools(self, chat_id, combined_text, session, mode, messages, message_objs=None):
         """执行支持多轮工具调用的 LLM 对话。"""
         context = ToolContext(
             chat_id=str(chat_id),
             mode=mode,
-            history_dict=history_dict,
+            session=session,
             combined_text=combined_text,
             runtime=ToolRuntime(sender=self.sender, yuki_state=self.yuki,
                                 image_store=getattr(self, "image_store", None)),
@@ -148,7 +147,7 @@ class YukiEngine:
                         tool_call_id=tool_result_message.get("tool_call_id"),
                     )
                 tool_messages.extend(tool_result_messages)
-                self._merge_pending_messages(chat_id, history_dict, tool_messages)
+                self._merge_pending_messages(chat_id, tool_messages)
 
             fallback = await llm_chat(
                 messages=tool_messages,
@@ -162,7 +161,7 @@ class YukiEngine:
         finally:
             self.tool_manager.finish_session(str(chat_id))
 
-    async def api_reply(self, chat_id: str, combined_text: str, history_dict: dict, mode,
+    async def api_reply(self, chat_id: str, combined_text: str, session: list, mode,
                         relevant_diaries: list[Any],
                         ice_break: bool = False, debug_snapshot_id: Optional[str] = None,
                         message_objs: Optional[list[dict]] = None) -> str:
@@ -170,7 +169,7 @@ class YukiEngine:
         combined_API_message = await build_chat_context(self.yuki,
                                                         chat_id,
                                                         combined_text,
-                                                        history_dict,
+                                                        {str(chat_id): session},
                                                         mode,
                                                         relevant_diaries,
                                                         ice_break=ice_break
@@ -196,7 +195,7 @@ class YukiEngine:
             Yuki_Answer_raw, Yuki_Answer = await self._chat_with_tools(
                 chat_id,
                 combined_text,
-                history_dict,
+                session,
                 mode,
                 combined_API_message,
                 message_objs=message_objs,
@@ -565,61 +564,3 @@ class YukiEngine:
                     asyncio.create_task(self.process_callback(cid, "group", debounce_flag=False, force_reply=True, ice_break=True))
                 else:
                     logger.warning(f"[IceBreak] process_callback 未设置，无法触发破冰")
-
-
-
-# core/engine.py 末尾新增（或替换原来的 maid_worker）
-
-async def maid_worker(engine, yuki_state, sender, history_manager):
-    """小女仆后台常驻 Worker - 完成后交还给 engine 触发正常回复流程"""
-    while True:
-        task = await yuki_state.maid_task_queue.get()
-        goal = task["goal"]
-        chat_id = str(task["chat_id"])
-        mode = task.get("mode", "group")   # 默认群聊
-
-        # 更新当前任务状态（让 {cfg.ROBOT_NAME.title()} 能感知到“小女仆正在干这个”）
-        yuki_state.maid_current_tasks[chat_id] = goal
-
-        logger.info(f"[Maid] 开始后台任务: {goal} (chat_id={chat_id})")
-
-        # 非阻塞执行（线程池运行同步的 ollama 循环）
-        result_dict = await maid_evolution_loop(
-            user_goal=goal,
-            chat_id=chat_id
-        )
-
-        # 清除任务状态
-        yuki_state.maid_current_tasks.pop(chat_id, None)
-
-        # 构造汇报内容
-        report = build_maid_report(goal, result_dict)
-
-        logger.info(f"[Maid] 任务完成，准备交还主流程 (chat_id={chat_id})")
-
-        try:
-            history_manager.append_session_message(
-                chat_id,
-                "user",
-                report,
-                time=datetime.datetime.now().strftime("%Y年%m月%d日%H:%M"),
-                is_maid_report=True,
-            )
-            while not getattr(engine, 'napcat_online', True):
-                await asyncio.sleep(20)
-
-            if engine.process_callback is not None:
-                asyncio.create_task(
-                    engine.process_callback(chat_id, mode, debounce_flag=False, force_reply=True)
-                )
-                logger.info(f"[Maid] 已触发主流程 (chat_id={chat_id})")
-            else:
-                logger.warning(f"[Maid] process_callback 未设置，无法触发回复流程")
-
-            logger.info(f"[Maid] 汇报已交还主流程 (chat_id={chat_id})")
-
-        except Exception as e:
-            logger.error(f"[Maid] 处理汇报时出错: {e}")
-
-        finally:
-            yuki_state.maid_task_queue.task_done()

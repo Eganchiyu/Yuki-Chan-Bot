@@ -32,7 +32,7 @@ def build_context():
     return ToolContext(
         chat_id="test_chat",
         mode="group",
-        history_dict={},
+        session=[],
         combined_text="测试工具调用",
         runtime=runtime,
         metadata={},

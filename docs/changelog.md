@@ -73,6 +73,8 @@
 - 工具链定时任务升级为精确定时唤醒，到点后通过主管道触发 Yuki 回复
 
 ### 变更
+- 将 LiveYukiL2D 鼠标视觉跟踪逻辑独立到 `frontend/minimal/src/mouse_tracker.ts`，降低入口耦合并便于后续调整坐标和跟随策略
+- 优化 LiveYukiL2D 鼠标视觉跟踪：缓存桌面坐标、按渲染帧消费最新位置，以 Live2D 头部视觉中心进行相对定位并使用时间无关的指数平滑，降低 IPC/布局查询开销并改善跟手性
 - 收紧 `review_memory_candidates.py` 审核规则：event importance<3 直接拒绝、importance<=3 需匹配低价值关键词；fact/preference/relationship importance<=1 归入 needs_review；全量审核 approved 从 9950 降至 4297，event 从 3614 降至 397
 - 增强 `YukiMemoryRetriever._dedupe()`，按 (type, subject) 分组去重，每组只保留 importance/confidence/score 最优条目，避免同主体重复记忆污染上下文
 - 增强 `build_structured_memory_prompt()`，增加跨类型内容相似度去重（阈值 0.82），将重复表述压缩为单条最优记忆
