@@ -71,6 +71,9 @@
 - 小女仆、定时任务、私聊快照等独立能力改成各自的状态仓库
 
 **本轮进展**：已进一步解决
+- `ToolResult` 统一成功/失败结构，失败结果使用稳定错误码；执行器不再把内部异常详情返回给模型。
+- 工具调用增加 JSON 对象参数校验、handler 返回值校验和超时保护。
+- 已补充工具异常脱敏测试，现有工具链回归通过。
 - 已将会话历史读取、初始化和追加收敛到 `HistoryManager.get_session()` / `append_session_message()`。
 - `engine.py`、`tools.py` 中高频历史追加路径已不再直接拼接和保存整份 `history_dict`。
 - 仍未完全解决 `YukiState` 内 runtime 状态过多的问题，小女仆任务、定时任务、活跃度等状态后续仍需要独立仓库或更清晰的数据结构。
@@ -103,6 +106,8 @@
 - 先清理高频路径，再清理长尾兼容逻辑
 
 **本轮进展**：已进一步解决
+- 已删除 `prompts.py` 中废弃的重复 `build_chat_context()` 实现，仅保留当前生效路径。
+- 已删除 `HistoryManager.get_chat()` / `append_chat()` 兼容别名，调用方统一使用会话级命名。
 - 已移除 `YukiEngine._append_session_message()` 这条旧的私有写入路径，统一改用 `HistoryManager.append_session_message()`。
 - 已清理 `send_master_private` 中“整份读取主人私聊历史再手动 append/save”的旧路径。
 - 仍未处理 `maid.py`、`prompts.py` 中更大范围的旧工具名、旧 prompt 变体和注释块，后续应继续按高频路径分批删除。
@@ -165,8 +170,8 @@
 **本轮进展**：已进一步解决
 - 已新增最小粒度的 session 级封装：`HistoryManager.get_session()` 负责会话初始化，`HistoryManager.append_session_message()` 负责追加消息、补时间戳并落盘。
 - 工具链期间插入的阶段性文本、工具结果、工具期间新增消息和小女仆回调，已改为通过统一接口写入。
-- `SessionPipeline.finalize_conversation()`、摘要回写等主流程收口点仍保留整份 `history_dict` 保存，这是当前管线批量变更的必要路径；后续可继续拆成 session 级事务接口。
-- 管线收口与摘要回写已改为 `replace_session()`，仅系统提示同步仍使用全量保存接口。
+- `SessionPipeline.finalize_conversation()`、后台摘要回写已改为 session 级接口；仅系统提示同步仍使用全量保存接口。
+- 管线收口与摘要回写通过 `replace_session()` 完成，仅系统提示同步仍使用全量保存接口。
 
 **优先级**：高
 
@@ -180,7 +185,7 @@
 **现状**
 - 工具数量已经覆盖日记、定时任务、小女仆、私聊快照、截屏、QQ 文件、地图、网页搜索、图片生成等多个领域
 - `ToolContext` 已经开始收敛运行时依赖，但工具实现仍会直接访问较多外部对象
-- 部分工具在异常、超时、缺参时返回结构不完全一致
+- 工具结果统一由 `ToolResult` 表达，执行器统一处理参数错误、超时和异常脱敏
 
 **问题**
 - 工具越多，参数协议越难维护
@@ -271,11 +276,11 @@
 ## 5. 短期落地清单
 
 - [x] 部分统一 `SessionPipeline` 与 `HistoryManager` 的写入边界：已新增会话级 `get_session()` / `append_session_message()`，并迁移工具链、小女仆回调和主人私聊同步写入路径
-- [ ] 把 `maid_worker()` 从 `engine.py` 中拆出：本轮暂缓，需先调整 `listen_main.py` 的导入边界
+- [x] 把 `maid_worker()` 从 `engine.py` 中拆出：已迁移到 `core/maid.py`，监听层使用明确的模块入口
 - [x] 部分清理 `engine.py` 中不再使用的旧实现：已删除 `_append_session_message()` 重复写入逻辑
 - [x] 已验证 `send_master_private`、`manage_timer_task`、`send_qq_file` 所在工具链 smoke test：`tests/test_toolchain.py` 通过；`delegate_to_maid` 仍建议补专门测试
-- [ ] 整理 `prompts.py` 中重复的回复规范
-- [ ] 统一工具返回结构与错误码风格
+- [x] 整理 `prompts.py` 中重复的回复规范：已删除废弃的重复上下文构建实现
+- [x] 统一工具返回结构与错误码风格：已增加错误码、超时和异常脱敏处理
 
 ## 6. 结语
 

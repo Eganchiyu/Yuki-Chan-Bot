@@ -24,6 +24,10 @@ async def another_tool(context):
     return ToolResult(success=True, content="第二个工具")
 
 
+async def failing_tool(context):
+    raise RuntimeError("secret internal detail")
+
+
 def build_context():
     runtime = ToolRuntime(
         sender=SimpleNamespace(),
@@ -120,6 +124,7 @@ def test_execute_tool_call_invalid_json():
         payload = json.loads(message["content"])
         assert payload["success"] is False
         assert payload["content"] == "工具参数不是合法 JSON"
+        assert payload["error"] == "invalid_json"
 
     asyncio.run(run())
 
@@ -134,6 +139,31 @@ def test_execute_tool_call_missing_handler():
         payload = json.loads(message["content"])
         assert payload["success"] is False
         assert payload["error"] == "handler_not_found"
+
+    asyncio.run(run())
+
+
+def test_execute_tool_call_hides_internal_exception():
+    async def run():
+        registry = build_registry()
+        registry.register(
+            ToolSpec(
+                name="failing",
+                description="异常工具",
+                parameters={"type": "object", "properties": {}},
+                handler=failing_tool,
+            )
+        )
+        manager = ToolCallManager(registry)
+        message = await manager.execute_tool_call(
+            {"id": "call_error", "function": {"name": "failing", "arguments": "{}"}},
+            build_context(),
+        )
+        payload = json.loads(message["content"])
+        assert payload["success"] is False
+        assert payload["error"] == "tool_execution_failed"
+        assert "secret internal detail" not in payload["content"]
+        assert "secret internal detail" not in payload["error"]
 
     asyncio.run(run())
 

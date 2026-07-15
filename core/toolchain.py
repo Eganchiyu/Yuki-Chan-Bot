@@ -20,6 +20,16 @@ class ToolResult:
     error: str = ""
     name: str = ""
 
+    def __post_init__(self):
+        if self.success:
+            self.error = ""
+        elif not self.error:
+            self.error = "tool_failed"
+
+    @classmethod
+    def failure(cls, content: str, error: str, data: Any = None, name: str = ""):
+        return cls(success=False, content=content, data=data, error=error, name=name)
+
     def to_message_content(self) -> str:
         payload = {
             "success": self.success,
@@ -128,6 +138,7 @@ class ToolCallManager:
     def __init__(self, registry: FunctionRegistry, max_rounds: int = 4):
         self.registry = registry
         self.max_rounds = max_rounds
+        self.timeout_seconds = max(1.0, float(getattr(cfg.timing, "tool_call_timeout_seconds", 120)))
 
     def start_session(self, chat_id: str, user_text: str):
         """保留会话入口，当前仅用于兼容调用点。"""
@@ -155,19 +166,31 @@ class ToolCallManager:
 
         started_at = time.time()
         if not handler:
-            result = ToolResult(name=name, success=False, content="工具未注册", error="handler_not_found")
+            result = ToolResult.failure("工具未注册", "handler_not_found", name=name)
         else:
             try:
                 args = json.loads(arguments_text) if isinstance(arguments_text, str) else arguments_text
-                result = await handler(context, **(args or {}))
+                if not isinstance(args, dict):
+                    raise TypeError("工具参数必须是 JSON 对象")
+                result = await asyncio.wait_for(
+                    handler(context, **args),
+                    timeout=self.timeout_seconds,
+                )
+                if not isinstance(result, ToolResult):
+                    raise TypeError("工具必须返回 ToolResult")
                 result.name = result.name or name
             except json.JSONDecodeError as e:
-                result = ToolResult(name=name, success=False, content="工具参数不是合法 JSON", error=str(e))
+                logger.warning(f"[ToolCall] {name} 参数 JSON 无效: {e}")
+                result = ToolResult.failure("工具参数不是合法 JSON", "invalid_json", name=name)
             except TypeError as e:
-                result = ToolResult(name=name, success=False, content="工具参数不符合接口要求", error=str(e))
+                logger.warning(f"[ToolCall] {name} 参数不符合接口要求: {e}")
+                result = ToolResult.failure("工具参数不符合接口要求", "invalid_arguments", name=name)
+            except asyncio.TimeoutError:
+                logger.error(f"[ToolCall] {name} 执行超时 ({self.timeout_seconds:.1f}s)")
+                result = ToolResult.failure("工具执行超时", "timeout", name=name)
             except Exception as e:
                 logger.error(f"[ToolCall] {name} 执行失败: {e}")
-                result = ToolResult(name=name, success=False, content="工具执行异常", error=str(e))
+                result = ToolResult.failure("工具执行异常", "tool_execution_failed", name=name)
 
         elapsed = time.time() - started_at
         logger.info(

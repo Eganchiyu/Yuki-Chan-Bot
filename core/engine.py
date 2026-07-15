@@ -522,11 +522,14 @@ class YukiEngine:
                 logger.info(f"[Engine] 群 {cid} 空闲 {idle_seconds:.0f}s，轮数 {non_system_count}，触发日记")
                 self.yuki.writing_diary.add(cid)
                 try:
-                    new_history = await self.do_summarize(int(cid), history_dict[cid])
-                    history_dict[cid] = new_history
-                    self.history.save(history_dict)
+                    await self._summarize_idle_session(cid, history_dict[cid])
                 finally:
                     self.yuki.writing_diary.discard(cid)
+
+    async def _summarize_idle_session(self, chat_id, session):
+        """摘要单个空闲会话并按会话粒度回写。"""
+        new_session = await self.do_summarize(int(chat_id), session)
+        self.history.replace_session(chat_id, new_session)
 
     async def ice_break_monitor(self):
         while True:

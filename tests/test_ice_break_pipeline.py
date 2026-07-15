@@ -137,13 +137,11 @@ async def test_pipeline_prepare_message_batch_ice_break():
 
     # 构造最小化 pipeline
     pipeline = _create_mock_pipeline()
-    pipeline.history_manager.load.return_value = {
-        "99999": [
-            {"role": "system", "content": "系统提示"},
-            {"role": "user", "content": "之前的消息"},
-            {"role": "assistant", "content": "之前的回复"},
-        ]
-    }
+    pipeline.history_manager.get_session.return_value = [
+        {"role": "system", "content": "系统提示"},
+        {"role": "user", "content": "之前的消息"},
+        {"role": "assistant", "content": "之前的回复"},
+    ]
 
     context = {
         "chat_id": "99999",

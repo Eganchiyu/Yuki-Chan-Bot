@@ -348,8 +348,10 @@ async def feed_message(
     if incoming_message.raw_text in ["help", "/help", "yuki帮助", "yuki功能", "帮助", "功能"]:
         await sender.send_local_image(chat_id, "utils/yuki_help.png", mode=mode)
         logger.info("[NapCat] 已发送帮助图")
-        history_manager.append_chat(chat_id, "user", f"(请求帮助文档: {incoming_message.content})")
-        history_manager.append_chat(chat_id, "assistant", "(已发送帮助文档图片)")
+        history_manager.append_session_message(
+            chat_id, "user", f"(请求帮助文档: {incoming_message.content})"
+        )
+        history_manager.append_session_message(chat_id, "assistant", "(已发送帮助文档图片)")
         return
 
     # ── /jm 指令拦截（暂时禁用）──

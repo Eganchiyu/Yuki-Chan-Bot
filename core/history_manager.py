@@ -110,14 +110,6 @@ class HistoryManager:
         with self._lock:
             self._save_locked(copy.deepcopy(data))
 
-    def get_chat(self, chat_id: str) -> list:
-        """【快捷获取】直接拿到某个 chat_id 的历史列表"""
-        return self.get_session(chat_id)
-
-    def append_chat(self, chat_id: str, role: str, content: str):
-        """【快捷添加】一步完成：读取、追加、保存"""
-        return self.append_session_message(chat_id, role, content)
-
     def append_to_log(self, chat_id, sender, message):
         time_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         log_entry = f"[{time_str}] [{chat_id}] {sender}: {message}\n"

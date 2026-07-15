@@ -20,6 +20,10 @@
 - 新增 `config.py` 中 `StructuredMemoryConfig` 配置组，支持通过 `config.yaml` 控制结构化记忆开关和召回数量参数（`enabled`、`max_profiles`、`max_facts`、`max_summaries`），默认关闭
 
 ### 变更
+- 统一 `ToolResult` 工具结果协议，使用稳定错误码，增加参数校验、超时保护和异常脱敏
+- 删除 `HistoryManager` 的 `get_chat` / `append_chat` 历史兼容别名，统一使用 session 级接口
+- 删除 `prompts.py` 中废弃的重复上下文构建实现，保留唯一生效路径
+- 将空闲日记摘要回写收敛为 `HistoryManager.replace_session()`，避免后台巡检通过全量 `load()`/`save()` 覆盖其他会话的并发更新
 - 重构 `core` 会话数据流：历史管理器返回独立 session 快照并提供原子替换接口，工具上下文不再持有完整历史字典，小女仆 Worker 迁移到 `core/maid.py`
 - 收敛 `core` 会话历史写入入口：新增 `HistoryManager.get_session()` 与 `append_session_message()`，让工具链、小女仆回调和主人私聊同步统一通过会话级接口落盘，减少跨模块直接改 `history_dict`
 - 移除 `YukiEngine._append_session_message()` 私有重复写入逻辑，工具链阶段性文本、工具结果和工具期间新增消息统一委托 `HistoryManager` 写入

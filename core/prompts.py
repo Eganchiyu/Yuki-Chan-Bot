@@ -1,3 +1,4 @@
+import datetime
 import re
 
 from config import cfg
@@ -147,8 +148,6 @@ def sync_system_prompts(history_mgr, yuki_state):
     except Exception as e:
         logger.error(f"[System] System Prompt 同步发生异常: {e}")
 
-import datetime
-
 def get_ice_break_instructions() -> str:
     """返回破冰模式的专用指令，注入到 system prompt 中。"""
     now = datetime.datetime.now()
@@ -233,72 +232,3 @@ async def build_chat_context(yuki, chat_id: str, combined_text: str, history_dic
         {"role": "user", "content": f" (当前时间:{datetime.datetime.now().strftime('%Y-%m-%d %H:%M')}){combined_text}"})
     return combined_API_message
 
-# async def build_chat_context(yuki, chat_id: str, combined_text: str, history_dict: dict, mode,
-#                              relevant_diaries, ice_break: bool = False):
-#     # ==========================================
-#     # 第一层：绝对静态区 (享受 100% 前缀缓存)
-#     # ==========================================
-#     system_prompt = history_dict[chat_id][0]["content"] if history_dict[chat_id] and history_dict[chat_id][0][
-#         "role"] == "system" else yuki.get_setting(mode)
-#     combined_API_message = [{"role": "system", "content": system_prompt}]
-
-#     # 将所有静态约束全部前置，一旦固定，这部分的缓存永不失效
-#     combined_API_message.append({"role": "system",
-#                                  "content": "【重要约束】如果需要查询日记、网络搜索、设置定时任务、发送本地文件或委托小女仆，请优先调用可用工具；不要先输出闲聊、思考过程、占位回复或半成品答案。工具结果返回后，再一次性输出最终要发送的内容。最终回复中不要包含内心思考、推理过程、草稿或多段候选内容。"})
-
-#     if ice_break:
-#         combined_API_message.append({"role": "system", "content": get_ice_break_instructions()})
-
-#     # ==========================================
-#     # 第二层：半静态区 (群聊历史，尾部追加，缓存极其友好)
-#     # ==========================================
-#     recent_msgs_raw = [msg for msg in history_dict[chat_id][-cfg.KEEP_LAST_DIALOGUE - 1:-1] if msg["role"] != "system"]
-
-#     for msg in recent_msgs_raw:
-#         msg_time = msg.get("time")
-#         if msg_time:
-#             if msg["role"] == "user":
-#                 new_content = f"【时间：{msg_time}】{msg['content']}"
-#                 combined_API_message.append({"role": msg["role"], "content": new_content})
-#             elif msg["role"] == "assistant":
-#                 combined_API_message.append({"role": msg["role"], "content": msg["content"]})
-#             else:
-#                 combined_API_message.append(
-#                     {"role": "user", "content": f"【时间：{msg_time}】【工具链上下文】{msg['content']}"})
-#         else:
-#             if msg["role"] in ("user", "assistant"):
-#                 combined_API_message.append({"role": msg["role"], "content": msg["content"]})
-#             else:
-#                 combined_API_message.append({"role": "user", "content": f"【工具链上下文】{msg['content']}"})
-
-#     # ==========================================
-#     # 第三层：动态记忆注入区 (只取 Top 1，XML 结界防劫持)
-#     # ==========================================
-#     if relevant_diaries:
-#         # 宽进严出：底层 RAG 随便搜，但这里只取最高分的 1 条
-#         top_diary = relevant_diaries[0]
-#         content = top_diary['content'].replace('\n', ' ')
-
-#         logger.debug(f"[RAG-Inject] 注入核心记忆: 得分 {top_diary.get('score', 0):.2f} | 预览: {content[:30]}")
-
-#         # 使用 XML 标签将记忆强行封印为内部联想，压制其对当前对话的注意力干扰
-#         memory_prompt = (
-#             f"<inner_thought>\n"
-#             f"[回忆]\n"
-#             f"相关背景：{content}\n"
-#             f"这是你的记忆，不要直接复述，而是综合上文回复。\n"
-#             f"</inner_thought>"
-#         )
-#         combined_API_message.append({"role": "system", "content": memory_prompt})
-
-#     # ==========================================
-#     # 第四层：当前最新消息 (动态区结尾)
-#     # ==========================================
-#     combined_API_message.append(
-#         {"role": "user", "content": f" (当前时间:{datetime.datetime.now().strftime('%Y-%m-%d %H:%M')})\n[收到消息!]|{combined_text}"}
-#     )
-
-#     return combined_API_message
-
-# if __name__ == "__main__":
-#     print(get_yuki_setting_group())
