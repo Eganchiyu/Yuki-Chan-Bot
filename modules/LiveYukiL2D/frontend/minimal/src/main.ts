@@ -3,6 +3,7 @@ import { initializeLive2D } from './WebSDK/src/main';
 import { LAppLive2DManager } from './WebSDK/src/lapplive2dmanager';
 import { LAppDelegate } from './WebSDK/src/lappdelegate';
 import * as LAppDefine from './WebSDK/src/lappdefine';
+import { startMouseFollowLoop } from './mouse_tracker';
 
 interface ModelInfo {
   name: string;
@@ -107,69 +108,6 @@ function getAdapter(): any {
 
 function getWebviewApi(): LiveYukiApi | null {
   return (window as any).pywebview?.api || (window as any).api || null;
-}
-
-type CursorPosition = { x: number; y: number };
-
-async function getCursorPosition(): Promise<CursorPosition | null> {
-  const api = getWebviewApi();
-  if (api?.getCursorPosition) return await api.getCursorPosition();
-
-  try {
-    const response = await fetch('/api/cursor', { cache: 'no-store' });
-    if (response.ok) return await response.json();
-  } catch {
-    // 浏览器调试模式下可能没有后端鼠标接口
-  }
-
-  return null;
-}
-
-async function getWindowPosition(): Promise<CursorPosition> {
-  const api = getWebviewApi();
-  if (api?.getWindowPosition) return await api.getWindowPosition();
-  return { x: window.screenX, y: window.screenY };
-}
-
-async function getCanvasPointFromScreenPoint(cursor: CursorPosition): Promise<{ x: number; y: number } | null> {
-  if (!canvasEl) return null;
-  const rect = canvasEl.getBoundingClientRect();
-  const windowPos = await getWindowPosition();
-  const x = cursor.x - Number(windowPos.x || 0) - rect.left;
-  const y = cursor.y - Number(windowPos.y || 0) - rect.top;
-  return { x, y };
-}
-
-function startMouseFollowLoop() {
-  let running = false;
-  const tick = async () => {
-    if (running) return;
-
-    running = true;
-    try {
-      const manager = LAppLive2DManager.getInstance();
-      const model = manager.getModel(0);
-      const view = LAppDelegate.getInstance().getView();
-      if (!LAppDefine.LookAtMouse || !model || !view) return;
-
-      const cursor = await getCursorPosition();
-      if (!cursor) return;
-
-      const point = await getCanvasPointFromScreenPoint(cursor);
-      const rect = canvasEl.getBoundingClientRect();
-      if (!point || rect.width <= 0 || rect.height <= 0) return;
-
-      const viewX = view.transformViewX(point.x * window.devicePixelRatio);
-      const viewY = view.transformViewY(point.y * window.devicePixelRatio);
-      manager.onDrag(viewX, viewY);
-    } catch {
-      // 忽略临时鼠标坐标错误
-    } finally {
-      running = false;
-    }
-  };
-
-  window.setInterval(tick, 16);
 }
 
 function setExpression(expression: number | string) {

@@ -102,7 +102,6 @@ export class LAppDelegate {
       canvas!.addEventListener('mousedown', onClickBegan, { passive: true });
       canvas!.addEventListener('mousemove', onMouseMoved, { passive: true });
       canvas!.addEventListener('wheel', onMouseWheel, { passive: false });
-      window.addEventListener('mousemove', onGlobalMouseMoved, { passive: true });
       window.addEventListener('mouseup', onClickEnded, { passive: true });
     }
 
