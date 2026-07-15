@@ -10,6 +10,7 @@
 ## [未发布]
 
 ### 新增
+- 新增 `skills/video_understanding.py` 视频理解 skill：读取视频信息、均匀采样 4 帧、拼接四宫格压缩后调用配置中的视觉模型进行概括或问答，并加入文件类型、大小、时长、提示词长度和请求超时限制
 - 新增主人私聊双模系统（`master_private` 模式）：群聊运行时自动接受主人私聊消息，维护独立的私聊上下文，使用专属个人助手 prompt，必回、无防抖、带完整工具链
 - 新增 `core/private_context.py` 私聊上下文管理器：支持保存群聊上下文快照到 `data/private_context.json`，最多保留 50 条，支持按群聊过滤召回
 - 新增 `recall_private_context` 工具：主人私聊时可召回最近的群聊上下文快照，了解群里发生了什么
@@ -18,6 +19,9 @@
 - 新增 `config.py` 中 `StructuredMemoryConfig` 配置组，支持通过 `config.yaml` 控制结构化记忆开关和召回数量参数（`enabled`、`max_profiles`、`max_facts`、`max_summaries`），默认关闭
 
 ### 变更
+- 移除 `modules/LiveYukiL2D/main.py` 未使用薄入口，保留 `desktop.py` 与 `server.py` 的启动/服务职责边界
+- 合并 LiveYukiL2D 桌宠启动入口，将 Electron 启动逻辑统一迁入 `modules/LiveYukiL2D/desktop.py`
+- 简化 `modules/LiveYukiL2D/desktop.py` 桌宠窗口启动与桌面 API 逻辑，移除多余包装并复用鼠标穿透配置值
 - `napcat_listen()` 支持群聊模式下同时接收主人私聊消息，路由为 `master_private` 模式
 - `SessionPipeline.decide_reply_action()` 对 `master_private` 模式跳过精力决策，强制回复
 - `SessionPipeline.prepare_message_batch()` 对 `master_private` 模式跳过防抖，立即处理

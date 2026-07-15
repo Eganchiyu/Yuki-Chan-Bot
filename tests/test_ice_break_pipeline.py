@@ -162,6 +162,61 @@ async def test_pipeline_prepare_message_batch_ice_break():
     print(f"  [PASS] combined_text='{result['combined_text'][:50]}'")
 
 
+async def test_pipeline_enqueue_preserves_incoming_message_metadata():
+    """enqueue_message 保留入站消息的来源、归属和状态标签。"""
+    print("\n[测试 6] enqueue_message 保留消息元数据")
+
+    from core.session_pipeline import IncomingMessage
+
+    pipeline = _create_mock_pipeline()
+    await pipeline.enqueue_message(
+        "12345",
+        "private",
+        message_obj=IncomingMessage(
+            name="用户A",
+            content="你好",
+            raw_text="你好",
+            user_id=12345,
+            source="napcat.private",
+            owner_id="12345",
+            tags={"private"},
+        ),
+        debounce_flag=False,
+        force_reply=True,
+    )
+    task = pipeline._timer_tasks.pop("12345")
+    task.cancel()
+    await asyncio.sleep(0)
+
+    stored_message = pipeline.yuki.message_buffer["12345"][0]
+    assert stored_message["source"] == "napcat.private"
+    assert stored_message["owner_id"] == "12345"
+    assert stored_message["status"] == "received"
+    assert stored_message["tags"] == ["private"]
+    print("  [PASS] 入站消息元数据已保存")
+
+
+async def test_pipeline_decide_reply_always_replies_in_private():
+    """私聊模式跳过群聊潜水决策。"""
+    print("\n[测试 7] private 模式必回")
+
+    pipeline = _create_mock_pipeline()
+    context = {
+        "chat_id": "12345",
+        "mode": "private",
+        "ice_break": False,
+        "history_dict": {"12345": []},
+        "message_objs": [],
+        "force_reply": None,
+    }
+
+    result = await pipeline.decide_reply_action(context)
+
+    assert not result.get("stop"), "私聊不应被潜水决策停止"
+    pipeline.engine.decide_to_reply.assert_not_called()
+    print("  [PASS] private 模式跳过群聊回复决策")
+
+
 async def test_pipeline_normalize_skips_for_ice_break():
     """normalize_incoming_content 在 ice_break 模式下直接跳过"""
     print("\n[测试 6] normalize_incoming_content 破冰跳过")
@@ -504,6 +559,8 @@ async def run_async_tests():
         test_build_chat_context_injects_ice_break_instructions,
         test_build_chat_context_no_ice_break_by_default,
         test_pipeline_prepare_message_batch_ice_break,
+        test_pipeline_enqueue_preserves_incoming_message_metadata,
+        test_pipeline_decide_reply_always_replies_in_private,
         test_pipeline_normalize_skips_for_ice_break,
         test_pipeline_decide_reply_skips_for_ice_break,
         test_pipeline_finalize_increments_fail_count,

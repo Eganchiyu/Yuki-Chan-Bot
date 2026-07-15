@@ -20,15 +20,20 @@ class MessageSender:
         # 确保下载目录存在
         os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 
+    @staticmethod
+    def _is_private_mode(mode):
+        return mode in {"private", "master_private"}
+
     async def send(self, chat_id, message, mode="private"):
         """闭环发送：失败自动触发重连"""
         for attempt in range(cfg.MAX_RETRIES):
             try:
                 ws = await self.connector.ensure_connection()
-                action = "send_private_msg" if mode == "private" else "send_group_msg"
+                is_private = self._is_private_mode(mode)
+                action = "send_private_msg" if is_private else "send_group_msg"
                 params = {
                     "message": message,
-                    "user_id" if mode == "private" else "group_id": int(chat_id)
+                    "user_id" if is_private else "group_id": int(chat_id)
                 }
                 await ws.send(json.dumps({"action": action, "params": params}))
                 return  # 发送成功，跳出
@@ -248,10 +253,11 @@ class MessageSender:
                 node_data["data"]["nickname"] = node["name"]
             message_nodes.append(node_data)
 
-        action = "send_private_forward_msg" if mode == "private" else "send_group_forward_msg"
+        is_private = self._is_private_mode(mode)
+        action = "send_private_forward_msg" if is_private else "send_group_forward_msg"
         params = {
             "messages": message_nodes,
-            "user_id" if mode == "private" else "group_id": int(chat_id),
+            "user_id" if is_private else "group_id": int(chat_id),
         }
 
         logger.info(f"[Sender] 发送合并转发: {len(message_nodes)} 个节点, mode={mode}")

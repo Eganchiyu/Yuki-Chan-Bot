@@ -20,9 +20,8 @@ LiveYukiL2D 是一个桌面 Live2D 宠物应用，由 Python 后端（aiohttp + 
 
 | 文件 | 职责 | 调用关系 |
 |------|------|----------|
-| [main.py](d:/Projects/LiveYukiL2D/main.py) | 启动入口，判断是否启动 Electron 桌面模式 | → `server.py` / `desktop_electron.py` |
-| [server.py](d:/Projects/LiveYukiL2D/server.py) | aiohttp 后端主服务：托管前端静态文件、Live2D 模型资源、WebSocket 通信、REST API | ← `main.py`；→ 前端通过 WS/HTTP 调用 |
-| [desktop_electron.py](d:/Projects/LiveYukiL2D/desktop_electron.py) | 桌面模式启动器：确保后端运行，然后启动 Electron | ← `main.py`；→ `server.py` + `npm run desktop` |
+| [server.py](d:/Projects/LiveYukiL2D/server.py) | aiohttp 后端主服务：托管前端静态文件、Live2D 模型资源、WebSocket 通信、REST API | ← 项目根入口 / `desktop.py`；→ 前端通过 WS/HTTP 调用 |
+| [desktop.py](d:/Projects/LiveYukiL2D/desktop.py) | 桌面模式启动器：确保后端运行，然后启动 Electron | ← 项目根入口；→ `server.py` + `npm run desktop` |
 | [config.json](d:/Projects/LiveYukiL2D/config.json) | 桌面宠物窗口配置（透明、置顶、鼠标穿透等）和模型参数 | ← `server.py`（`load_config()`） |
 | [liveyuki_l2d/protocol.py](d:/Projects/LiveYukiL2D/liveyuki_l2d/protocol.py) | WebSocket 消息协议构造工具（set-model、say、audio 等消息格式） | ← 外部调用方（如 Open-LLM-VTuber 集成时） |
 
@@ -117,7 +116,7 @@ LiveYukiL2D 是一个桌面 Live2D 宠物应用，由 Python 后端（aiohttp + 
 ```
 main.py (入口)
   │
-  ├─ desktop_electron.py (桌面模式)
+  ├─ desktop.py (桌面模式)
   │    ├─ server.py (后端服务)
   │    └─ npm run desktop (Electron 前端)
   │

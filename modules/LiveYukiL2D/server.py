@@ -12,7 +12,7 @@ import time
 from pathlib import Path
 from typing import Any
 from urllib.parse import unquote
-
+from config import cfg
 try:
     from .liveyuki_l2d.events import error_event
     from .liveyuki_l2d.protocol import set_model_message
@@ -69,6 +69,18 @@ DEFAULT_CONFIG: dict[str, Any] = {
 
 
 def deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
+    """
+    递归合并两个字典，将 override 中的值合并到 base 中。
+    
+    对于嵌套字典，会递归进行深度合并；对于非字典值，override 中的值会直接覆盖 base 中的值。
+    
+    Args:
+        base: 基础字典，作为合并的基准
+        override: 覆盖字典，其值会合并到基础字典中
+        
+    Returns:
+        合并后的新字典，不会修改原始字典
+    """
     result = dict(base)
     for key, value in override.items():
         if isinstance(value, dict) and isinstance(result.get(key), dict):
@@ -197,8 +209,7 @@ async def websocket_handler(request: web.Request) -> web.WebSocketResponse:
     CLIENTS.add(ws)
     print(f"[ws] client connected, total={len(CLIENTS)}")
 
-    await ws.send_str(json.dumps(set_model_message(get_yuki_model_info()), ensure_ascii=False))
-    await ws.send_str(json.dumps({"type": "say", "text": "Yuki 模型加载中..."}, ensure_ascii=False))
+    await ws.send_str(json.dumps({"type": "say", "text": ""}, ensure_ascii=False))
 
     async for msg in ws:
         if msg.type == WSMsgType.TEXT:
@@ -223,8 +234,8 @@ async def websocket_handler(request: web.Request) -> web.WebSocketResponse:
                     if pipeline is None:
                         raise RuntimeError("桌宠聊天需要从 YukiV6 主程序启动。")
                     message_obj = {
-                        "name": "桌宠主人",
-                        "content": f'【"桌宠主人"】说: {text}',
+                        "name": cfg.MASTER_NAME,
+                        "content": f'【"{cfg.MASTER_NAME}"】说: {text}',
                         "raw_text": text,
                         "is_bot": False,
                         "user_id": 0,

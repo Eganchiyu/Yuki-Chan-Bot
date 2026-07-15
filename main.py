@@ -4,8 +4,6 @@ import asyncio
 import sys
 import time
 
-from sympy import true
-
 from config import cfg
 from core.brain import YukiState
 from core.engine import YukiEngine
@@ -115,16 +113,16 @@ def start_desktop_pet_if_enabled(pipeline, pipeline_loop):
         return
 
     try:
-        from modules.LiveYukiL2D.desktop_electron import main as run_desktop_pet
+        from modules.LiveYukiL2D.desktop import main as run_desktop_pet
         run_desktop_pet(session_pipeline=pipeline, pipeline_loop=pipeline_loop)
         logger.info("[DesktopPet] Live2D 桌宠已启动")
     except Exception as exc:
         logger.error(f"[DesktopPet] 启动失败: {exc}")
 
 
-async def run_runtime(mode: str) -> None:
+async def run_runtime() -> None:
     start_desktop_pet_if_enabled(session_pipeline, asyncio.get_running_loop())
-    await napcat_listen(mode)
+    await napcat_listen("mixed")
 
 
 async def main_process(
@@ -194,13 +192,9 @@ if __name__ == "__main__":
         configure_runtime(components, session_pipeline, group_active_state, logger)
         start_context_debug_webui_if_enabled()
 
-        choice = input("[System] 选择模式：1. 私聊模式  2. 群聊模式（默认）\n请输入数字: ").strip()
-        mode = "private" if choice == "1" else "group"
+        warmup_groups(components["yuki"], components["history_manager"])
 
-        if mode == "group":
-            warmup_groups(components["yuki"], components["history_manager"])
-
-        asyncio.run(run_runtime(mode))
+        asyncio.run(run_runtime())
 
     except KeyboardInterrupt:
         logger.info("[Main] 收到中断信号，正在退出...")

@@ -4,12 +4,63 @@ import datetime
 import os
 import re
 import time
+from dataclasses import dataclass, field
+from typing import Any
 
 from config import cfg
 from modules.debug.context_snapshot import PIPELINE_STAGES, context_snapshot_store
 from utils.logger import get_logger
 
 logger = get_logger("session_pipeline")
+
+
+@dataclass
+class IncomingMessage:
+    """管线内统一使用的入站消息，显式标记来源、归属和状态。"""
+    name: str
+    content: str
+    raw_text: str = ""
+    user_id: int | None = None
+    message_id: Any = None
+    is_bot: bool = False
+    source: str = "napcat"
+    owner_id: str = ""
+    status: str = "received"
+    tags: set[str] = field(default_factory=set)
+    segments: list[dict] = field(default_factory=list)
+
+    @classmethod
+    def from_mapping(cls, data: dict) -> "IncomingMessage":
+        if isinstance(data, cls):
+            return data
+        return cls(
+            name=data.get("name", ""),
+            content=data.get("content", ""),
+            raw_text=data.get("raw_text", ""),
+            user_id=data.get("user_id"),
+            message_id=data.get("message_id"),
+            is_bot=bool(data.get("is_bot", False)),
+            source=data.get("source", "napcat"),
+            owner_id=str(data.get("owner_id", "")),
+            status=data.get("status", "received"),
+            tags=set(data.get("tags") or []),
+            segments=list(data.get("segments") or []),
+        )
+
+    def to_dict(self) -> dict:
+        return {
+            "name": self.name,
+            "content": self.content,
+            "raw_text": self.raw_text,
+            "is_bot": self.is_bot,
+            "user_id": self.user_id,
+            "message_id": self.message_id,
+            "source": self.source,
+            "owner_id": self.owner_id,
+            "status": self.status,
+            "tags": sorted(self.tags),
+            "segments": self.segments,
+        }
 
 
 class SessionPipeline:
@@ -88,59 +139,62 @@ class SessionPipeline:
     async def enqueue_message(self, chat_id, mode, message_obj=None, debounce_flag=True, force_reply=None,
                               ice_break=False):
         """核心入列机制：写入缓冲 -> 重置定时器 -> 等待执行锁"""
-        cid = str(chat_id)
-        self._chat_mode[cid] = mode
+        chat_id_str = str(chat_id)
+        self._chat_mode[chat_id_str] = mode
 
         # 1. 安全写入缓冲区
         if message_obj:
-            self.yuki.message_buffer.setdefault(cid, [])
-            self.yuki.message_buffer[cid].append(message_obj)
-            self.last_msg_time[cid] = time.time()
+            incoming_message = IncomingMessage.from_mapping(message_obj)
+            if not incoming_message.owner_id:
+                incoming_message.owner_id = chat_id_str
+            self.yuki.message_buffer.setdefault(chat_id_str, [])
+            self.yuki.message_buffer[chat_id_str].append(incoming_message.to_dict())
+            self.last_msg_time[chat_id_str] = time.time()
 
         # 2. 状态融合：只要当前批次中有任何要求跳过防抖的指令，立刻锁定 skip 状态
         # (修复 Bug：解决普通消息覆盖了 wake_quickly 导致叫名字依然防抖的问题)
         should_skip = (force_reply is not None and force_reply) or (not debounce_flag) or ice_break
         if should_skip:
-            self._skip_debounce[cid] = True
+            self._skip_debounce[chat_id_str] = True
 
         # 3. 核心防抖拦截：取消还在倒计时的旧任务
-        if cid in self._timer_tasks:
-            self._timer_tasks[cid].cancel()
+        if chat_id_str in self._timer_tasks:
+            self._timer_tasks[chat_id_str].cancel()
 
         # 4. 创建新的控制流 (按序执行：计时 -> 获取锁 -> 消费)
         async def _wait_and_process():
             try:
                 # 步骤A：严格防抖。如果在计时期间被新消息 cancel，会直接抛出 CancelledError 重新排队
-                if not self._skip_debounce.get(cid, False):
+                if not self._skip_debounce.get(chat_id_str, False):
                     await asyncio.sleep(cfg.DEBOUNCE_TIME)
 
                 # 步骤B：计时结束，说明这批消息落定，清空 skip 标志位以备下一轮
-                self._skip_debounce[cid] = False
+                self._skip_debounce[chat_id_str] = False
 
                 # 从定时器字典中将自己摘除，防止在获取锁执行期间，被无关的新消息错误 Cancel
-                if self._timer_tasks.get(cid) == asyncio.current_task():
-                    self._timer_tasks.pop(cid, None)
+                if self._timer_tasks.get(chat_id_str) == asyncio.current_task():
+                    self._timer_tasks.pop(chat_id_str, None)
 
                 # 步骤C：非阻塞排队。如果上一个管线（例如长耗时的工具链调用）还没跑完，这里乖乖等待
                 # (修复 Bug：解决工具链期间新消息直接被消费没有防抖，现在它们会先防抖，然后在这里等锁)
-                async with self._get_lock(cid):
+                async with self._get_lock(chat_id_str):
                     # 获取锁后进行空载检查
-                    if not self.yuki.message_buffer.get(cid) and not force_reply and not ice_break:
+                    if not self.yuki.message_buffer.get(chat_id_str) and not force_reply and not ice_break:
                         return
-                    if mode == "group" and not self.group_active_state.get(cid, True):
+                    if mode == "group" and not self.group_active_state.get(chat_id_str, True):
                         return
 
                     # 执行唯一的一次流转，不使用 while True 死循环
-                    await self.run_once(cid, mode, debounce_flag, force_reply, ice_break)
+                    await self.run_once(chat_id_str, mode, debounce_flag, force_reply, ice_break)
 
             except asyncio.CancelledError:
                 # 收到新消息，当前倒计时作废，这属于防抖的正常现象
                 pass
             except Exception as e:
-                logger.error(f"[Pipeline] 管道处理异常 {cid}: {e}")
+                logger.error(f"[Pipeline] 管道处理异常 {chat_id_str}: {e}")
 
         task = asyncio.create_task(_wait_and_process())
-        self._timer_tasks[cid] = task
+        self._timer_tasks[chat_id_str] = task
         return task
 
     def wake_quickly(self, chat_id):
@@ -152,13 +206,22 @@ class SessionPipeline:
         # 直接调用入列方法刷新流程
         asyncio.create_task(self.enqueue_message(cid, mode, debounce_flag=False, force_reply=True))
 
-    async def run_once(self, chat_id, mode, debounce_flag=True, force_reply=None, ice_break=False):
-        """原封不动：执行单次完整的管道流水线"""
-        context = {
-            "chat_id": chat_id, "mode": mode, "debounce_flag": debounce_flag,
-            "force_reply": force_reply, "ice_break": ice_break,
-            "debug_started_at": time.time(), "debug_latency": {}, "debug_errors": []
+    def _new_pipeline_context(self, chat_id, mode, debounce_flag, force_reply, ice_break) -> dict:
+        """创建单次管线上下文，集中声明跨阶段数据的初始形态。"""
+        return {
+            "chat_id": str(chat_id),
+            "mode": mode,
+            "debounce_flag": debounce_flag,
+            "force_reply": force_reply,
+            "ice_break": ice_break,
+            "debug_started_at": time.time(),
+            "debug_latency": {},
+            "debug_errors": [],
         }
+
+    async def run_once(self, chat_id, mode, debounce_flag=True, force_reply=None, ice_break=False):
+        """执行单次完整的管道流水线。"""
+        context = self._new_pipeline_context(chat_id, mode, debounce_flag, force_reply, ice_break)
         try:
             context["debug_snapshot_id"] = context_snapshot_store.put({
                 "chat_id": str(chat_id), "mode": mode, "stage": "run_once",
@@ -211,13 +274,14 @@ class SessionPipeline:
         if cid not in self.yuki.message_buffer:
             self.yuki.message_buffer[cid] = []
 
-        message_objs = self.yuki.pop_buffer(cid)
-        if not message_objs and not context["force_reply"]:
+        incoming_messages = self.yuki.pop_buffer(cid)
+        if not incoming_messages and not context["force_reply"]:
             context["stop"] = True
             return context
 
         context["first_time"] = time.time()
-        context["message_objs"] = message_objs
+        context["incoming_messages"] = incoming_messages
+        context["message_objs"] = incoming_messages
         await self.yuki.boost_activity(chat_id)
         return context
 
@@ -229,25 +293,25 @@ class SessionPipeline:
             return context
 
         chat_id = context["chat_id"]
-        message_objs = context["message_objs"]
+        incoming_messages = context.get("incoming_messages") or context["message_objs"]
 
         # 更新用户昵称到QQ号的映射
-        for m in message_objs:
+        for m in incoming_messages:
             if m.get("user_id") and m.get("name"):
                 self.yuki.user_mapping.update(chat_id, m["name"], m["user_id"])
         # ========================================
 
         # 合并同一用户连续消息，去掉重复前缀
         merged_contents = []
-        prev_uid = None
-        for m in message_objs:
-            uid = m.get("user_id")
-            text = m["content"]
-            if uid and uid == prev_uid and text.startswith("【"):
+        previous_user_id = None
+        for message in incoming_messages:
+            user_id = message.get("user_id")
+            text = message["content"]
+            if user_id and user_id == previous_user_id and text.startswith("【"):
                 # 同一用户连续消息，去掉前缀
                 text = re.sub(r'^【"[^"]*"】说:\s*', '', text)
             merged_contents.append(text)
-            prev_uid = uid
+            previous_user_id = user_id
         combined_text = "\n".join(merged_contents)
 
         modified_text, images_info = self.meme_processor.extract_urls_from_text(combined_text)
@@ -324,8 +388,8 @@ class SessionPipeline:
         if context.get("ice_break"):
             return context
 
-        # 主人私聊和桌宠模式：永远回复，跳过群聊潜水决策
-        if context["mode"] in {"master_private", "desktop_pet"}:
+        # 私聊和桌宠模式：永远回复，跳过群聊潜水决策
+        if context["mode"] in {"private", "master_private", "desktop_pet"}:
             self._update_snapshot(context, should_reply=True)
             return context
 
