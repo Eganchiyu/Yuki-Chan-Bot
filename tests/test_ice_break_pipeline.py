@@ -196,6 +196,60 @@ async def test_pipeline_enqueue_preserves_incoming_message_metadata():
     print("  [PASS] 入站消息元数据已保存")
 
 
+async def test_feed_message_filters_bot_unless_whitelisted():
+    """feed_message 保留 BOT 过滤，并允许白名单绕过。"""
+    print("\n[测试 7] BOT 黑白名单过滤")
+
+    from modules.QQNapcatListen import listen_main
+
+    enqueued_messages = []
+
+    async def enqueue_message(chat_id, mode, message_obj=None, **kwargs):
+        enqueued_messages.append((chat_id, mode, message_obj))
+
+    listen_main.yuki = MagicMock()
+    listen_main.yuki.last_sent_meme = {}
+    listen_main.yuki.ice_break_fail_count = {}
+    listen_main.yuki.last_message_time = {}
+    listen_main.engine = MagicMock()
+    listen_main.history_manager = MagicMock()
+    listen_main.sender = AsyncMock()
+    listen_main.session_pipeline = MagicMock()
+    listen_main.session_pipeline.enqueue_message = AsyncMock(side_effect=enqueue_message)
+    listen_main.session_pipeline.wake_quickly = MagicMock()
+
+    original_whitelist = list(listen_main.cfg.target.whitelist)
+    original_max_message_length = listen_main.cfg.max_message_length
+    listen_main.cfg.target.whitelist = [1390249127]
+    listen_main.cfg.max_message_length = 500
+    try:
+        await listen_main.feed_message(
+            "10000",
+            "普通机器人消息",
+            "group",
+            raw_message="普通机器人消息",
+            sender_name="测试BOT",
+            user_id=123456,
+        )
+        assert not enqueued_messages, "非白名单 BOT 应被拦截"
+
+        await listen_main.feed_message(
+            "10000",
+            "白名单机器人消息",
+            "group",
+            raw_message="白名单机器人消息",
+            sender_name="测试BOT",
+            user_id=1390249127,
+        )
+        assert len(enqueued_messages) == 1, "白名单 BOT 应允许进入管线"
+        assert enqueued_messages[0][2].is_bot is True
+    finally:
+        listen_main.cfg.target.whitelist = original_whitelist
+        listen_main.cfg.max_message_length = original_max_message_length
+
+    print("  [PASS] BOT 黑白名单过滤正常")
+
+
 async def test_pipeline_decide_reply_always_replies_in_private():
     """私聊模式跳过群聊潜水决策。"""
     print("\n[测试 7] private 模式必回")
@@ -560,6 +614,7 @@ async def run_async_tests():
         test_build_chat_context_no_ice_break_by_default,
         test_pipeline_prepare_message_batch_ice_break,
         test_pipeline_enqueue_preserves_incoming_message_metadata,
+        test_feed_message_filters_bot_unless_whitelisted,
         test_pipeline_decide_reply_always_replies_in_private,
         test_pipeline_normalize_skips_for_ice_break,
         test_pipeline_decide_reply_skips_for_ice_break,

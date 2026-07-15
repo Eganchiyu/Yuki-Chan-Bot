@@ -355,14 +355,12 @@ class SessionPipeline:
     async def prepare_chat_context(self, context):
         """加载上下文，确保系统提示词存在，并追加当前用户消息。"""
         logger.info("[Pipeline] 加载上下文信息")
-        history_dict = self.history_manager.load()
         chat_id = str(context["chat_id"])
         mode = context["mode"]
+        system_prompt = self.yuki.get_setting(mode)
 
-        if chat_id not in history_dict or not history_dict[chat_id]:
-            history_dict[chat_id] = [{"role": "system", "content": self.yuki.get_setting(mode)}]
-        elif history_dict[chat_id][0].get("role") != "system":
-            history_dict[chat_id].insert(0, {"role": "system", "content": self.yuki.get_setting(mode)})
+        history_dict = self.history_manager.load()
+        history_dict[chat_id] = self.history_manager.get_session(chat_id, system_prompt)
 
         current_time_str = datetime.datetime.now().strftime("%Y年%m月%d日%H:%M")
         history_dict[chat_id].append({

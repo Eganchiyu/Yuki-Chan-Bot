@@ -66,6 +66,11 @@ async def start_background_tasks(mode: str):
     logger.info("[NapCat] 已启动后台辅助任务 (日记检查/破冰/精力衰减)")
 
 
+def _is_bot_sender_name(sender_name: str) -> bool:
+    """根据 NapCat 显示名判断是否为机器人账号。"""
+    return "BOT" in (sender_name or "") or "机器人" in (sender_name or "")
+
+
 def _build_private_message(user_id, raw_message, sender_info, message_id) -> IncomingMessage:
     """把 NapCat 私聊事件转换为管线入站消息。"""
     sender_name = sender_info.get("nickname") or sender_info.get("card") or "私聊用户"
@@ -75,7 +80,7 @@ def _build_private_message(user_id, raw_message, sender_info, message_id) -> Inc
         raw_text=raw_message,
         user_id=int(user_id) if user_id is not None else None,
         message_id=message_id,
-        is_bot=False,
+        is_bot=_is_bot_sender_name(sender_name),
         source="napcat.private",
         owner_id=str(user_id),
         tags={"private"},
@@ -90,7 +95,7 @@ def _build_group_message(group_id, raw_message, sender_name, user_id, message_id
         raw_text=raw_message,
         user_id=int(user_id) if user_id is not None else None,
         message_id=message_id,
-        is_bot=False,
+        is_bot=_is_bot_sender_name(sender_name),
         source="napcat.group",
         owner_id=str(group_id),
         tags={"group"},
@@ -316,7 +321,7 @@ async def feed_message(
         raw_text=raw_message,
         user_id=user_id,
         message_id=message_id,
-        is_bot="BOT" in sender_name or "机器人" in sender_name,
+        is_bot=_is_bot_sender_name(sender_name),
         owner_id=cid_str,
     )
     incoming_message.owner_id = incoming_message.owner_id or cid_str

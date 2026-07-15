@@ -25,6 +25,40 @@ class HistoryManager:
                 self._cache = self.read_from_disk()
             return self._cache
 
+    @staticmethod
+    def _ensure_system_message(session: list, system_content: str | None):
+        if not system_content:
+            return session
+        if not session:
+            session.append({"role": "system", "content": system_content})
+        elif session[0].get("role") == "system":
+            session[0]["content"] = system_content
+        else:
+            session.insert(0, {"role": "system", "content": system_content})
+        return session
+
+    def get_session(self, chat_id: str, system_content: str | None = None) -> list:
+        """获取单个会话，并按需补齐 system 提示词。"""
+        data = self.load()
+        cid = str(chat_id)
+        session = data.setdefault(cid, [])
+        return self._ensure_system_message(session, system_content)
+
+    def append_session_message(self, chat_id: str, role: str, content: str, **extra):
+        """向单个会话追加一条消息，并同步落盘。"""
+        data = self.load()
+        cid = str(chat_id)
+        session = data.setdefault(cid, [])
+        item = {
+            "role": role,
+            "content": content,
+            "time": datetime.datetime.now().strftime("%Y年%m月%d日%H:%M"),
+        }
+        item.update(extra)
+        session.append(item)
+        self.save(data)
+        return session
+
     def read_from_disk(self) -> dict:
         """从硬盘读取数据，增加格式校验"""
         if not os.path.exists(self.history_file):
@@ -67,18 +101,7 @@ class HistoryManager:
 
     def append_chat(self, chat_id: str, role: str, content: str):
         """【快捷添加】一步完成：读取、追加、保存"""
-        data = self.load()
-        cid = str(chat_id)
-        if cid not in data:
-            # 如果是新聊天的第一条，可以考虑在这里把 system prompt 塞进去
-            data[cid] = []
-
-        data[cid].append({
-            "role": role,
-            "content": content
-        })
-        self.save(data)
-        return data[cid]
+        return self.append_session_message(chat_id, role, content)
 
     def append_to_log(self, chat_id, sender, message):
         time_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")

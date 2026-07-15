@@ -220,22 +220,16 @@ async def send_master_private_tool(context, message, reason="重要信息"):
 
     # 把这条消息同步写入主人私聊的 chat_history
     try:
-        import datetime
         history_manager = context.metadata.get("history_manager")
         if history_manager:
             master_cid = str(cfg.TARGET_QQ)
-            history_dict = history_manager.load()
-            if master_cid not in history_dict:
-                history_dict[master_cid] = []
-            current_time = datetime.datetime.now().strftime("%Y年%m月%d日%H:%M")
-            history_dict[master_cid].append({
-                "role": "assistant",
-                "content": f"[群聊通知] {message}",
-                "time": current_time,
-                "source_chat_id": str(context.chat_id),
-                "reason": reason,
-            })
-            history_manager.save(history_dict)
+            history_manager.append_session_message(
+                master_cid,
+                "assistant",
+                f"[群聊通知] {message}",
+                source_chat_id=str(context.chat_id),
+                reason=reason,
+            )
             logger.info(f"[Tool] 已同步消息到主人私聊历史 ({master_cid})")
     except Exception as e:
         logger.warning(f"[Tool] 同步私聊历史失败（不影响发送）: {e}")

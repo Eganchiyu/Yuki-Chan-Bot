@@ -44,21 +44,6 @@ class YukiEngine:
         clean_content = re.sub(r'<layout>.*?</layout>', '', clean_content, flags=re.DOTALL).strip()
         return clean_content
 
-    @staticmethod
-    def _append_session_message(history_dict, chat_id, role, content, **extra):
-        """把工具链产生的新上下文写入当前 session。"""
-        if not content:
-            return
-        cid = str(chat_id)
-        history_dict.setdefault(cid, [])
-        item = {
-            "role": role,
-            "content": content,
-            "time": datetime.datetime.now().strftime("%Y年%m月%d日%H:%M"),
-        }
-        item.update(extra)
-        history_dict[cid].append(item)
-
     def _merge_pending_messages(self, chat_id, history_dict, tool_messages):
         """工具调用间隙合并同群新消息，避免消息流分叉。"""
         pending_objs = self.yuki.message_buffer.get(chat_id) or self.yuki.message_buffer.get(str(chat_id))
@@ -69,7 +54,7 @@ class YukiEngine:
         if not pending_text:
             return
         logger.info(f"[ToolChain] {chat_id} 合并工具调用期间新增消息: {pending_text}")
-        self._append_session_message(history_dict, chat_id, "user", pending_text, is_pending_during_tool=True)
+        self.history.append_session_message(chat_id, "user", pending_text, is_pending_during_tool=True)
         tool_messages.append({"role": "user", "content": f"【工具调用期间新增消息】{pending_text}"})
 
     async def _send_tool_thought(self, chat_id, mode, content, sent_thoughts, tool_names=None):
@@ -141,8 +126,7 @@ class YukiEngine:
                         tool_names,
                     )
                     if sent_content:
-                        self._append_session_message(
-                            history_dict,
+                        self.history.append_session_message(
                             chat_id,
                             "assistant",
                             sent_content,
@@ -156,8 +140,7 @@ class YukiEngine:
                 tool_messages.append(response_message)
                 tool_result_messages = await self.tool_manager.execute_tool_calls(tool_calls, context)
                 for tool_result_message in tool_result_messages:
-                    self._append_session_message(
-                        history_dict,
+                    self.history.append_session_message(
                         chat_id,
                         "tool",
                         tool_result_message.get("content"),
@@ -614,31 +597,20 @@ async def maid_worker(engine, yuki_state, sender, history_manager):
 
         logger.info(f"[Maid] 任务完成，准备交还主流程 (chat_id={chat_id})")
 
-        # === 关键修改部分 ===
         try:
-            history_dict = history_manager.load()
-            if chat_id not in history_dict:
-                history_dict[chat_id] = [{"role": "system", "content": yuki_state.get_setting(mode)}]
-
-            current_time_str = datetime.datetime.now().strftime("%Y年%m月%d日%H:%M")
-
-            history_dict[chat_id].append({
-                "role": "user",
-                "content": report,
-                "time": current_time_str,
-                "is_maid_report": True
-            })
-
-            # 3. 保存到 chat_history.json
-            history_manager.save(history_dict)
+            history_manager.append_session_message(
+                chat_id,
+                "user",
+                report,
+                time=datetime.datetime.now().strftime("%Y年%m月%d日%H:%M"),
+                is_maid_report=True,
+            )
             while not getattr(engine, 'napcat_online', True):
                 await asyncio.sleep(20)
 
-            # 4. 强制触发 main_process，让 {cfg.ROBOT_NAME.title()} 自然思考并决定是否回复
-            #    （main_process 会读取最新历史、检索 RAG、决定是否发言等）
             if engine.process_callback is not None:
                 asyncio.create_task(
-                    engine.process_callback(chat_id, mode, debounce_flag=False,force_reply=True)
+                    engine.process_callback(chat_id, mode, debounce_flag=False, force_reply=True)
                 )
                 logger.info(f"[Maid] 已触发主流程 (chat_id={chat_id})")
             else:

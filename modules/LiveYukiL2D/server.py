@@ -209,6 +209,7 @@ async def websocket_handler(request: web.Request) -> web.WebSocketResponse:
     CLIENTS.add(ws)
     print(f"[ws] client connected, total={len(CLIENTS)}")
 
+    await ws.send_str(json.dumps(set_model_message(get_yuki_model_info()), ensure_ascii=False))
     await ws.send_str(json.dumps({"type": "say", "text": ""}, ensure_ascii=False))
 
     async for msg in ws:
