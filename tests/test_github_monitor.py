@@ -131,13 +131,19 @@ class TestGitHubMonitorLogic:
             "commits": [
                 {
                     "sha": "1234567890abcdef",
-                    "message": "Add feature",
-                    "author": {"name": "Alice"},
+                    "commit": {
+                        "message": "Add feature",
+                        "author": {"name": "Alice"},
+                    },
+                    "author": {"login": "alice"},
                 },
                 {
                     "sha": "abcdef1234567890",
-                    "message": "Fix bug",
-                    "author": {"name": "Bob"},
+                    "commit": {
+                        "message": "Fix bug",
+                        "author": {"name": "Bob"},
+                    },
+                    "author": {"login": "bob"},
                 },
             ]
         }
@@ -157,6 +163,7 @@ class TestGitHubMonitorLogic:
         assert "2 commit(s) to main" in content
         assert "1234567 Alice: Add feature" in content
         assert "abcdef1 Bob: Fix bug" in content
+        assert "unknown" not in content
         monitor._client.get.assert_awaited_once()
 
     @pytest.mark.asyncio

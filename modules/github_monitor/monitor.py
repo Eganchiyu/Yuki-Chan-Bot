@@ -228,9 +228,22 @@ class GitHubMonitor:
             action_desc = "强制推送了" if forced else "推送了"
             commit_lines = []
             for commit in commits:
-                sha = str(commit.get("sha", ""))[:7]
-                message = (commit.get("message", "") or "").strip()
-                author = (commit.get("author") or {}).get("name", "unknown")
+                commit_metadata = commit.get("commit") or {}
+                commit_author = commit_metadata.get("author") or {}
+                fallback_author = commit.get("author") or {}
+                full_sha = str(commit.get("sha") or "")
+                sha = full_sha[:7] or "unknown"
+                message = str(
+                    commit_metadata.get("message")
+                    or commit.get("message")
+                    or ""
+                ).strip()
+                author = (
+                    commit_author.get("name")
+                    or fallback_author.get("login")
+                    or fallback_author.get("name")
+                    or "unknown"
+                )
                 commit_lines.append(f"- {sha} {author}: {message}")
             commit_detail = "\n".join(commit_lines) or "- no commits"
             content = (
