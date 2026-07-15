@@ -8,7 +8,7 @@ import json
 import os
 import tempfile
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 import yaml
@@ -119,6 +119,46 @@ class TestGitHubClient:
 # ====================  Monitor 核心逻辑测试  ====================
 
 class TestGitHubMonitorLogic:
+    @pytest.mark.asyncio
+    async def test_push_event_fetches_and_displays_compare_commits(self, fake_session_pipeline):
+        """Events API 只返回 before/head 时，应通过 Compare API 展示提交详情。"""
+        repo = GitHubRepoConfig(owner="owner", repo="repo", chat_id="chat")
+        monitor = GitHubMonitor(fake_session_pipeline, [repo])
+        monitor._client = MagicMock()
+        monitor._client.get = AsyncMock()
+        compare_response = MagicMock(status_code=200)
+        compare_response.json.return_value = {
+            "commits": [
+                {
+                    "sha": "1234567890abcdef",
+                    "message": "Add feature",
+                    "author": {"name": "Alice"},
+                },
+                {
+                    "sha": "abcdef1234567890",
+                    "message": "Fix bug",
+                    "author": {"name": "Bob"},
+                },
+            ]
+        }
+        monitor._client.get.return_value = compare_response
+
+        await monitor._dispatch_event(repo, {
+            "type": "PushEvent",
+            "actor": {"login": "pusher"},
+            "payload": {
+                "ref": "refs/heads/main",
+                "before": "before-sha",
+                "head": "head-sha",
+            },
+        })
+
+        content = fake_session_pipeline.enqueue_message.call_args.kwargs["message_obj"]["content"]
+        assert "2 commit(s) to main" in content
+        assert "1234567 Alice: Add feature" in content
+        assert "abcdef1 Bob: Fix bug" in content
+        monitor._client.get.assert_awaited_once()
+
     @pytest.mark.asyncio
     async def test_first_sync_populates_seen_ids(self, github_token: str, fake_session_pipeline, tmp_state_dir):
         """首次同步时，所有拉取到的事件 ID 都应写入 seen_ids，且不推送消息。"""

@@ -55,3 +55,40 @@ async def fetch_repo_events(
         return []
 
     return []
+
+
+async def fetch_compare_commits(
+    client: GitHubClient,
+    owner: str,
+    repo: str,
+    before: str,
+    head: str,
+) -> list[dict[str, Any]]:
+    """通过 Compare API 获取一次 PushEvent 涉及的提交列表。"""
+    from urllib.parse import quote
+
+    if not before or not head or before == head:
+        return []
+
+    path = (
+        f"/repos/{quote(owner)}/{quote(repo)}/compare/"
+        f"{quote(before)}...{quote(head)}"
+    )
+    try:
+        resp = await client.get(path)
+    except Exception as exc:
+        logger.warning("[GitHubMonitor] %s/%s Compare API 请求失败: %s", owner, repo, exc)
+        return []
+
+    if resp.status_code != 200:
+        logger.warning(
+            "[GitHubMonitor] %s/%s Compare API 返回 %d",
+            owner,
+            repo,
+            resp.status_code,
+        )
+        return []
+
+    data = resp.json()
+    commits = data.get("commits", []) if isinstance(data, dict) else []
+    return commits if isinstance(commits, list) else []

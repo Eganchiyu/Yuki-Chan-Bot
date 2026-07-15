@@ -19,7 +19,7 @@ from typing import Any, Dict, List, Optional
 
 from config import cfg
 from modules.github_monitor.client import GitHubClient, github_headers
-from modules.github_monitor.events import fetch_repo_events
+from modules.github_monitor.events import fetch_compare_commits, fetch_repo_events
 from modules.github_monitor.state import (
     load_state,
     save_state,
@@ -213,15 +213,30 @@ class GitHubMonitor:
         # ---------- Push 事件单独构建消息 ----------
         if event_type == "PushEvent":
             commits = payload.get("commits", [])
+            if not commits:
+                commits = await fetch_compare_commits(
+                    self._client,
+                    repo.owner,
+                    repo.repo,
+                    payload.get("before", ""),
+                    payload.get("head", ""),
+                )
             ref = payload.get("ref", "")
             branch = ref.replace("refs/heads/", "") if ref else "unknown"
             forced = payload.get("forced", False)
             commit_count = len(commits)
-            first_msg = (commits[0].get("message", "")[:80] + "...") if commits else "no commits"
             action_desc = "强制推送了" if forced else "推送了"
+            commit_lines = []
+            for commit in commits:
+                sha = str(commit.get("sha", ""))[:7]
+                message = (commit.get("message", "") or "").strip()
+                author = (commit.get("author") or {}).get("name", "unknown")
+                commit_lines.append(f"- {sha} {author}: {message}")
+            commit_detail = "\n".join(commit_lines) or "- no commits"
             content = (
                 f"[GitHub] [{repo.key}] {actor} {action_desc} "
-                f"{commit_count} commit(s) to {branch}: {first_msg}\n{repo_url}"
+                f"{commit_count} commit(s) to {branch}:\n"
+                f"{commit_detail}\n{repo_url}"
             )
             # 直接推送消息后返回，不再走通用 title/action 流程
             await self._send_to_chats(repo, content)
