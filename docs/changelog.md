@@ -10,6 +10,7 @@
 ## [未发布]
 
 ### 新增
+- GitHub Push 卡片补充 Compare API 提交详情、提交评论数、文件数量、代码增删统计和比较链接
 - GitHub 仓库监控新增 Pillow 事件小卡片渲染，并复用 WebSocket 图片发送逻辑推送到指定群聊
 - 新增 `get_master_status` 工具，返回主人在线状态、活跃状态和当前聚焦窗口标题
 - 增强 LiveYukiL2D minimal 桌宠的待机微笑张嘴、标准眼睛参数眨眼回退与轻微风场物理效果

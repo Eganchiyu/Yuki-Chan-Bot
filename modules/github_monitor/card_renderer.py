@@ -15,7 +15,14 @@ CARD_WIDTH = 1000
 PADDING = 48
 
 
-def render_event_card(repo_key: str, event: dict[str, Any], title: str, action: str) -> str:
+def render_event_card(
+    repo_key: str,
+    event: dict[str, Any],
+    title: str,
+    action: str,
+    commits: list[dict[str, Any]] | None = None,
+    compare_data: dict[str, Any] | None = None,
+) -> str:
     payload = event.get("payload", {})
     actor = event.get("actor", {}).get("login", "someone")
     event_type = event.get("type", "GitHubEvent")
@@ -24,13 +31,26 @@ def render_event_card(repo_key: str, event: dict[str, Any], title: str, action: 
     if event_type == "PushEvent":
         ref = payload.get("ref", "")
         branch = ref.replace("refs/heads/", "") if ref else "unknown"
-        commits = payload.get("commits", [])
-        lines.append(f"分支 {branch}  ·  {len(commits)} commits")
+        commits = commits if commits is not None else payload.get("commits", [])
+        compare_data = compare_data or {}
+        files = compare_data.get("files", [])
+        additions = sum(_change_count(f.get("additions")) for f in files if isinstance(f, dict))
+        deletions = sum(_change_count(f.get("deletions")) for f in files if isinstance(f, dict))
+        lines.append(f"分支 {branch}  ·  {len(commits)} commits  ·  {len(files)} files")
+        if files:
+            lines.append(f"代码变更  +{additions} / -{deletions}")
         for commit in commits[:6]:
             metadata = commit.get("commit") or {}
-            message = str(metadata.get("message") or commit.get("message") or "").splitlines()[0]
+            message = _single_line(metadata.get("message") or commit.get("message"))[:180]
             sha = str(commit.get("sha") or "")[:7]
-            lines.append(f"{sha or 'unknown'}  {message or '无提交说明'}")
+            comment_count = int(metadata.get("comment_count", 0) or 0)
+            comment_text = f"  ·  {comment_count} comments" if comment_count else ""
+            lines.append(f"{sha or 'unknown'}  {message or '无提交说明'}{comment_text}")
+        if len(commits) > 6:
+            lines.append(f"其余 {len(commits) - 6} 个提交未展开")
+        compare_url = compare_data.get("html_url") or payload.get("compare")
+        if compare_url:
+            lines.append(str(compare_url))
     else:
         body = _event_preview(payload, event_type)
         if body:
@@ -77,6 +97,13 @@ def _event_preview(payload: dict[str, Any], event_type: str) -> str:
 
 def _single_line(value: Any) -> str:
     return " ".join(str(value or "").split())
+
+
+def _change_count(value: Any) -> int:
+    try:
+        return max(0, int(value or 0))
+    except (TypeError, ValueError):
+        return 0
 
 
 def _load_font(size: int, bold: bool = False) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:

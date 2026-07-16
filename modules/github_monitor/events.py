@@ -65,10 +65,22 @@ async def fetch_compare_commits(
     head: str,
 ) -> list[dict[str, Any]]:
     """通过 Compare API 获取一次 PushEvent 涉及的提交列表。"""
+    data = await fetch_compare_data(client, owner, repo, before, head)
+    return data.get("commits", [])
+
+
+async def fetch_compare_data(
+    client: GitHubClient,
+    owner: str,
+    repo: str,
+    before: str,
+    head: str,
+) -> dict[str, Any]:
+    """通过 Compare API 获取提交和文件变更详情。"""
     from urllib.parse import quote
 
     if not before or not head or before == head:
-        return []
+        return {}
 
     path = (
         f"/repos/{quote(owner)}/{quote(repo)}/compare/"
@@ -78,7 +90,7 @@ async def fetch_compare_commits(
         resp = await client.get(path)
     except Exception as exc:
         logger.warning("[GitHubMonitor] %s/%s Compare API 请求失败: %s", owner, repo, exc)
-        return []
+        return {}
 
     if resp.status_code != 200:
         logger.warning(
@@ -87,8 +99,13 @@ async def fetch_compare_commits(
             repo,
             resp.status_code,
         )
-        return []
+        return {}
 
     data = resp.json()
-    commits = data.get("commits", []) if isinstance(data, dict) else []
-    return commits if isinstance(commits, list) else []
+    if not isinstance(data, dict):
+        return {}
+    commits = data.get("commits", [])
+    data["commits"] = commits if isinstance(commits, list) else []
+    files = data.get("files", [])
+    data["files"] = files if isinstance(files, list) else []
+    return data

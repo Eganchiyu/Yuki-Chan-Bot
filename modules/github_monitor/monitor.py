@@ -20,7 +20,7 @@ from typing import Any, Dict, List, Optional
 from config import cfg
 from modules.github_monitor.client import GitHubClient, github_headers
 from modules.github_monitor.card_renderer import render_event_card
-from modules.github_monitor.events import fetch_compare_commits, fetch_repo_events
+from modules.github_monitor.events import fetch_compare_data, fetch_repo_events
 from modules.github_monitor.state import (
     load_state,
     save_state,
@@ -28,6 +28,14 @@ from modules.github_monitor.state import (
 from utils.logger import get_logger
 
 logger = get_logger("github_monitor")
+
+
+def _change_count(value: Any) -> int:
+    try:
+        return max(0, int(value or 0))
+    except (TypeError, ValueError):
+        return 0
+
 
 # 默认轮询间隔（秒）
 _DEFAULT_POLL_INTERVAL = 300
@@ -214,14 +222,17 @@ class GitHubMonitor:
         # ---------- Push 事件单独构建消息 ----------
         if event_type == "PushEvent":
             commits = payload.get("commits", [])
-            if not commits:
-                commits = await fetch_compare_commits(
+            compare_data = {}
+            if payload.get("before") and payload.get("head"):
+                compare_data = await fetch_compare_data(
                     self._client,
                     repo.owner,
                     repo.repo,
                     payload.get("before", ""),
                     payload.get("head", ""),
                 )
+                if not commits:
+                    commits = compare_data.get("commits", [])
             ref = payload.get("ref", "")
             branch = ref.replace("refs/heads/", "") if ref else "unknown"
             forced = payload.get("forced", False)
@@ -234,11 +245,11 @@ class GitHubMonitor:
                 fallback_author = commit.get("author") or {}
                 full_sha = str(commit.get("sha") or "")
                 sha = full_sha[:7] or "unknown"
-                message = str(
+                message = " ".join(str(
                     commit_metadata.get("message")
                     or commit.get("message")
                     or ""
-                ).strip()
+                ).split())[:180]
                 author = (
                     commit_author.get("name")
                     or fallback_author.get("login")
@@ -247,12 +258,19 @@ class GitHubMonitor:
                 )
                 commit_lines.append(f"- {sha} {author}: {message}")
             commit_detail = "\n".join(commit_lines) or "- no commits"
+            files = compare_data.get("files", [])
+            additions = sum(_change_count(f.get("additions")) for f in files if isinstance(f, dict))
+            deletions = sum(_change_count(f.get("deletions")) for f in files if isinstance(f, dict))
+            file_detail = f"，{len(files)} file(s), +{additions}/-{deletions}" if files else ""
             content = (
                 f"[GitHub] [{repo.key}] {actor} {action_desc} "
-                f"{commit_count} commit(s) to {branch}:\n"
+                f"{commit_count} commit(s) to {branch}{file_detail}:\n"
                 f"{commit_detail}\n{repo_url}"
             )
-            card_path = render_event_card(repo.key, ev, f"推送到 {branch}", action_desc)
+            card_path = render_event_card(
+                repo.key, ev, f"推送到 {branch}", action_desc,
+                commits=commits, compare_data=compare_data,
+            )
             # 直接推送消息后返回，不再走通用 title/action 流程
             await self._send_to_chats(repo, content, card_path)
             return
