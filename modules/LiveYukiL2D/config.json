@@ -13,7 +13,7 @@
     "lookAtMouse": true
   },
   "model": {
-    "kScale": 3.0,
+    "kScale": 1.0,
     "scrollToResize": true
   }
 }

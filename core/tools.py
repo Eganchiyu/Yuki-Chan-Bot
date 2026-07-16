@@ -11,10 +11,23 @@ from config import cfg
 from core.maid.maid import MaidCapabilityBoundary, build_maid_task, maid_evolution_loop, search_diary_fast
 from core.toolchain import ToolResult, ToolSpec
 from modules.shot_memory import ShotMemoryStore, render_snapshot, shot_live_buffer
+from modules.system_state import monitor as system_state_monitor
 from utils.logger import get_logger
 
 logger = get_logger("tools")
 shot_memory_store = ShotMemoryStore()
+
+
+async def get_master_status_tool(context):
+    data = system_state_monitor.master_status()
+    return ToolResult(
+        success=True,
+        content=(
+            f"主人在线：{data['online']}，活跃：{data['active']}，"
+            f"当前窗口：{data['foreground_window'] or '未知'}"
+        ),
+        data=data,
+    )
 
 _TIMER_TASKS_KEY = "__timer_tasks__"
 _TIMER_HANDLES_KEY = "__timer_handles__"
@@ -794,6 +807,12 @@ async def generate_image_tool(context, prompt, size="1024*1024"):
 
 
 TOOL_SPECS = [
+    ToolSpec(
+        name="get_master_status",
+        description="判断主人是否在线、是否活跃，并返回当前聚焦的窗口标题。",
+        parameters={"type": "object", "properties": {}},
+        handler=get_master_status_tool,
+    ),
     ToolSpec(
         name="search_diary",
         description="查询日记/记忆，支持按日期和关键词检索。",
