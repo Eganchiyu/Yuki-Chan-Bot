@@ -6,8 +6,9 @@ import threading
 import time
 
 
-MASTER_ONLINE_WINDOW_SECONDS = 30
-MASTER_ACTIVE_IDLE_SECONDS = 5 * 60
+MASTER_PAUSED_SECONDS = 30
+MASTER_AWAY_SECONDS = 2 * 60
+MASTER_OFFLINE_SECONDS = 10 * 60
 MONITOR_INTERVAL_SECONDS = 1
 
 _state_lock = threading.Lock()
@@ -25,7 +26,7 @@ def record_master_activity() -> None:
 def _monitor_loop() -> None:
     while not _monitor_stop_event.wait(MONITOR_INTERVAL_SECONDS):
         idle_seconds = _get_system_idle_seconds()
-        if idle_seconds is not None and idle_seconds <= MASTER_ONLINE_WINDOW_SECONDS:
+        if idle_seconds is not None and idle_seconds <= MASTER_OFFLINE_SECONDS:
             record_master_activity()
 
 
@@ -80,15 +81,24 @@ def master_status() -> dict:
     with _state_lock:
         last_activity = _last_master_activity
     idle_seconds = _get_system_idle_seconds()
-    online = last_activity > 0 and now - last_activity <= MASTER_ONLINE_WINDOW_SECONDS
-    active = idle_seconds is not None and idle_seconds <= MASTER_ACTIVE_IDLE_SECONDS
+    last_activity_seconds = max(0.0, now - last_activity) if last_activity else None
+
+    if last_activity_seconds is None or last_activity_seconds > MASTER_OFFLINE_SECONDS:
+        status = "offline"
+    elif last_activity_seconds > MASTER_AWAY_SECONDS:
+        status = "away"
+    elif last_activity_seconds > MASTER_PAUSED_SECONDS:
+        status = "paused"
+    else:
+        status = "online"
+
     return {
-        "online": online,
-        "active": active,
+        "status": status,
+        "online": status == "online",
+        "active": idle_seconds is not None and idle_seconds <= MASTER_PAUSED_SECONDS,
         "foreground_window": _get_foreground_window_title(),
         "system_idle_seconds": idle_seconds,
-        "last_activity_seconds": max(0.0, now - last_activity) if last_activity else None,
+        "last_activity_seconds": last_activity_seconds,
     }
 
 
-start_monitor_service()

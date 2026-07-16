@@ -19,6 +19,7 @@ from typing import Any, Dict, List, Optional
 
 from config import cfg
 from modules.github_monitor.client import GitHubClient, github_headers
+from modules.github_monitor.card_renderer import render_event_card
 from modules.github_monitor.events import fetch_compare_commits, fetch_repo_events
 from modules.github_monitor.state import (
     load_state,
@@ -251,8 +252,9 @@ class GitHubMonitor:
                 f"{commit_count} commit(s) to {branch}:\n"
                 f"{commit_detail}\n{repo_url}"
             )
+            card_path = render_event_card(repo.key, ev, f"推送到 {branch}", action_desc)
             # 直接推送消息后返回，不再走通用 title/action 流程
-            await self._send_to_chats(repo, content)
+            await self._send_to_chats(repo, content, card_path)
             return
 
         # ---------- Discussion 事件 ----------
@@ -263,7 +265,8 @@ class GitHubMonitor:
             # 格式：actor 动作 Discussion: 标题
             action_str = self._format_action(event_type, action)
             content = f"[GitHub] [{repo.key}] {actor} {action_str}: {title}\n{repo_url}"
-            await self._send_to_chats(repo, content)
+            card_path = render_event_card(repo.key, ev, title, action_str)
+            await self._send_to_chats(repo, content, card_path)
             return
 
         if event_type == "DiscussionCommentEvent":
@@ -278,7 +281,8 @@ class GitHubMonitor:
                 content = f"[GitHub] [{repo.key}] {actor} {action_str} Discussion: {title}\n> {body_preview}\n{repo_url}"
             else:
                 content = f"[GitHub] [{repo.key}] {actor} {action_str} Discussion: {title}\n{repo_url}"
-            await self._send_to_chats(repo, content)
+            card_path = render_event_card(repo.key, ev, title, action_str)
+            await self._send_to_chats(repo, content, card_path)
             return
 
         # ---------- 通用 Issue/PR/Comment 事件 ----------
@@ -289,9 +293,12 @@ class GitHubMonitor:
             return
 
         content = f"[GitHub] [{repo.key}] {actor} {self._format_action(event_type, action)}: {title}\n{repo_url}"
-        await self._send_to_chats(repo, content)
+        card_path = render_event_card(
+            repo.key, ev, title, self._format_action(event_type, action)
+        )
+        await self._send_to_chats(repo, content, card_path)
 
-    async def _send_to_chats(self, repo: GitHubRepoConfig, content: str) -> None:
+    async def _send_to_chats(self, repo: GitHubRepoConfig, content: str, card_path: str = "") -> None:
         """将构建好的内容推送到关联的 chat_ids。"""
         chat_ids = [repo.chat_id] if repo.chat_id else getattr(
             getattr(cfg, "github_monitor", None), "default_chat_ids", []
@@ -303,6 +310,12 @@ class GitHubMonitor:
 
         for cid in chat_ids:
             for mode in repo.modes:
+                try:
+                    sender = getattr(self.session_pipeline, "sender", None)
+                    if sender and card_path and hasattr(sender, "send_local_image"):
+                        await sender.send_local_image(str(cid), card_path, mode=mode)
+                except Exception as e:
+                    logger.error(f"[GitHubMonitor] 卡片发送失败 (cid={cid}): {e}")
                 message_obj = {
                     "name": "GitHubMonitor",
                     "content": content,
