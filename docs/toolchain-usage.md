@@ -178,8 +178,6 @@ ToolCallManager.execute_tool_calls()
 |--------|---------|------|
 | `search_diary` | `search_diary_tool` | 查询 Yuki 日记/记忆，支持日期与关键词 |
 | `delegate_to_maid` | `delegate_to_maid_tool` | 将重型任务委托给小女仆，支持后台队列或 inline 执行 |
-| `send_master_private` | `send_master_private_tool` | 向主人私聊发送私密信息，自动保存群聊上下文快照，同步写入私聊历史 |
-| `recall_private_context` | `recall_private_context_tool` | 召回最近发给主人的群聊上下文快照，了解群里发生了什么 |
 | `send_qq_file` | `send_qq_file_tool` | 发送本地图片、语音或普通文件，支持 [img:XXX] 索引 |
 | `resolve_user` | `resolve_user_tool` | 根据用户昵称解析 QQ 号 |
 | `poke` | `poke_tool` | 戳一戳指定用户 |
@@ -204,18 +202,7 @@ ToolCallManager.execute_tool_calls()
 - `run_inline=True` 时直接等待 `maid_evolution_loop()` 结果。
 - 默认后台模式会构造 maid task 并放入 `context.yuki.maid_task_queue`。
 
-### 5.3 send_master_private
-
-- 参数：`message` 必填，`reason` 可选（默认"重要信息"）。
-- 行为：通过 `context.sender.send(cfg.TARGET_QQ, message, mode="private")` 发送给主人。
-- 附带行为：自动保存群聊上下文快照到 `data/private_context.json`；将消息同步写入主人私聊的 `chat_history.json`（标记为 `[群聊通知]`）。
-
-### 5.4 recall_private_context
-
-- 参数：`limit` 可选（默认5），`source_chat_id` 可选。
-- 行为：从 `data/private_context.json` 召回最近的群聊上下文快照，返回格式化的上下文文本块。
-
-### 5.5 send_qq_file
+### 5.3 send_qq_file
 
 - 参数：`file_path` 必填，`file_type` 支持 `image`、`voice` 或 `file`。
 - 行为：根据类型调用 sender 的本地图片、语音或文件发送接口。支持 `[img:XXX]` 索引。

@@ -13,6 +13,7 @@ from core.session_pipeline import SessionPipeline
 from init import load_group_state
 from modules.QQNapcatListen.listen_main import configure_runtime, napcat_listen
 from modules.message.CQParser import CQCodeParser
+from modules.system_state.monitor import start_monitor_service, stop_monitor_service
 from modules.vision.processor import MemeProcessor
 from network.ws_connection import BotConnector
 from network.ws_sender import MessageSender
@@ -162,6 +163,10 @@ def _do_cleanup():
     _cleanup_done = True
     logger.info("[Main] 正在清理资源...")
     try:
+        stop_monitor_service()
+    except Exception as e:
+        logger.error(f"[Main] 停止监控服务时出错: {e}")
+    try:
         save_config(cfg)
         logger.info("[Main] 配置已自动对齐保存")
     except Exception as e:
@@ -194,6 +199,7 @@ if __name__ == "__main__":
 
         warmup_groups(components["yuki"], components["history_manager"])
 
+        start_monitor_service()
         asyncio.run(run_runtime())
 
     except KeyboardInterrupt:

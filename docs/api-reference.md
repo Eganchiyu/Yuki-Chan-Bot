@@ -239,19 +239,7 @@
 
 **异常**：无
 
-### 2.4 send_master_private_tool
-
-向主人私聊发送私密信息。
-
-**参数**：
-- `context: ToolContext` - 工具调用上下文
-- `message: str` - 消息内容
-
-**返回**：`ToolResult` - 发送结果
-
-**异常**：无
-
-### 2.5 browser_search_tool
+### 2.4 browser_search_tool
 
 提供网络搜索入口，当前返回可打开的搜索地址。
 

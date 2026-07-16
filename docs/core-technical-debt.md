@@ -7,7 +7,6 @@
 - [engine.py](file:///d:/Projects/YukiV6/core/engine.py)
 - [history_manager.py](file:///d:/Projects/YukiV6/core/history_manager.py)
 - [maid.py](file:///d:/Projects/YukiV6/core/maid.py)
-- [private_context.py](file:///d:/Projects/YukiV6/core/private_context.py)
 - [prompts.py](file:///d:/Projects/YukiV6/core/prompts.py)
 - [session_pipeline.py](file:///d:/Projects/YukiV6/core/session_pipeline.py)
 - [toolchain.py](file:///d:/Projects/YukiV6/core/toolchain.py)
@@ -235,22 +234,6 @@
 **优先级**：中
 
 **本轮重新评估**：prompt 重复仍是维护债务，但相较历史一致性、消息恢复和执行安全属于 P2。应在核心运行时稳定后，按稳定人设、场景差异和工具约束分层组合。
-
-### 3.8 私聊上下文快照能力已可用，但数据模型还偏轻
-
-**涉及文件**
-- [private_context.py](file:///d:/Projects/YukiV6/core/private_context.py)
-- [tools.py](file:///d:/Projects/YukiV6/core/tools.py)
-
-**现状**
-- 群聊重要事件会保存到 `data/private_context.json`
-- 快照只保留最近 10 条上下文和 50 条快照
-- 结构主要是消息和原因描述，元数据仍然比较少
-
-**问题**
-- 缺少来源类型、优先级、消息主题等更细粒度标签
-- 快照查询和召回只能做简单过滤，后续扩展空间有限
-- 文件型存储适合轻量场景，但长期可能遇到一致性和检索效率问题
 
 **建议**
 - 后续为快照增加结构化字段

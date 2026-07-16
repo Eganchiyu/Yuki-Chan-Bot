@@ -199,34 +199,10 @@ async def delegate_to_maid_tool(context, goal, run_inline=False):
     context.yuki.maid_current_tasks[context.chat_id] = task
     return ToolResult(success=True, content="已交给小女仆后台处理。")
 
-
-async def send_master_private_tool(context, message, reason="重要信息"):
+async def send_master_private_tool(context, message):
     """向主人私聊发送私密信息，同时保存群聊上下文快照供后续召回。"""
     if not message:
         return ToolResult(success=False, content="缺少消息内容", error="missing_message")
-
-    # 保存上下文快照
-    try:
-        from core.private_context import save_context_snapshot
-        cid = str(context.chat_id)
-        recent_msgs = context.session[-10:]
-        slim_msgs = []
-        for msg in recent_msgs:
-            if msg.get("role") in ("user", "assistant"):
-                slim_msgs.append({
-                    "role": msg["role"],
-                    "content": msg.get("content", "")[:200],
-                    "time": msg.get("time", ""),
-                })
-        save_context_snapshot(
-            source_chat_id=cid,
-            message=message,
-            reason=reason,
-            recent_messages=slim_msgs,
-        )
-        logger.info(f"[Tool] 已保存私聊上下文快照，来源群聊 {cid}")
-    except Exception as e:
-        logger.warning(f"[Tool] 保存上下文快照失败（不影响发送）: {e}")
 
     # 发送私信（使用私聊 API）
     await context.sender.send(cfg.TARGET_QQ, message, mode="private")
@@ -241,30 +217,12 @@ async def send_master_private_tool(context, message, reason="重要信息"):
                 "assistant",
                 f"[群聊通知] {message}",
                 source_chat_id=str(context.chat_id),
-                reason=reason,
             )
             logger.info(f"[Tool] 已同步消息到主人私聊历史 ({master_cid})")
     except Exception as e:
         logger.warning(f"[Tool] 同步私聊历史失败（不影响发送）: {e}")
-
-    return ToolResult(success=True, content="已私聊发送给主人，并保存了上下文快照。")
-
-
-async def recall_private_context_tool(context, limit=5, source_chat_id=None):
-    """召回最近发给主人的群聊上下文快照，了解群里发生了什么重要事情。"""
-    try:
-        from core.private_context import recall_context, format_context_for_prompt
-        snapshots = recall_context(limit=limit, source_chat_id=source_chat_id)
-        if not snapshots:
-            return ToolResult(success=True, content="暂无群聊上下文快照，还没有从群里发过私信通知。")
-
-        formatted = format_context_for_prompt(snapshots)
-        return ToolResult(success=True, content=formatted, data={"count": len(snapshots)})
-    except Exception as e:
-        logger.error(f"[Tool] 召回上下文失败: {e}")
-        return ToolResult(success=False, content=f"召回上下文失败: {str(e)}", error=str(e))
-
-
+    return ToolResult(success=True, content="已私聊发送给主人。")
+    
 async def amap_search_tool(context, keywords, search_type="text", location=None, address=None, city=None, radius=3000, page_size=10):
     """高德地图统一搜索：text=关键词搜索, around=周边搜索(需坐标), geocode=地名转坐标。"""
     api_key = os.getenv("AMAP_API_KEY")
@@ -506,26 +464,6 @@ async def send_qq_file_tool(context, file_path, file_type="auto", caption=None):
         return ToolResult(success=False, content="不支持的文件类型", error="unsupported_file_type")
     return ToolResult(success=True, content="文件已发送。", data={"file_path": abs_path, "file_type": file_type})
 
-
-async def resolve_user_tool(context, name=None):
-    """根据昵称解析用户 QQ 号。用于需要指定目标用户的场景（如戳一戳、发送文件等）。"""
-    if not name:
-        return ToolResult(success=False, content="缺少用户昵称", error="missing_name")
-
-    user_id = context.yuki.user_mapping.resolve(context.chat_id, name)
-    if user_id:
-        return ToolResult(success=True, content=str(user_id), data={"name": name, "user_id": user_id})
-
-    # 返回当前群聊中已知的所有映射，帮助调试
-    all_mappings = context.yuki.user_mapping.get_all(context.chat_id)
-    return ToolResult(
-        success=False,
-        content=f"未找到用户 '{name}' 的 QQ 号。",
-        data={"searched": name, "known_users": all_mappings},
-        error="user_not_found",
-    )
-
-
 async def poke_tool(context, target=None, user_id=None):
     """
     戳一戳指定用户。
@@ -544,7 +482,7 @@ async def poke_tool(context, target=None, user_id=None):
         else:
             return ToolResult(
                 success=False,
-                content=f"未找到用户 '{target}'，可能他还没在群里说过话。",
+                content=f"未找到用户 '{target}'，可能他还没在群里说过话或者程序冷启动未记录到映射。",
                 error="user_not_found",
             )
 
@@ -808,10 +746,17 @@ async def generate_image_tool(context, prompt, size="1024*1024"):
 
 TOOL_SPECS = [
     ToolSpec(
-        name="get_master_status",
-        description="判断主人是否在线、是否活跃，并返回当前聚焦的窗口标题。",
-        parameters={"type": "object", "properties": {}},
-        handler=get_master_status_tool,
+        name="delegate_to_maid",
+        description="将工作任务委托给电脑上的小女仆处理。使用小女仆完成你自己不能完成的任务。",
+        parameters={
+            "type": "object",
+            "properties": {
+                "goal": {"type": "string", "description": "要完成的任务描述"},
+                "run_inline": {"type": "boolean"},
+            },
+            "required": ["goal"],
+        },
+        handler=delegate_to_maid_tool,
     ),
     ToolSpec(
         name="search_diary",
@@ -826,67 +771,35 @@ TOOL_SPECS = [
         handler=search_diary_tool,
     ),
     ToolSpec(
-        name="delegate_to_maid",
-        description="将工作任务委托给电脑上的小女仆处理。",
-        parameters={
-            "type": "object",
-            "properties": {
-                "goal": {"type": "string"},
-                "run_inline": {"type": "boolean"},
-            },
-            "required": ["goal"],
-        },
-        handler=delegate_to_maid_tool,
+        name="get_master_status",
+        description="判断主人是否在线、是否活跃，并返回当前聚焦的窗口标题。",
+        parameters={"type": "object", "properties": {}},
+        handler=get_master_status_tool,
     ),
+    
     ToolSpec(
         name="send_master_private",
-        description="向主人私聊发送私密信息。发送时会自动保存群聊上下文快照，方便主人后续了解群里发生了什么。用于重要信息通知、有人提到主人等场景。",
+        description="向主人私聊发送私密信息。用于信息通知、有人提到主人或者想要找主人等场景。",
         parameters={
             "type": "object",
             "properties": {
                 "message": {"type": "string", "description": "要发送给主人的消息内容"},
-                "reason": {"type": "string", "description": "触发原因，如'有人提到主人'、'重要通知'等", "default": "重要信息"},
             },
             "required": ["message"],
         },
         handler=send_master_private_tool,
     ),
     ToolSpec(
-        name="recall_private_context",
-        description="召回最近发给主人的群聊上下文快照。当主人在私聊中问起群里的事情、或者你想了解之前通知过主人什么时使用。",
+        name="poke",
+        description="戳一戳指定用户。可以传入昵称（自动解析）或直接传入 QQ 号。",
         parameters={
             "type": "object",
             "properties": {
-                "limit": {"type": "integer", "description": "返回的快照数量上限，默认5", "default": 5},
-                "source_chat_id": {"type": "string", "description": "可选，只召回指定群聊的快照"},
+                "target": {"type": "string", "description": "用户昵称或群名片"},
+                "user_id": {"type": "integer", "description": "用户 QQ 号（如果已知）"},
             },
         },
-        handler=recall_private_context_tool,
-    ),
-    ToolSpec(
-        name="capture_group_snapshot",
-        description="截屏留念当前群聊最近上下文：把最近聊天渲染成一张本地永久保存的截图并标记。想记录热闹、名场面、群里发生了什么时直接调用。",
-        parameters={
-            "type": "object",
-            "properties": {
-                "note": {"type": "string", "description": "备注/事件描述，记录发生的事情和你的评论"},
-                "limit": {"type": "integer", "description": "截取最近多少条上下文，默认12", "default": 12},
-            },
-            "required": ["note"],
-        },
-        handler=capture_group_snapshot_tool,
-    ),
-    ToolSpec(
-        name="search_group_snapshots",
-        description="翻看本群截屏记录。按关键词搜索当前群聊永久保存的截屏，最多返回5条，并预热为 [shot:1]、[shot:2] 等索引；要发送时用 send_qq_file 发送对应 [shot:编号]。",
-        parameters={
-            "type": "object",
-            "properties": {
-                "keyword": {"type": "string", "description": "搜索关键词，可省略以查看最近记录"},
-                "limit": {"type": "integer", "description": "返回数量，默认5，最多5", "default": 5},
-            },
-        },
-        handler=search_group_snapshots_tool,
+        handler=poke_tool,
     ),
     ToolSpec(
         name="send_qq_file",
@@ -903,44 +816,33 @@ TOOL_SPECS = [
         handler=send_qq_file_tool,
     ),
     ToolSpec(
-        name="resolve_user",
-        description="根据用户昵称解析 QQ 号。想要获取QQ号的时候使用。",
+        name="capture_group_snapshot",
+        description="截屏留念当前群聊最近上下文：把最近聊天渲染成一张本地永久保存的截图并标记。想记录热闹、名场面、群里发生了什么时直接调用。",
         parameters={
             "type": "object",
             "properties": {
-                "name": {"type": "string", "description": "用户昵称"},
+                "note": {"type": "string", "description": "备注/事件描述，记录发生的事情和你的评论"},
+                "limit": {"type": "integer", "description": "截取最近多少条上下文，默认12", "default": 12},
             },
-            "required": ["name"],
+            "required": ["note"],
         },
-        handler=resolve_user_tool,
+        handler=capture_group_snapshot_tool,
     ),
     ToolSpec(
-        name="poke",
-        description="戳一戳指定用户。可以传入昵称（自动解析）或直接传入 QQ 号。",
+        name="search_group_snapshots",
+        description="翻看本群以前截屏过的记录。按关键词搜索当前群聊永久保存的截屏，最多返回5条，并预热为 [shot:1]、[shot:2] 等索引；要发送时用 send_qq_file 发送对应 [shot:编号]。",
         parameters={
             "type": "object",
             "properties": {
-                "target": {"type": "string", "description": "用户昵称或群名片"},
-                "user_id": {"type": "integer", "description": "用户 QQ 号（如果已知）"},
+                "keyword": {"type": "string", "description": "搜索关键词，可省略以查看最近记录"},
+                "limit": {"type": "integer", "description": "返回数量，默认5，最多5", "default": 5},
             },
         },
-        handler=poke_tool,
-    ),
-    ToolSpec(
-        name="download_file",
-        description="下载群聊/私聊中的文件到本地。当想要下载文件消息（显示为 [文件:file_id=xxx]）时，使用此工具下载文件。下载后可以委托小女仆分析文件内容。",
-        parameters={
-            "type": "object",
-            "properties": {
-                "file_id": {"type": "string", "description": "文件 ID，从消息中的 [文件:file_id=xxx] 获取"},
-                "filename": {"type": "string", "description": "保存的文件名（可选，默认使用原文件名）"},
-            },
-        },
-        handler=download_file_tool,
+        handler=search_group_snapshots_tool,
     ),
     ToolSpec(
         name="publish_qzone_mood",
-        description="发布 QQ 空间说说。支持纯文本和带图片。使用前确保内容合适，不要频繁调用。",
+        description="发布 QQ 空间说说，支持文本和图片。不要频繁调用。",
         parameters={
             "type": "object",
             "properties": {
@@ -955,7 +857,20 @@ TOOL_SPECS = [
             "required": ["content"],
         },
         handler=publish_qzone_mood_tool,
+    ),    
+    ToolSpec(
+        name="download_file",
+        description="下载群聊/私聊中的文件到本地。当想要下载文件消息（显示为 [文件:file_id=xxx]）时，使用此工具下载文件。下载后可以委托小女仆分析文件内容。",
+        parameters={
+            "type": "object",
+            "properties": {
+                "file_id": {"type": "string", "description": "文件 ID，从消息中的 [文件:file_id=xxx] 获取"},
+                "filename": {"type": "string", "description": "保存的文件名（可选，默认使用原文件名）"},
+            },
+        },
+        handler=download_file_tool,
     ),
+    
     ToolSpec(
         name="generate_image",
         description=(
@@ -979,3 +894,35 @@ TOOL_SPECS = [
 # 兼容旧引用，后续新增工具优先维护 TOOL_SPECS。
 TOOL_SCHEMAS = [spec.to_schema() for spec in TOOL_SPECS]
 TOOL_HANDLERS = {spec.name: spec.handler for spec in TOOL_SPECS}
+
+# 这部分不要删除，保留以后可能需要
+# async def resolve_user_tool(context, name=None):
+#     """根据昵称解析用户 QQ 号。用于需要指定目标用户的场景（如戳一戳、发送文件等）。"""
+#     if not name:
+#         return ToolResult(success=False, content="缺少用户昵称", error="missing_name")
+
+#     user_id = context.yuki.user_mapping.resolve(context.chat_id, name)
+#     if user_id:
+#         return ToolResult(success=True, content=str(user_id), data={"name": name, "user_id": user_id})
+
+#     # 返回当前群聊中已知的所有映射，帮助调试
+#     all_mappings = context.yuki.user_mapping.get_all(context.chat_id)
+#     return ToolResult(
+#         success=False,
+#         content=f"未找到用户 '{name}' 的 QQ 号。",
+#         data={"searched": name, "known_users": all_mappings},
+#         error="user_not_found",
+#     )
+# 配套的 ToolSpec
+# ToolSpec(
+#     name="resolve_user",
+#     description="根据用户昵称解析 QQ 号。想要获取QQ号的时候使用。",
+#     parameters={
+#         "type": "object",
+#         "properties": {
+#             "name": {"type": "string", "description": "用户昵称"},
+#         },
+#         "required": ["name"],
+#     },
+#     handler=resolve_user_tool,
+# ),

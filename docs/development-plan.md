@@ -94,7 +94,7 @@
 | listen_main.py 简化 | ✅ 已完成 | 中 | 提取 start_background_tasks() |
 | 项目文档编写 | ✅ 已完成 | 中 | 架构文档、开发规划、更新日志 |
 | 项目公约制定 | ✅ 已完成 | 高 | Trae rules 和 skills |
-| Function Call Schema | ✅ 已完成 | 高 | 定义 7 个 function 的 schema（search_diary、manage_timer_task、delegate_to_maid、send_master_private、browser_search、send_qq_file、inject_external_content） |
+| Function Call Schema | ✅ 已完成 | 高 | 定义标准 function 的 schema |
 | Function Handler 实现 | ✅ 已完成 | 高 | 实现 7 个 function 的处理逻辑 |
 | 主循环改造 | ⏳ 待开始 | 高 | 消息队列 + 主循环消费 |
 | 群聊隔离 | ⏳ 待开始 | 高 | 按 session_id 隔离上下文 |
@@ -114,7 +114,6 @@
 | `search_diary` | 查询 Yuki 的日记/记忆，支持按日期和关键词检索 | ✅ 已完成 |
 | `manage_timer_task` | 创建、取消或列出定时任务 | ✅ 已完成 |
 | `delegate_to_maid` | 将重型任务委托给小女仆处理（支持能力边界判定） | ✅ 已完成 |
-| `send_master_private` | 向主人私聊发送私密信息 | ✅ 已完成 |
 | `browser_search` | 生成网络搜索入口 | ✅ 已完成 |
 | `send_qq_file` | 发送图片或语音文件 | ✅ 已完成 |
 | `inject_external_content` | 向当前对话注入外部系统提供的动态内容 | ✅ 已完成 |

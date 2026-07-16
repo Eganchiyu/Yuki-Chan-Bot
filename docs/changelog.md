@@ -17,9 +17,6 @@
 - 新增 `docs/core-technical-debt.md`，梳理 `core/` 模块当前技术债、影响范围、整改优先级与短期落地清单
 - 新增 `skills/video_understanding.py` 视频理解 skill：读取视频信息、均匀采样 4 帧、拼接四宫格压缩后调用配置中的视觉模型进行概括或问答，并加入文件类型、大小、时长、提示词长度和请求超时限制
 - 新增主人私聊双模系统（`master_private` 模式）：群聊运行时自动接受主人私聊消息，维护独立的私聊上下文，使用专属个人助手 prompt，必回、无防抖、带完整工具链
-- 新增 `core/private_context.py` 私聊上下文管理器：支持保存群聊上下文快照到 `data/private_context.json`，最多保留 50 条，支持按群聊过滤召回
-- 新增 `recall_private_context` 工具：主人私聊时可召回最近的群聊上下文快照，了解群里发生了什么
-- 增强 `send_master_private` 工具：新增 `reason` 参数，发送私信时自动保存群聊上下文快照，消息同步写入主人私聊的 `chat_history.json`
 - 新增 `get_yuki_setting_master_private()` 主人私聊专用 prompt，身份为专属小助手而非代管模式
 - 新增 `config.py` 中 `StructuredMemoryConfig` 配置组，支持通过 `config.yaml` 控制结构化记忆开关和召回数量参数（`enabled`、`max_profiles`、`max_facts`、`max_summaries`），默认关闭
 
@@ -35,7 +32,6 @@
 - 重构 `core` 会话数据流：历史管理器返回独立 session 快照并提供原子替换接口，工具上下文不再持有完整历史字典，小女仆 Worker 迁移到 `core/maid.py`
 - 收敛 `core` 会话历史写入入口：新增 `HistoryManager.get_session()` 与 `append_session_message()`，让工具链、小女仆回调和主人私聊同步统一通过会话级接口落盘，减少跨模块直接改 `history_dict`
 - 移除 `YukiEngine._append_session_message()` 私有重复写入逻辑，工具链阶段性文本、工具结果和工具期间新增消息统一委托 `HistoryManager` 写入
-- 移除 `send_master_private` 工具中整份 `history_dict` 读写路径，改为追加主人私聊会话消息
 - 移除 `modules/LiveYukiL2D/main.py` 未使用薄入口，保留 `desktop.py` 与 `server.py` 的启动/服务职责边界
 - 合并 LiveYukiL2D 桌宠启动入口，将 Electron 启动逻辑统一迁入 `modules/LiveYukiL2D/desktop.py`
 - 简化 `modules/LiveYukiL2D/desktop.py` 桌宠窗口启动与桌面 API 逻辑，移除多余包装并复用鼠标穿透配置值

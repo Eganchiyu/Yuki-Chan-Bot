@@ -31,7 +31,6 @@ YukiV6/
 │   ├── tools.py               # 标准工具集合、schema 与 handler
 │   ├── history_manager.py     # 历史记录管理
 │   ├── maid.py                # 小女仆子代理系统
-│   ├── private_context.py     # 主人私聊上下文快照与召回系统
 │   └── prompts.py             # 提示词模板管理
 │
 ├── modules/                   # 功能模块
@@ -220,37 +219,7 @@ maid_task_queue: asyncio.Queue     # 小女仆任务队列
 
 ---
 
-### 3.8 core/private_context.py - 主人私聊上下文管理器
-
-**职责**：
-- 当群聊中 `send_master_private` 工具被调用时，保存当时的群聊上下文快照到 `data/private_context.json`
-- 主人私聊时通过 `recall_private_context` 工具召回快照
-- 格式化快照为可注入 prompt 的文本块
-
-**存储结构**：
-```json
-{
-  "snapshots": [
-    {
-      "id": "snap_20260626_180000",
-      "timestamp": "2026-06-26 18:00:00",
-      "source_chat_id": "123456",
-      "reason": "有人提到主人",
-      "message": "发送给主人的私信内容",
-      "context": [{"role": "user", "content": "...", "time": "..."}]
-    }
-  ]
-}
-```
-
-**关键方法**：
-- `save_context_snapshot()`: 保存快照（最多 50 条，自动裁剪）
-- `recall_context()`: 召回快照，支持按群聊过滤
-- `format_context_for_prompt()`: 格式化为 prompt 文本块
-
----
-
-### 3.9 modules/memory/rag.py - RAG 记忆系统
+### 3.8 modules/memory/rag.py - RAG 记忆系统
 
 **类**：`MemoryRAG`（单例）
 
