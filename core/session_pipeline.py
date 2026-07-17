@@ -2,6 +2,7 @@
 import asyncio
 import datetime
 import os
+import random
 import re
 import time
 from dataclasses import dataclass, field
@@ -496,7 +497,18 @@ class SessionPipeline:
         except ImportError:
             shot_live_buffer = None
 
-        for part in parts:
+        # 收集所有表情包位置，用于随机丢弃逻辑
+        meme_indices = [i for i, part in enumerate(parts) if re.fullmatch(r'\[MEME:(.+?)\]', part.strip(), re.DOTALL)]
+
+        # 保留最后一个表情包，其余按 60% 概率随机丢弃
+        keep_set = set()
+        if meme_indices:
+            keep_set.add(meme_indices[-1])  # 最后一个必保留
+            for idx in meme_indices[:-1]:
+                if random.random() >= 0.6:
+                    keep_set.add(idx)
+
+        for part_idx, part in enumerate(parts):
             part = part.strip()
             if not part:
                 continue
@@ -505,6 +517,12 @@ class SessionPipeline:
             meme_match = re.fullmatch(r'\[MEME:(.+?)\]', part, re.DOTALL)
 
             if meme_match:
+                # 如果当前表情包不在保留集合中，则丢弃
+                if part_idx not in keep_set:
+                    logger.debug(f"[Pipeline] 表情包被随机丢弃: {part}")
+                    await asyncio.sleep(3.0)
+                    continue
+
                 # -------- 遇到表情包：现场检索 -> 发送 -> 记录截屏 --------
                 if getattr(self, 'sticker_manager', None):
                     search_query = meme_match.group(1).strip()
