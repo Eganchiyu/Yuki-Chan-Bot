@@ -17,8 +17,10 @@ from modules.system_state import monitor
 
 
 def test_master_status_records_recent_activity(monkeypatch):
+    gps_status = {"enabled": True, "location": None}
     monkeypatch.setattr(monitor, "_get_system_idle_seconds", lambda: 12.0)
     monkeypatch.setattr(monitor, "_get_foreground_window_title", lambda: "测试窗口")
+    monkeypatch.setattr(monitor, "latest_gps_status", lambda: gps_status)
     monitor._last_master_activity = 0.0
 
     monitor.record_master_activity()
@@ -27,6 +29,7 @@ def test_master_status_records_recent_activity(monkeypatch):
     assert status["online"] is True
     assert status["active"] is True
     assert status["foreground_window"] == "测试窗口"
+    assert status["gps"] == gps_status
 
 
 def test_master_status_returns_false_when_activity_is_stale(monkeypatch):
@@ -39,6 +42,30 @@ def test_master_status_returns_false_when_activity_is_stale(monkeypatch):
     assert status["online"] is False
     assert status["active"] is False
     assert status["foreground_window"] == ""
+
+
+def test_master_status_returns_disabled_gps_when_switch_is_off(monkeypatch):
+    monkeypatch.setattr(monitor, "GPS_VPS_RECEIVER_ENABLED", False)
+    monkeypatch.setattr(monitor, "_get_system_idle_seconds", lambda: 12.0)
+    monkeypatch.setattr(monitor, "_get_foreground_window_title", lambda: "")
+    monkeypatch.setattr(
+        monitor,
+        "latest_gps_status",
+        lambda: (_ for _ in ()).throw(AssertionError("不应读取 GPS 状态")),
+    )
+    monitor._last_master_activity = 0.0
+
+    monitor.record_master_activity()
+    status = monitor.master_status()
+
+    assert status["gps"] == {
+        "enabled": False,
+        "connected": False,
+        "stale": True,
+        "server_url": None,
+        "location": None,
+        "last_error": "GPS-VPS 接收端已关闭",
+    }
 
 
 def test_master_status_tool_is_registered():
