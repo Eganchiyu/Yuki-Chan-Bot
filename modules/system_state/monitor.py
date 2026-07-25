@@ -5,18 +5,14 @@ import ctypes.wintypes
 import threading
 import time
 
-from modules.system_state.gps_receiver import (
-    latest_gps_status,
-    start_gps_receiver_service,
-    stop_gps_receiver_service,
-)
+from modules.system_state.gps_receiver import latest_gps_status
 
 
 MASTER_PAUSED_SECONDS = 30
 MASTER_AWAY_SECONDS = 2 * 60
 MASTER_OFFLINE_SECONDS = 10 * 60
 MONITOR_INTERVAL_SECONDS = 1
-GPS_VPS_RECEIVER_ENABLED = False
+GPS_VPS_RECEIVER_ENABLED = True
 
 _state_lock = threading.Lock()
 _last_master_activity = 0.0
@@ -39,8 +35,6 @@ def _monitor_loop() -> None:
 
 def start_monitor_service() -> None:
     global _monitor_thread
-    if GPS_VPS_RECEIVER_ENABLED:
-        start_gps_receiver_service()
     if _monitor_thread is not None and _monitor_thread.is_alive():
         return
     _monitor_stop_event.clear()
@@ -54,8 +48,6 @@ def start_monitor_service() -> None:
 
 def stop_monitor_service() -> None:
     _monitor_stop_event.set()
-    if GPS_VPS_RECEIVER_ENABLED:
-        stop_gps_receiver_service()
 
 
 def _get_foreground_window_title() -> str:

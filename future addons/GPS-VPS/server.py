@@ -1,4 +1,7 @@
 import asyncio
+import json
+from datetime import datetime, timezone
+
 import websockets
 from websockets.exceptions import ConnectionClosed
 
@@ -6,15 +9,46 @@ HOST = "0.0.0.0"
 PORT = 8765
 
 clients = set()
+latest_location_message = None
+latest_location_received_at = None
+
+
+def is_location_message(message):
+    try:
+        data = json.loads(message)
+    except ValueError:
+        return False
+    return isinstance(data, dict) and "longitude" in data and "latitude" in data
+
+
+def record_latest_location(message):
+    global latest_location_message, latest_location_received_at
+    if not is_location_message(message):
+        return False
+    latest_location_message = message
+    latest_location_received_at = datetime.now(timezone.utc).isoformat()
+    return True
+
+
+async def send_latest_location(websocket):
+    if latest_location_message is None:
+        return
+    await websocket.send(latest_location_message)
+    print(
+        "[CACHE] sent latest location to {0}, cached_at={1}".format(
+            websocket.remote_address,
+            latest_location_received_at,
+        )
+    )
 
 
 async def broadcast(sender, message):
     targets = [client for client in clients if client is not sender]
     if not targets:
-        print("[FORWARD] 当前没有其他客户端，消息未转发")
+        print("[FORWARD] no other clients, message cached only")
         return
 
-    print(f"[FORWARD] 向 {len(targets)} 个客户端转发消息: {message}")
+    print("[FORWARD] forwarding to {0} clients: {1}".format(len(targets), message))
     results = await asyncio.gather(
         *(client.send(message) for client in targets),
         return_exceptions=True,
@@ -22,29 +56,51 @@ async def broadcast(sender, message):
 
     for client, result in zip(targets, results):
         if isinstance(result, Exception):
-            print(f"[ERROR] 转发失败，移除客户端 {client.remote_address}: {result}")
+            print("[ERROR] forward failed, remove client {0}: {1}".format(
+                client.remote_address,
+                result,
+            ))
             clients.discard(client)
 
 
 async def handler(websocket, path=None):
     clients.add(websocket)
-    print(f"[CONNECT] 客户端已连接: {websocket.remote_address}，当前连接数: {len(clients)}")
+    print("[CONNECT] client connected: {0}, clients={1}".format(
+        websocket.remote_address,
+        len(clients),
+    ))
 
     try:
+        await send_latest_location(websocket)
         async for message in websocket:
-            print(f"[RECEIVE] 来自 {websocket.remote_address}: {message}")
+            cached = record_latest_location(message)
+            print("[RECEIVE] from {0}: {1}, cached={2}".format(
+                websocket.remote_address,
+                message,
+                cached,
+            ))
             await broadcast(websocket, message)
     except ConnectionClosed as exc:
-        print(f"[DISCONNECT] 客户端异常断开: {websocket.remote_address}，code={exc.code}, reason={exc.reason}")
+        print("[DISCONNECT] client disconnected: {0}, code={1}, reason={2}".format(
+            websocket.remote_address,
+            exc.code,
+            exc.reason,
+        ))
     except Exception as exc:
-        print(f"[ERROR] 客户端处理异常: {websocket.remote_address}: {exc}")
+        print("[ERROR] client handler failed: {0}: {1}".format(
+            websocket.remote_address,
+            exc,
+        ))
     finally:
         clients.discard(websocket)
-        print(f"[CLEANUP] 客户端已移除: {websocket.remote_address}，当前连接数: {len(clients)}")
+        print("[CLEANUP] client removed: {0}, clients={1}".format(
+            websocket.remote_address,
+            len(clients),
+        ))
 
 
 async def main():
-    print(f"[START] WebSocket 中转服务器启动 ws://{HOST}:{PORT}")
+    print("[START] GPS-VPS WebSocket relay started ws://{0}:{1}".format(HOST, PORT))
     async with websockets.serve(handler, HOST, PORT):
         await asyncio.Future()
 
@@ -54,4 +110,4 @@ if __name__ == "__main__":
     try:
         loop.run_until_complete(main())
     except KeyboardInterrupt:
-        print("\n[STOP] 服务器已停止")
+        print("\n[STOP] server stopped")

@@ -13,11 +13,12 @@ if project_root not in sys.path:
 
 from core.tools import TOOL_SPECS, get_master_status_tool
 from core.toolchain import ToolContext, ToolRuntime
-from modules.system_state import monitor
+from modules.system_state import gps_receiver, monitor
 
 
 def test_master_status_records_recent_activity(monkeypatch):
     gps_status = {"enabled": True, "location": None}
+    monkeypatch.setattr(monitor, "GPS_VPS_RECEIVER_ENABLED", True)
     monkeypatch.setattr(monitor, "_get_system_idle_seconds", lambda: 12.0)
     monkeypatch.setattr(monitor, "_get_foreground_window_title", lambda: "测试窗口")
     monkeypatch.setattr(monitor, "latest_gps_status", lambda: gps_status)
@@ -66,6 +67,50 @@ def test_master_status_returns_disabled_gps_when_switch_is_off(monkeypatch):
         "location": None,
         "last_error": "GPS-VPS 接收端已关闭",
     }
+
+
+def test_latest_gps_status_fetches_location_on_demand(monkeypatch):
+    location = {
+        "longitude": 114.169211,
+        "latitude": 22.322653,
+        "timestamp": "2026-07-24T03:19:47.991240+00:00",
+        "received_at": "2026-07-24T11:19:48+08:00",
+    }
+
+    async def fake_fetch_latest_location():
+        return location
+
+    monkeypatch.setattr(gps_receiver, "_fetch_latest_location", fake_fetch_latest_location)
+    monkeypatch.setattr(gps_receiver, "_cached_location", None)
+    monkeypatch.setattr(gps_receiver, "_last_error", None)
+
+    status = gps_receiver.latest_gps_status()
+
+    assert status["connected"] is True
+    assert status["location"] == location
+    assert status["last_error"] is None
+
+
+def test_latest_gps_status_returns_cached_location_on_fetch_timeout(monkeypatch):
+    cached_location = {
+        "longitude": 114.169211,
+        "latitude": 22.322653,
+        "timestamp": "2026-07-24T03:19:47.991240+00:00",
+        "received_at": "2026-07-24T11:19:48+08:00",
+    }
+
+    async def fake_fetch_latest_location():
+        raise TimeoutError()
+
+    monkeypatch.setattr(gps_receiver, "_fetch_latest_location", fake_fetch_latest_location)
+    monkeypatch.setattr(gps_receiver, "_cached_location", cached_location)
+    monkeypatch.setattr(gps_receiver, "_last_error", None)
+
+    status = gps_receiver.latest_gps_status()
+
+    assert status["connected"] is False
+    assert status["location"] == cached_location
+    assert status["last_error"] == "等待 GPS-VPS 最新位置超时"
 
 
 def test_master_status_tool_is_registered():

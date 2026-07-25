@@ -19,7 +19,7 @@ YukiV6 接收端可通过环境变量覆盖：
 | 环境变量 | 默认值 | 说明 |
 |----------|--------|------|
 | `YUKI_GPS_VPS_SERVER_URL` | `ws://8.217.41.28:8765` | 接收端连接地址 |
-| `YUKI_GPS_VPS_RECONNECT_DELAY_SECONDS` | `5` | 接收端重连间隔，单位秒 |
+| `YUKI_GPS_VPS_FETCH_TIMEOUT_SECONDS` | `5` | 调用状态工具时等待下一条位置消息的超时时间，单位秒 |
 | `YUKI_GPS_VPS_STALE_SECONDS` | `300` | 超过该时间未收到定位时标记为 stale |
 
 ## 3. 消息格式
@@ -65,7 +65,8 @@ YukiV6 接收端可通过环境变量覆盖：
    - 连接断开、网络切换、应用恢复前台后自动重连。
 
 2. 定位采集
-   - 使用 WGS84 坐标系输出经纬度。
+   - 国内定位优先输出 GCJ-02 坐标，便于 YukiV6 使用高德逆地理编码解析地址。
+   - 如定位 SDK 只能输出 WGS84，需要在手机端转换为 GCJ-02 后再发送；境外坐标按平台原始返回处理。
    - 默认每 3 秒发送一次最新位置。
    - 当位置权限未授权、定位关闭或系统限制后台定位时，停止发送并在本地提示用户。
    - 建议过滤明显无效坐标，例如经纬度为空、`0,0` 或精度过差的数据。
@@ -115,7 +116,19 @@ YukiV6 主人状态监控返回的 `gps` 字段结构如下：
     "longitude": 114.169211,
     "latitude": 22.322653,
     "timestamp": "2026-07-24T03:19:47.991240+00:00",
-    "received_at": "2026-07-24T11:19:48.100000+08:00"
+    "received_at": "2026-07-24T11:19:48.100000+08:00",
+    "address": {
+      "formatted_address": "香港特别行政区油尖旺区...",
+      "country": "中国",
+      "province": "香港特别行政区",
+      "city": "香港特别行政区",
+      "district": "油尖旺区",
+      "adcode": "810005",
+      "citycode": "1852",
+      "street": "...",
+      "street_number": "...",
+      "neighborhood": "..."
+    }
   },
   "location_age_seconds": 1.2,
   "last_error": null
@@ -138,9 +151,9 @@ YukiV6 主人状态监控返回的 `gps` 字段结构如下：
 
 1. 确认云端服务运行：`ws://8.217.41.28:8765`。
 2. 启动 YukiV6 主程序，确认主人状态监控服务已启动。
-3. 手机端连接 WebSocket 并发送定位 JSON。
-4. 在 YukiV6 中调用 `get_master_status`，检查 `gps.location` 是否更新。
-5. 断开手机网络后恢复，确认手机端会自动重连并继续发送。
+3. 手机端连接 WebSocket 并持续发送定位 JSON。
+4. 在手机端仍在发送时调用 `get_master_status`，YukiV6 会短连接等待下一条位置消息并更新 `gps.location`。
+5. 停止手机端发送后再次调用 `get_master_status`，确认等待超过 `YUKI_GPS_VPS_FETCH_TIMEOUT_SECONDS` 后返回缓存位置和超时错误。
 6. 停止手机端发送超过 300 秒后，确认 `gps.stale` 变为 `true`。
 
 ## 8. 验收标准

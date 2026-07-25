@@ -3,8 +3,9 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-import threading
 import time
+import urllib.parse
+import urllib.request
 from datetime import datetime
 from typing import Any
 
@@ -17,106 +18,119 @@ except ImportError:  # pragma: no cover - 运行环境未安装 websockets 时�
 
 
 GPS_VPS_SERVER_URL = os.getenv("YUKI_GPS_VPS_SERVER_URL", "ws://8.217.41.28:8765")
-GPS_VPS_RECONNECT_DELAY_SECONDS = float(os.getenv("YUKI_GPS_VPS_RECONNECT_DELAY_SECONDS", "5"))
+GPS_VPS_FETCH_TIMEOUT_SECONDS = float(os.getenv("YUKI_GPS_VPS_FETCH_TIMEOUT_SECONDS", "5"))
 GPS_VPS_STALE_SECONDS = float(os.getenv("YUKI_GPS_VPS_STALE_SECONDS", "300"))
+AMAP_REVERSE_GEOCODE_URL = "https://restapi.amap.com/v3/geocode/regeo"
+AMAP_REVERSE_GEOCODE_TIMEOUT_SECONDS = 5
 
-_location_lock = threading.Lock()
-_latest_location: dict[str, Any] | None = None
+_cached_location: dict[str, Any] | None = None
 _last_error: str | None = None
-_receiver_stop_event = threading.Event()
-_receiver_thread: threading.Thread | None = None
 
 
-def _set_latest_location(data: dict[str, Any]) -> None:
-    global _latest_location, _last_error
+def _reverse_geocode(longitude: Any, latitude: Any) -> dict[str, Any] | None:
+    api_key = os.getenv("AMAP_API_KEY")
+    if not api_key or longitude is None or latitude is None:
+        return None
+
+    params = urllib.parse.urlencode({
+        "key": api_key,
+        "location": f"{longitude},{latitude}",
+        "extensions": "base",
+        "output": "JSON",
+    })
+    url = f"{AMAP_REVERSE_GEOCODE_URL}?{params}"
+    with urllib.request.urlopen(url, timeout=AMAP_REVERSE_GEOCODE_TIMEOUT_SECONDS) as response:
+        data = json.loads(response.read().decode("utf-8"))
+
+    if data.get("status") != "1":
+        raise ValueError(f"高德逆地理解析失败: {data.get('info', '未知错误')}")
+
+    regeocode = data.get("regeocode") or {}
+    component = regeocode.get("addressComponent") or {}
+    street_number = component.get("streetNumber") or {}
+    neighborhood = component.get("neighborhood") or {}
+    return {
+        "formatted_address": regeocode.get("formatted_address"),
+        "country": component.get("country"),
+        "province": component.get("province"),
+        "city": component.get("city") or component.get("province"),
+        "district": component.get("district"),
+        "adcode": component.get("adcode"),
+        "citycode": component.get("citycode"),
+        "street": street_number.get("street"),
+        "street_number": street_number.get("number"),
+        "neighborhood": neighborhood.get("name"),
+    }
+
+
+def _build_location(data: dict[str, Any]) -> dict[str, Any]:
     location = {
         "longitude": data.get("longitude"),
         "latitude": data.get("latitude"),
         "timestamp": data.get("timestamp"),
         "received_at": datetime.now().astimezone().isoformat(),
     }
-    with _location_lock:
-        _latest_location = location
-        _last_error = None
+    try:
+        address = _reverse_geocode(location["longitude"], location["latitude"])
+        if address:
+            location["address"] = address
+    except Exception as exc:
+        location["address_error"] = str(exc)
+    return location
 
 
-def _set_error(message: str) -> None:
-    global _last_error
-    with _location_lock:
-        _last_error = message
-
-
-async def _receive_locations() -> None:
+async def _fetch_latest_location() -> dict[str, Any]:
     if websockets is None:
-        _set_error("websockets 未安装，GPS-VPS 接收端未启动")
-        return
+        raise RuntimeError("websockets 未安装，GPS-VPS 接收端不可用")
 
-    while not _receiver_stop_event.is_set():
-        try:
-            async with websockets.connect(GPS_VPS_SERVER_URL) as websocket:
-                async for message in websocket:
-                    if _receiver_stop_event.is_set():
-                        break
-                    try:
-                        data = json.loads(message)
-                    except json.JSONDecodeError:
-                        _set_error(f"收到非 JSON GPS 消息: {message}")
-                        continue
-                    _set_latest_location(data)
-        except ConnectionClosed as exc:
-            _set_error(f"GPS-VPS 连接断开: code={exc.code}, reason={exc.reason}")
-        except OSError as exc:
-            _set_error(f"无法连接 GPS-VPS 服务器: {exc}")
-        except Exception as exc:
-            _set_error(f"GPS-VPS 接收端异常: {exc}")
+    async with websockets.connect(GPS_VPS_SERVER_URL) as websocket:
+        message = await asyncio.wait_for(websocket.recv(), timeout=GPS_VPS_FETCH_TIMEOUT_SECONDS)
 
-        await asyncio.sleep(GPS_VPS_RECONNECT_DELAY_SECONDS)
+    try:
+        data = json.loads(message)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"收到非 JSON GPS 消息: {message}") from exc
+    return _build_location(data)
 
 
-def _receiver_loop() -> None:
-    asyncio.run(_receive_locations())
-
-
-def start_gps_receiver_service() -> None:
-    global _receiver_thread
-    if _receiver_thread is not None and _receiver_thread.is_alive():
-        return
-    _receiver_stop_event.clear()
-    _receiver_thread = threading.Thread(
-        target=_receiver_loop,
-        name="gps-vps-receiver",
-        daemon=True,
-    )
-    _receiver_thread.start()
-
-
-def stop_gps_receiver_service() -> None:
-    _receiver_stop_event.set()
+def _location_age_seconds(location: dict[str, Any]) -> float:
+    received_at = datetime.fromisoformat(location["received_at"])
+    return max(0.0, time.time() - received_at.timestamp())
 
 
 def latest_gps_status() -> dict[str, Any]:
-    with _location_lock:
-        location = dict(_latest_location) if _latest_location else None
-        last_error = _last_error
+    global _cached_location, _last_error
 
-    if not location:
+    try:
+        location = asyncio.run(_fetch_latest_location())
+        _cached_location = location
+        _last_error = None
+    except TimeoutError:
+        _last_error = "等待 GPS-VPS 最新位置超时"
+    except ConnectionClosed as exc:
+        _last_error = f"GPS-VPS 连接断开: code={exc.code}, reason={exc.reason}"
+    except OSError as exc:
+        _last_error = f"无法连接 GPS-VPS 服务器: {exc}"
+    except Exception as exc:
+        _last_error = f"GPS-VPS 获取最新位置失败: {exc}"
+
+    if not _cached_location:
         return {
             "enabled": websockets is not None,
             "connected": False,
             "stale": True,
             "server_url": GPS_VPS_SERVER_URL,
             "location": None,
-            "last_error": last_error,
+            "last_error": _last_error,
         }
 
-    received_at = datetime.fromisoformat(location["received_at"])
-    age_seconds = max(0.0, time.time() - received_at.timestamp())
+    age_seconds = _location_age_seconds(_cached_location)
     return {
         "enabled": websockets is not None,
-        "connected": last_error is None,
+        "connected": _last_error is None,
         "stale": age_seconds > GPS_VPS_STALE_SECONDS,
         "server_url": GPS_VPS_SERVER_URL,
-        "location": location,
+        "location": dict(_cached_location),
         "location_age_seconds": age_seconds,
-        "last_error": last_error,
+        "last_error": _last_error,
     }
