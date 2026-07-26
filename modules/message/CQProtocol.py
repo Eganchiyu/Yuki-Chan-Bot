@@ -50,6 +50,12 @@ class CQProtocol:
             r'[语音:file_id=\1]',
             text
         )
+        # 视频：尽量保留 file/url，方便后续主动处理
+        text = re.sub(
+            r'\[CQ:video,[^\]]*(?:file|url)=([^,\]]+)[^\]]*\]',
+            r'[视频:file_id=\1]',
+            text
+        )
         text = re.sub(r'\[CQ:video[^\]]*\]', '[视频]', text)
         # 文件：保留 file_id 信息，方便后续下载
         text = re.sub(
@@ -57,7 +63,15 @@ class CQProtocol:
             r'[文件:file_id=\1]',
             text
         )
+        text = re.sub(
+            r'\[CQ:file,file=([^],]+)[^\]]*\]',
+            r'[文件:file_id=\1]',
+            text
+        )
+        # 富文本：保留可主动解析的 ID，具体内容交给工具解析
+        text = re.sub(r'\[CQ:forward,id=([^,\]]+)[^\]]*\]', r'[合并转发:id=\1]', text)
         text = re.sub(r'\[CQ:json[^\]]*\]', '[小程序]', text)
+        text = re.sub(r'\[CQ:xml[^\]]*\]', '[XML富文本]', text)
         return text
 
     @staticmethod

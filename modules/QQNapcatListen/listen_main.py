@@ -71,7 +71,7 @@ def _is_bot_sender_name(sender_name: str) -> bool:
     return "BOT" in (sender_name or "") or "机器人" in (sender_name or "")
 
 
-def _build_private_message(user_id, raw_message, sender_info, message_id) -> IncomingMessage:
+def _build_private_message(user_id, raw_message, sender_info, message_id, segments=None) -> IncomingMessage:
     """把 NapCat 私聊事件转换为管线入站消息。"""
     sender_name = sender_info.get("nickname") or sender_info.get("card") or "私聊用户"
     return IncomingMessage(
@@ -84,6 +84,7 @@ def _build_private_message(user_id, raw_message, sender_info, message_id) -> Inc
         source="napcat.private",
         owner_id=str(user_id),
         tags={"private"},
+        segments=list(segments or []),
     )
 
 
@@ -247,6 +248,7 @@ async def napcat_listen(mode: str):
                             raw_msg,
                             data.get("sender", {}),
                             data.get("message_id"),
+                            data.get("message"),
                         ),
                     )
 

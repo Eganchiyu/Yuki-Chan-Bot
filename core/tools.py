@@ -1,9 +1,10 @@
 # core/tools.py
 import asyncio
 import datetime
+import json
 import os
 import re
-from urllib.parse import quote_plus
+from urllib.parse import quote_plus, unquote
 
 import aiohttp
 
@@ -396,6 +397,301 @@ def _resolve_image_path(context, path: str) -> str:
         if resolved:
             return resolved
     return path
+
+
+def _compact_text(text, max_len=500):
+    text = str(text or "").replace("\r", " ").replace("\n", " ").strip()
+    text = re.sub(r"\s+", " ", text)
+    if len(text) <= max_len:
+        return text
+    return f"{text[:max_len]}...（已截断，原长{len(text)}字）"
+
+
+def _safe_json_loads(value):
+    if isinstance(value, (dict, list)):
+        return value
+    if not isinstance(value, str):
+        return None
+    text = unquote(value).strip()
+    try:
+        return json.loads(text)
+    except Exception:
+        return None
+
+
+def _pick_nested(data, keys):
+    if isinstance(data, dict):
+        for key in keys:
+            value = data.get(key)
+            if value:
+                return str(value)
+        for value in data.values():
+            picked = _pick_nested(value, keys)
+            if picked:
+                return picked
+    elif isinstance(data, list):
+        for item in data:
+            picked = _pick_nested(item, keys)
+            if picked:
+                return picked
+    return ""
+
+
+def _summarize_structured_payload(raw_data, kind):
+    parsed = _safe_json_loads(raw_data)
+    if isinstance(parsed, dict):
+        title = _pick_nested(parsed, ["title", "prompt", "desc", "name", "app", "appName"])
+        summary = _pick_nested(parsed, ["summary", "content", "text", "desc", "description"])
+        url = _pick_nested(parsed, ["url", "jumpUrl", "qqdocurl", "preview", "sourceUrl"])
+        parts = [kind]
+        if title:
+            parts.append(f"标题:{_compact_text(title, 120)}")
+        if summary and summary != title:
+            parts.append(f"内容:{_compact_text(summary, 220)}")
+        if url:
+            parts.append(f"链接:{_compact_text(url, 180)}")
+        return "[" + " | ".join(parts) + "]"
+    if raw_data:
+        return f"[{kind}:{_compact_text(raw_data, 400)}]"
+    return f"[{kind}]"
+
+
+def _segment_data(seg):
+    return seg.get("data", {}) if isinstance(seg, dict) else {}
+
+
+def _format_message_segments(segments, depth=0, max_depth=3):
+    if isinstance(segments, str):
+        return _compact_text(segments, 800)
+    if isinstance(segments, dict):
+        segments = [segments]
+    if not isinstance(segments, list):
+        return "[未知消息]"
+
+    parts = []
+    for seg in segments:
+        if not isinstance(seg, dict):
+            parts.append(_compact_text(seg, 200))
+            continue
+
+        seg_type = str(seg.get("type") or "").lower()
+        data = _segment_data(seg)
+        if seg_type == "text":
+            parts.append(str(data.get("text", "")))
+        elif seg_type == "at":
+            parts.append(f"@{data.get('name') or data.get('qq') or '未知'}")
+        elif seg_type == "face":
+            parts.append("[表情]")
+        elif seg_type == "image":
+            summary = data.get("summary") or data.get("name") or data.get("file") or data.get("url")
+            parts.append(f"[图片:{_compact_text(summary, 120)}]" if summary else "[图片]")
+        elif seg_type == "record":
+            file_id = data.get("file") or data.get("url") or data.get("path")
+            parts.append(f"[语音:file_id={file_id}]" if file_id else "[语音]")
+        elif seg_type == "video":
+            file_id = data.get("file") or data.get("url") or data.get("path")
+            parts.append(f"[视频:file_id={file_id}]" if file_id else "[视频]")
+        elif seg_type in {"file", "onlinefile"}:
+            file_id = data.get("id") or data.get("file_id") or data.get("file") or data.get("msgId")
+            name = data.get("name") or data.get("fileName") or "文件"
+            parts.append(f"[文件:{name},file_id={file_id}]" if file_id else f"[文件:{name}]")
+        elif seg_type == "json":
+            parts.append(_summarize_structured_payload(data.get("data"), "JSON富文本"))
+        elif seg_type == "xml":
+            parts.append(f"[XML富文本:{_compact_text(data.get('data'), 400)}]")
+        elif seg_type == "markdown":
+            parts.append(f"[Markdown:{_compact_text(data.get('content'), 500)}]")
+        elif seg_type == "miniapp":
+            parts.append(_summarize_structured_payload(data.get("data"), "小程序"))
+        elif seg_type in {"node", "forward"}:
+            forward_id = data.get("id")
+            content = data.get("content")
+            if content and depth < max_depth:
+                name = data.get("nickname") or data.get("name") or data.get("user_id") or data.get("uin") or "转发节点"
+                nested = _format_message_segments(content, depth + 1, max_depth)
+                parts.append(f"[合并转发节点:{name}: {nested}]")
+            elif forward_id:
+                parts.append(f"[合并转发:id={forward_id}]")
+            else:
+                parts.append("[合并转发]")
+        elif seg_type == "music":
+            title = data.get("title") or data.get("id") or "音乐"
+            parts.append(f"[音乐:{_compact_text(title, 120)}]")
+        elif seg_type == "location":
+            title = data.get("title") or data.get("content") or "位置"
+            parts.append(f"[位置:{_compact_text(title, 120)}]")
+        else:
+            parts.append(f"[{seg_type or '富文本'}:{_compact_text(data, 240)}]")
+
+    return _compact_text("".join(parts), 2000)
+
+
+def _extract_rich_items_from_segments(segments):
+    if isinstance(segments, dict):
+        segments = [segments]
+    if not isinstance(segments, list):
+        return []
+
+    items = []
+    for seg in segments:
+        if not isinstance(seg, dict):
+            continue
+        seg_type = str(seg.get("type") or "").lower()
+        data = _segment_data(seg)
+        if seg_type in {"forward", "node"}:
+            forward_id = data.get("id")
+            content = data.get("content")
+            if forward_id:
+                items.append({"type": "forward", "id": str(forward_id), "segment": seg})
+            if content:
+                items.append({"type": "forward_inline", "content": content, "segment": seg})
+        elif seg_type in {"json", "xml", "markdown", "miniapp"}:
+            items.append({"type": seg_type, "segment": seg})
+    return items
+
+
+def _find_recent_rich_items(context):
+    items = []
+    for message in context.metadata.get("message_objs") or []:
+        for item in _extract_rich_items_from_segments(message.get("segments")):
+            item["message_id"] = message.get("message_id")
+            item["sender"] = message.get("name")
+            items.append(item)
+
+    text = context.combined_text or ""
+    for forward_id in re.findall(r'\[合并转发(?::id=|,id=)([^\]]+)\]', text):
+        items.append({"type": "forward", "id": forward_id})
+    for forward_id in re.findall(r'\[CQ:forward,id=([^,\]]+)', text):
+        items.append({"type": "forward", "id": forward_id})
+    return items
+
+
+def _normalize_forward_messages(data):
+    if isinstance(data, dict):
+        for key in ("messages", "message", "content"):
+            value = data.get(key)
+            if isinstance(value, list):
+                return value
+        if isinstance(data.get("data"), dict):
+            return _normalize_forward_messages(data["data"])
+    if isinstance(data, list):
+        return data
+    return []
+
+
+async def _fetch_forward_messages(context, forward_id):
+    connector = context.sender.connector
+    params_options = [
+        {"id": forward_id},
+        {"message_id": forward_id},
+        {"forward_id": forward_id},
+    ]
+    last_resp = None
+    for params in params_options:
+        resp = await connector.send_request("get_forward_msg", params, f"get_forward_{forward_id}", timeout=60)
+        last_resp = resp
+        if resp and resp.get("status") == "ok":
+            messages = _normalize_forward_messages(resp.get("data"))
+            if messages:
+                return messages, resp
+    return [], last_resp
+
+
+async def _render_forward_messages(context, messages, start, count, max_depth, depth=0):
+    total = len(messages)
+    start = max(1, int(start or 1))
+    count = max(1, min(int(count or 20), 80))
+    end = min(total, start + count - 1)
+    selected = messages[start - 1:end]
+
+    lines = [f"合并转发消息共 {total} 条，当前显示第 {start}-{end} 条，剩余 {max(0, total - end)} 条。"]
+    for i, node in enumerate(selected, start):
+        data = _segment_data(node) if isinstance(node, dict) and node.get("type") in {"node", "forward"} else node
+        if not isinstance(data, dict):
+            lines.append(f"{i}. {_compact_text(data, 600)}")
+            continue
+
+        sender = data.get("nickname") or data.get("name") or data.get("sender", {}).get("nickname") or data.get("user_id") or data.get("uin") or "未知"
+        content = data.get("content") or data.get("message") or data.get("raw_message") or ""
+        parsed = _format_message_segments(content, depth=depth, max_depth=max_depth)
+        lines.append(f"{i}. {sender}: {parsed}")
+
+        if depth < max_depth:
+            for item in _extract_rich_items_from_segments(content):
+                if item["type"] == "forward_inline":
+                    nested = await _render_forward_messages(context, item["content"], 1, min(count, 20), max_depth, depth + 1)
+                    lines.append("  嵌套合并转发：" + nested["content"].replace("\n", "\n  "))
+                elif item["type"] == "forward" and item.get("id"):
+                    nested_messages, _ = await _fetch_forward_messages(context, item["id"])
+                    if nested_messages:
+                        nested = await _render_forward_messages(context, nested_messages, 1, min(count, 20), max_depth, depth + 1)
+                        lines.append("  嵌套合并转发：" + nested["content"].replace("\n", "\n  "))
+
+    if end < total:
+        lines.append(f"还剩 {total - end} 条未读，可再次调用本工具并设置 start={end + 1}, count=想读的条数。")
+    return {
+        "content": "\n".join(lines),
+        "total": total,
+        "start": start,
+        "end": end,
+        "remaining": max(0, total - end),
+    }
+
+
+async def parse_rich_message_tool(context, rich_id=None, rich_type="auto", start=1, count=20, max_depth=3):
+    """主动解析最近消息中的合并转发、小程序、JSON/XML/Markdown 等富文本。"""
+    rich_type = str(rich_type or "auto").lower()
+    items = _find_recent_rich_items(context)
+
+    selected = None
+    if rich_id:
+        for item in items:
+            if str(item.get("id", "")) == str(rich_id):
+                selected = item
+                break
+        if not selected:
+            selected = {"type": rich_type if rich_type != "auto" else "forward", "id": str(rich_id)}
+    elif rich_type != "auto":
+        selected = next((item for item in items if item["type"] == rich_type), None)
+    else:
+        selected = items[0] if items else None
+
+    if not selected:
+        return ToolResult(
+            success=False,
+            content="最近消息里没有可主动解析的富文本。支持合并转发、小程序、JSON、XML、Markdown。",
+            data={"available": []},
+            error="rich_message_not_found",
+        )
+
+    item_type = selected.get("type")
+    if item_type in {"json", "xml", "markdown", "miniapp"}:
+        parsed = _format_message_segments(selected["segment"])
+        return ToolResult(
+            success=True,
+            content=parsed,
+            data={"type": item_type, "message_id": selected.get("message_id"), "sender": selected.get("sender")},
+        )
+
+    if item_type == "forward_inline":
+        rendered = await _render_forward_messages(context, selected["content"], start, count, max_depth)
+        return ToolResult(success=True, content=rendered["content"], data={"type": item_type, **rendered})
+
+    forward_id = selected.get("id")
+    if not forward_id:
+        return ToolResult(success=False, content="缺少合并转发 ID。", error="missing_forward_id")
+
+    messages, response = await _fetch_forward_messages(context, forward_id)
+    if not messages:
+        return ToolResult(
+            success=False,
+            content="获取合并转发内容失败，可能 NapCat 当前版本不支持 get_forward_msg 或该 ID 已失效。",
+            data={"forward_id": forward_id, "response": response},
+            error="fetch_forward_failed",
+        )
+
+    rendered = await _render_forward_messages(context, messages, start, count, max_depth)
+    return ToolResult(success=True, content=rendered["content"], data={"type": "forward", "forward_id": forward_id, **rendered})
 
 
 async def capture_group_snapshot_tool(context, note, limit=12):
@@ -893,6 +1189,30 @@ TOOL_SPECS = [
         },
         handler=publish_qzone_mood_tool,
     ),    
+    ToolSpec(
+        name="parse_rich_message",
+        description=(
+            "主动解析最近收到的富文本消息，包括合并转发、小程序、JSON、XML、Markdown。"
+            "遇到 [合并转发:id=xxx]、[小程序] 或看不清的富文本时使用。"
+            "合并转发很长时用 start/count 分页阅读，嵌套合并转发会自动展开到 max_depth。"
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "rich_id": {"type": "string", "description": "富文本 ID，主要用于合并转发 ID；不填则解析最近一条富文本"},
+                "rich_type": {
+                    "type": "string",
+                    "enum": ["auto", "forward", "miniapp", "json", "xml", "markdown"],
+                    "description": "富文本类型，默认自动识别",
+                    "default": "auto",
+                },
+                "start": {"type": "integer", "description": "合并转发从第几条开始读，默认1", "default": 1},
+                "count": {"type": "integer", "description": "本次读取多少条，默认20，最多80", "default": 20},
+                "max_depth": {"type": "integer", "description": "嵌套合并转发自动展开深度，默认3", "default": 3},
+            },
+        },
+        handler=parse_rich_message_tool,
+    ),
     ToolSpec(
         name="download_file",
         description="下载群聊/私聊中的文件到本地。当想要下载文件消息（显示为 [文件:file_id=xxx]）时，使用此工具下载文件。下载后可以委托小女仆分析文件内容。",
