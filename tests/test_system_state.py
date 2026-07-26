@@ -91,6 +91,30 @@ def test_latest_gps_status_fetches_location_on_demand(monkeypatch):
     assert status["last_error"] is None
 
 
+def test_latest_gps_status_works_inside_running_event_loop(monkeypatch):
+    location = {
+        "longitude": 114.169211,
+        "latitude": 22.322653,
+        "timestamp": "2026-07-24T03:19:47.991240+00:00",
+        "received_at": "2026-07-24T11:19:48+08:00",
+    }
+
+    async def fake_fetch_latest_location():
+        return location
+
+    monkeypatch.setattr(gps_receiver, "_fetch_latest_location", fake_fetch_latest_location)
+    monkeypatch.setattr(gps_receiver, "_cached_location", None)
+    monkeypatch.setattr(gps_receiver, "_last_error", None)
+
+    async def call_status():
+        return gps_receiver.latest_gps_status()
+
+    status = asyncio.run(call_status())
+
+    assert status["connected"] is True
+    assert status["location"] == location
+
+
 def test_latest_gps_status_returns_cached_location_on_fetch_timeout(monkeypatch):
     cached_location = {
         "longitude": 114.169211,
@@ -119,11 +143,24 @@ def test_master_status_tool_is_registered():
 
 
 def test_master_status_tool_returns_boolean_data(monkeypatch):
-    monkeypatch.setattr(monitor, "master_status", lambda: {
+    master_status = {
         "online": True,
         "active": False,
+        "status": "online",
         "foreground_window": "编辑器",
-    })
+        "gps": {
+            "enabled": True,
+            "connected": True,
+            "stale": False,
+            "location": {
+                "longitude": 113.806923,
+                "latitude": 22.630264,
+                "address": {"formatted_address": "广东省深圳市宝安区测试地址"},
+            },
+            "last_error": None,
+        },
+    }
+    monkeypatch.setattr(monitor, "master_status", lambda: master_status)
     context = ToolContext(
         chat_id="test",
         mode="master_private",
@@ -135,4 +172,10 @@ def test_master_status_tool_returns_boolean_data(monkeypatch):
     result = asyncio.run(get_master_status_tool(context))
 
     assert result.success is True
-    assert result.data == {"online": True, "active": False, "foreground_window": "编辑器"}
+    assert result.data == master_status
+    assert "主人在线：True" in result.content
+    assert "活跃：False" in result.content
+    assert "状态：online" in result.content
+    assert "当前窗口：编辑器" in result.content
+    assert "GPS：广东省深圳市宝安区测试地址" in result.content
+    assert "坐标：113.806923,22.630264" in result.content

@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import threading
 import time
 import urllib.parse
 import urllib.request
@@ -98,11 +99,33 @@ def _location_age_seconds(location: dict[str, Any]) -> float:
     return max(0.0, time.time() - received_at.timestamp())
 
 
+def _run_fetch_latest_location() -> dict[str, Any]:
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(_fetch_latest_location())
+
+    result: dict[str, Any] = {}
+
+    def runner() -> None:
+        try:
+            result["location"] = asyncio.run(_fetch_latest_location())
+        except BaseException as exc:
+            result["error"] = exc
+
+    thread = threading.Thread(target=runner, name="gps-vps-fetch", daemon=True)
+    thread.start()
+    thread.join()
+    if "error" in result:
+        raise result["error"]
+    return result["location"]
+
+
 def latest_gps_status() -> dict[str, Any]:
     global _cached_location, _last_error
 
     try:
-        location = asyncio.run(_fetch_latest_location())
+        location = _run_fetch_latest_location()
         _cached_location = location
         _last_error = None
     except TimeoutError:
