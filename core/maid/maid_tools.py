@@ -13,15 +13,10 @@ def search_diary_fast(date_str=None, keyword=None):
 
     try:
         import chromadb
-        import config as cfg # 如果你的路径配置在这里
+        from config import cfg
 
-        # 1. 绕过 RAG，直接连接本地数据库目录
-        # 1. 绕过 RAG，直接连接本地数据库目录
-        # 动态获取项目根目录 (因为 maid.py 在 core 文件夹下，所以向上退一层)
-        project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        # 指向真实的数据库文件夹
-        db_path = os.path.join(project_root, "yuki_memory")
-        client = chromadb.PersistentClient(path=db_path)
+        # 绕过 RAG，直接连接配置中的向量数据库目录
+        client = chromadb.PersistentClient(path=cfg.VECTOR_DB_PATH)
 
         # 2. 获取 Collection（不加载任何 Embedding 模型）
         collection = client.get_collection(name="diaries") # 替换为你的真实 collection name

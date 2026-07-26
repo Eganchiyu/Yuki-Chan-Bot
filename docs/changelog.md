@@ -102,6 +102,7 @@
   - 破冰回复现在享受完整的工具链能力（表情包搜索、小女仆委托、RAG 记忆检索等）
 
 ### 修复
+- 修复小女仆快速查询日记时硬编码 `core/yuki_memory` 导致重复创建空 ChromaDB 的问题
 - 修复启动后台任务时小女仆 Worker 导入到同名模块导致 `'module' object is not callable` 的问题
 - 修复退出清理阶段调用不存在的 `cfg._save_raw()` 导致配置保存报错的问题
 - 修复 GitHub PushEvent 的 Events API 不返回 commits 详情导致通知显示 0 条提交的问题，改用 Compare API 获取并展示提交信息

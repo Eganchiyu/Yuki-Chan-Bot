@@ -460,7 +460,38 @@ def _segment_data(seg):
     return seg.get("data", {}) if isinstance(seg, dict) else {}
 
 
-def _format_message_segments(segments, depth=0, max_depth=3):
+def _get_tool_meme_processor(context):
+    processor = context.metadata.get("meme_processor")
+    if processor:
+        return processor
+    try:
+        from modules.vision.processor import MemeProcessor
+        processor = MemeProcessor(image_store=context.image_store)
+        context.metadata["meme_processor"] = processor
+        return processor
+    except Exception as exc:
+        logger.debug(f"[RichMessage] 初始化图片理解器失败: {exc}")
+        return None
+
+
+async def _format_image_segment(context, data, is_meme=False):
+    url = data.get("url") or data.get("file") or data.get("path")
+    summary = data.get("summary") or data.get("name") or data.get("text")
+    if isinstance(url, str) and url.startswith(("http://", "https://")):
+        processor = _get_tool_meme_processor(context)
+        if processor:
+            result = await processor.understand_from_url(url, is_meme=is_meme)
+            desc = result.get("description") if isinstance(result, dict) else result
+            idx = result.get("index") if isinstance(result, dict) else None
+            idx_tag = f"[img:{idx}]" if idx else ""
+            kind = "表情" if is_meme else "图片"
+            if desc:
+                return f"[{kind}:{desc}]{idx_tag}"
+    kind = "表情" if is_meme else "图片"
+    return f"[{kind}:{_compact_text(summary or url, 120)}]" if (summary or url) else f"[{kind}]"
+
+
+async def _format_message_segments(context, segments, depth=0, max_depth=3):
     if isinstance(segments, str):
         return _compact_text(segments, 800)
     if isinstance(segments, dict):
@@ -482,9 +513,11 @@ def _format_message_segments(segments, depth=0, max_depth=3):
             parts.append(f"@{data.get('name') or data.get('qq') or '未知'}")
         elif seg_type == "face":
             parts.append("[表情]")
+        elif seg_type == "mface":
+            parts.append(await _format_image_segment(context, data, is_meme=True))
         elif seg_type == "image":
-            summary = data.get("summary") or data.get("name") or data.get("file") or data.get("url")
-            parts.append(f"[图片:{_compact_text(summary, 120)}]" if summary else "[图片]")
+            is_meme = str(data.get("sub_type", "")).lower() not in {"0", "normal"}
+            parts.append(await _format_image_segment(context, data, is_meme=is_meme))
         elif seg_type == "record":
             file_id = data.get("file") or data.get("url") or data.get("path")
             parts.append(f"[语音:file_id={file_id}]" if file_id else "[语音]")
@@ -508,7 +541,7 @@ def _format_message_segments(segments, depth=0, max_depth=3):
             content = data.get("content")
             if content and depth < max_depth:
                 name = data.get("nickname") or data.get("name") or data.get("user_id") or data.get("uin") or "转发节点"
-                nested = _format_message_segments(content, depth + 1, max_depth)
+                nested = await _format_message_segments(context, content, depth + 1, max_depth)
                 parts.append(f"[合并转发节点:{name}: {nested}]")
             elif forward_id:
                 parts.append(f"[合并转发:id={forward_id}]")
@@ -613,7 +646,7 @@ async def _render_forward_messages(context, messages, start, count, max_depth, d
 
         sender = data.get("nickname") or data.get("name") or data.get("sender", {}).get("nickname") or data.get("user_id") or data.get("uin") or "未知"
         content = data.get("content") or data.get("message") or data.get("raw_message") or ""
-        parsed = _format_message_segments(content, depth=depth, max_depth=max_depth)
+        parsed = await _format_message_segments(context, content, depth=depth, max_depth=max_depth)
         lines.append(f"{i}. {sender}: {parsed}")
 
         if depth < max_depth:
@@ -666,7 +699,7 @@ async def parse_rich_message_tool(context, rich_id=None, rich_type="auto", start
 
     item_type = selected.get("type")
     if item_type in {"json", "xml", "markdown", "miniapp"}:
-        parsed = _format_message_segments(selected["segment"])
+        parsed = await _format_message_segments(context, selected["segment"])
         return ToolResult(
             success=True,
             content=parsed,
