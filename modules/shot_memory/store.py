@@ -1,6 +1,7 @@
 import datetime
 import json
 import os
+import random
 import re
 import tempfile
 import threading
@@ -82,6 +83,13 @@ class ShotMemoryStore:
         records = [r for r in records if os.path.isfile(r.get("file_path", ""))]
         records.sort(key=lambda r: r.get("created_at", ""), reverse=True)
         return records[:limit]
+
+    def random_records(self, chat_id, limit: int = 5) -> list[dict]:
+        limit = max(1, min(int(limit or 5), 5))
+        with self._lock:
+            records = self._load_records_unlocked(chat_id)
+        records = [r for r in records if os.path.isfile(r.get("file_path", ""))]
+        return random.sample(records, min(limit, len(records))) if records else []
 
     def preload(self, chat_id, records: list[dict]) -> list[dict]:
         cid = str(chat_id)

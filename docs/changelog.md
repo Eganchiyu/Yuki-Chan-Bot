@@ -23,6 +23,7 @@
 - 新增 `config.py` 中 `StructuredMemoryConfig` 配置组，支持通过 `config.yaml` 控制结构化记忆开关和召回数量参数（`enabled`、`max_profiles`、`max_facts`、`max_summaries`），默认关闭
 
 ### 变更
+- `search_group_snapshots` 未提供关键词时改为随机返回本群一定数量截屏，并补充文件名便于自由 roam 后发送
 - 调整 minimal Live2D 呼吸幅度、鼠标跟随灵敏度与阻尼，使头部和身体待机动作更自然
 - 将 `core/maid.py` 解耦为边界判定、通用常量、运行时工具、外部工具、提示词、主循环和 Worker 模块，保留 `core.maid` 兼容导出
 - 将 `core/engine.py` 解耦为回复工具链、回复决策、日记摘要和后台监控 service，保留 `YukiEngine` 门面调用方式不变

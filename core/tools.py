@@ -770,15 +770,25 @@ async def capture_group_snapshot_tool(context, note, limit=12):
 async def search_group_snapshots_tool(context, keyword=None, limit=5):
     """搜索当前群聊的永久截屏记录，并预热 [shot:N] 索引。"""
     chat_id = str(context.chat_id)
-    records = shot_memory_store.search(chat_id, keyword=keyword, limit=limit)
+    keyword = (keyword or "").strip()
+    limit = max(1, min(int(limit or 5), 5))
+
+    if keyword:
+        records = shot_memory_store.search(chat_id, keyword=keyword, limit=limit)
+        mode_text = "找到"
+    else:
+        records = shot_memory_store.random_records(chat_id, limit=limit)
+        mode_text = "随机找到"
+
     prepared = shot_memory_store.preload(chat_id, records)
     if not prepared:
         return ToolResult(success=True, content="没有找到本群相关截屏记录。", data={"records": []})
 
-    lines = [f"找到 {len(prepared)} 条本群截屏记录，已预热为 [shot:编号]："]
+    lines = [f"{mode_text} {len(prepared)} 条本群截屏记录，已预热为 [shot:编号]："]
     for item in prepared:
         lines.append(
             f"{item['shot_tag']} {item.get('created_at', '')} | {item.get('note', '')}\n"
+            f"文件名: {item.get('filename', os.path.basename(item['absolute_path']))}\n"
             f"路径: {item['absolute_path']}"
         )
     return ToolResult(success=True, content="\n".join(lines), data={"records": prepared})
@@ -1194,11 +1204,11 @@ TOOL_SPECS = [
     ),
     ToolSpec(
         name="search_group_snapshots",
-        description="翻看本群以前截屏过的记录。按关键词搜索当前群聊永久保存的截屏，最多返回5条，并预热为 [shot:1]、[shot:2] 等索引；要发送时用 send_qq_file 发送对应 [shot:编号]。",
+        description="翻看本群以前截屏过的记录。按关键词搜索或随机返回当前群聊永久保存过的截屏，最多返回5条，并预热为 [shot:1]、[shot:2] 等索引；要发送时用 send_qq_file 发送对应 [shot:编号]。",
         parameters={
             "type": "object",
             "properties": {
-                "keyword": {"type": "string", "description": "搜索关键词，可省略以查看最近记录"},
+                "keyword": {"type": "string", "description": "搜索关键词；可省略，省略时随机返回本群截屏"},
                 "limit": {"type": "integer", "description": "返回数量，默认5，最多5", "default": 5},
             },
         },
