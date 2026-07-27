@@ -367,6 +367,7 @@ class SessionPipeline:
             context["combined_text"],
             time=current_time_str,
             system_content=system_prompt,
+            save_immediately=False,
         )
 
         context["chat_id"] = chat_id
@@ -605,6 +606,7 @@ class SessionPipeline:
         session = self.history_manager.append_session_message(
             chat_id, "assistant", context["answer_raw"], time=context["current_time_str"]
         )
+        self._update_snapshot(context, answer_text=answer_text, message_count=len(session))
         logger.info("[Pipeline] 上下文保存完成")
 
         # 记录本次处理完成时间，用于冷启动判断

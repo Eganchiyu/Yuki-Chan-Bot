@@ -53,7 +53,14 @@ class EngineReplyService:
         if not pending_text:
             return
         logger.info(f"[ToolChain] {chat_id} 合并工具调用期间新增消息: {pending_text}")
-        self.history.append_session_message(chat_id, "user", pending_text, is_pending_during_tool=True)
+        self.history.append_session_message(
+            chat_id,
+            "user",
+            pending_text,
+            is_pending_during_tool=True,
+            save_immediately=False,
+            return_snapshot=False,
+        )
         tool_messages.append({"role": "user", "content": f"【工具调用期间新增消息】{pending_text}"})
 
     async def send_tool_thought(self, chat_id, mode, content, sent_thoughts, tool_names=None):
@@ -139,6 +146,8 @@ class EngineReplyService:
                             sent_content,
                             is_tool_thought=True,
                             sent_realtime=True,
+                            save_immediately=False,
+                            return_snapshot=False,
                         )
                 else:
                     answer = self.clean_visible_reply(response_message.get("content"))
@@ -153,6 +162,8 @@ class EngineReplyService:
                         tool_result_message.get("content"),
                         name=tool_result_message.get("name"),
                         tool_call_id=tool_result_message.get("tool_call_id"),
+                        save_immediately=False,
+                        return_snapshot=False,
                     )
                     if mode == "browser_interaction":
                         await self.yuki.mode_manager.record_step(

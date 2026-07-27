@@ -50,6 +50,7 @@ def initialize_components():
     from modules.memory.rag import MemoryRAG
     memory_rag = MemoryRAG()
 
+    logger.info("[System] 开始初始化表情包系统...")
     from modules.stickers.manager import StickerManager
     sticker_manager = StickerManager()
 
@@ -75,15 +76,17 @@ def initialize_components():
 
 
 def warmup_groups(yuki, history_manager):
-    """预热群组：初始化巡检名单，预载历史中的群聊 ID 和最后消息时间。"""
-    history_manager.load()
+    """预热群组：初始化巡检名单并预载历史缓存。"""
+    history_manager.preload()
+    now = time.time()
     for cid in cfg.TARGET_GROUPS:
-        yuki.last_message_time[str(cid)] = time.time()
-        current_e = yuki.update_energy(str(cid))
-        yuki.update_desire_to_reply(str(cid))
+        cid_str = str(cid)
+        yuki.last_message_time[cid_str] = now
+        current_e = yuki.update_energy(cid_str)
+        yuki.update_desire_to_reply(cid_str)
         logger.info(
-            f"[System] 预热群组 {str(cid)}: 精力 {current_e:.1f}, "
-            f"初始欲望 {yuki.desire_to_start_topic.get(str(cid), 0)}%"
+            f"[System] 预热群组 {cid_str}: 精力 {current_e:.1f}, "
+            f"初始欲望 {yuki.desire_to_start_topic.get(cid_str, 0)}%"
         )
     logger.debug(f"已预载 {len(yuki.last_message_time)} 个群组到巡检名单")
 
@@ -122,8 +125,12 @@ def start_desktop_pet_if_enabled(pipeline, pipeline_loop):
 
 
 async def run_runtime() -> None:
-    start_desktop_pet_if_enabled(session_pipeline, asyncio.get_running_loop())
-    await napcat_listen("mixed")
+    try:
+        start_desktop_pet_if_enabled(session_pipeline, asyncio.get_running_loop())
+        await napcat_listen("mixed")
+    finally:
+        from utils.llm_client import close_global_session
+        await close_global_session()
 
 
 async def main_process(
@@ -171,14 +178,12 @@ def _do_cleanup():
         logger.info("[Main] 配置已自动对齐保存")
     except Exception as e:
         logger.error(f"[Main] 保存配置时出错: {e}")
-    try:
-        from utils.llm_client import close_global_session
-        loop = asyncio.new_event_loop()
-        loop.run_until_complete(close_global_session())
-        loop.close()
-        logger.info("[Main] 资源清理完成")
-    except Exception as e:
-        logger.error(f"[Main] 清理资源时出错: {e}")
+    if session_pipeline is not None:
+        try:
+            session_pipeline.history_manager.flush()
+        except Exception as e:
+            logger.error(f"[Main] 刷新历史缓存时出错: {e}")
+    logger.info("[Main] 资源清理完成")
 
 
 # ==================== 主程序入口 ====================
