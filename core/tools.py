@@ -14,6 +14,7 @@ from core.maid.maid import MaidCapabilityBoundary, build_maid_task, maid_evoluti
 from core.toolchain import ToolResult, ToolSpec
 from modules.shot_memory import ShotMemoryStore, render_snapshot, shot_live_buffer
 from modules.system_state import monitor as system_state_monitor
+from utils.http_client import create_tcp_connector
 from utils.logger import get_logger
 
 logger = get_logger("tools")
@@ -274,7 +275,7 @@ async def amap_search_tool(context, keywords, search_type="text", location=None,
         params = {"key": api_key, "address": address}
         if city:
             params["city"] = city
-        async with aiohttp.ClientSession(timeout=timeout) as session:
+        async with aiohttp.ClientSession(connector=create_tcp_connector(), timeout=timeout) as session:
             async with session.get(_AMAP_GEOCODE_URL, params=params) as response:
                 data = await response.json(content_type=None)
         if data.get("status") != "1":
@@ -308,7 +309,7 @@ async def amap_search_tool(context, keywords, search_type="text", location=None,
             params["region"] = city
         url = _AMAP_TEXT_URL
 
-    async with aiohttp.ClientSession(timeout=timeout) as session:
+    async with aiohttp.ClientSession(connector=create_tcp_connector(), timeout=timeout) as session:
         async with session.get(url, params=params) as response:
             data = await response.json(content_type=None)
             if response.status >= 400:
@@ -354,7 +355,7 @@ async def browser_search_tool(context, query, max_results=5, search_depth="basic
         "include_answer": True,
     }
     timeout = aiohttp.ClientTimeout(total=30)
-    async with aiohttp.ClientSession(timeout=timeout) as session:
+    async with aiohttp.ClientSession(connector=create_tcp_connector(), timeout=timeout) as session:
         async with session.post(_TAVILY_SEARCH_URL, json=payload) as response:
             data = await response.json(content_type=None)
             if response.status >= 400:
@@ -923,7 +924,7 @@ async def _download_url_to_workspace(url, filename=None):
     filename = _guess_download_filename(url, filename)
     save_path = os.path.join(DOWNLOAD_DIR, filename)
     timeout = aiohttp.ClientTimeout(total=120)
-    async with aiohttp.ClientSession(timeout=timeout) as session:
+    async with aiohttp.ClientSession(connector=create_tcp_connector(), timeout=timeout) as session:
         async with session.get(url) as response:
             content = await response.read()
             if response.status >= 400:
@@ -1066,6 +1067,68 @@ async def publish_qzone_mood_tool(context, content, visible=1, image_paths=None)
     )
 
 
+async def enter_browser_interaction_tool(context, goal=None):
+    """进入浏览器交互聚焦模式，并触发浏览器模式会话。"""
+    goal_text = str(goal or context.combined_text or "浏览器交互任务").strip()
+    ok, state, reason = await context.yuki.mode_manager.enter_mode(
+        "browser_interaction",
+        origin_chat_id=context.chat_id,
+        origin_mode=context.mode,
+        goal=goal_text,
+    )
+    if not ok or not state:
+        current = context.yuki.mode_manager.current_focus()
+        busy_text = current.brief() if current else "已有聚焦模式正在运行"
+        return ToolResult.failure(
+            f"暂时不能进入浏览器交互模式：{busy_text}",
+            reason,
+            data={"active_mode": current.mode if current else None},
+        )
+
+    history_manager = context.metadata.get("history_manager")
+    if history_manager:
+        browser_prompt = context.yuki.get_setting("browser_interaction")
+        history_manager.get_session(state.session_id, browser_prompt)
+        history_manager.append_session_message(
+            state.session_id,
+            "user",
+            f"【进入浏览器模式】来源={context.mode}:{context.chat_id}；目标={goal_text}",
+            origin_chat_id=context.chat_id,
+            origin_mode=context.mode,
+        )
+
+    callback = context.metadata.get("process_callback") or getattr(context.yuki, "process_callback", None)
+    if callback:
+        message_obj = {
+            "name": "ModeManager",
+            "content": f"【浏览器交互模式启动】目标：{goal_text}",
+            "raw_text": goal_text,
+            "source": "mode_manager",
+            "owner_id": state.session_id,
+        }
+        asyncio.create_task(
+            callback(
+                state.session_id,
+                "browser_interaction",
+                message_obj=message_obj,
+                debounce_flag=False,
+                force_reply=True,
+            )
+        )
+
+    return ToolResult(
+        success=True,
+        content="已进入浏览器交互模式，并创建独立模式会话。",
+        data={
+            "mode": state.mode,
+            "session_id": state.session_id,
+            "origin_chat_id": state.origin_chat_id,
+            "origin_mode": state.origin_mode,
+            "goal": state.goal,
+        },
+    )
+
+
 async def generate_image_tool(context, prompt, size="1024*1024"):
     """调用图像生成模型生成图片，保存到 output 目录并返回路径。"""
     if not prompt:
@@ -1103,7 +1166,7 @@ async def generate_image_tool(context, prompt, size="1024*1024"):
 
         async def _do_generate():
             timeout = aiohttp.ClientTimeout(total=120)
-            async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with aiohttp.ClientSession(connector=create_tcp_connector(), timeout=timeout) as session:
                 async with session.post(
                     api_endpoint,
                     headers={
@@ -1137,7 +1200,7 @@ async def generate_image_tool(context, prompt, size="1024*1024"):
 
         try:
             timeout = aiohttp.ClientTimeout(total=60)
-            async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with aiohttp.ClientSession(connector=create_tcp_connector(), timeout=timeout) as session:
                 async with session.get(image_url) as resp:
                     if resp.status != 200:
                         raise Exception(f"下载图片失败: HTTP {resp.status}")
@@ -1218,6 +1281,17 @@ TOOL_SPECS = [
         description="判断主人是否在线、是否活跃，并返回当前聚焦的窗口标题。",
         parameters={"type": "object", "properties": {}},
         handler=get_master_status_tool,
+    ),
+    ToolSpec(
+        name="enter_browser_interaction",
+        description="进入浏览器交互聚焦模式。用于需要观察或操作浏览器时调用；如果已有聚焦模式运行则会拒绝重复进入。",
+        parameters={
+            "type": "object",
+            "properties": {
+                "goal": {"type": "string", "description": "进入浏览器模式后要完成的任务目标"},
+            },
+        },
+        handler=enter_browser_interaction_tool,
     ),
     
     ToolSpec(

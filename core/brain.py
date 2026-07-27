@@ -6,7 +6,13 @@ from collections import defaultdict
 from concurrent.futures.thread import ThreadPoolExecutor
 
 from config import cfg
-from core.prompts import get_yuki_setting_private, get_yuki_setting_group, get_yuki_setting_master_private
+from core.modes import ModeManager
+from core.prompts import (
+    get_yuki_setting_browser_interaction,
+    get_yuki_setting_group,
+    get_yuki_setting_master_private,
+    get_yuki_setting_private,
+)
 from utils.logger import get_logger
 
 logger = get_logger("brain")
@@ -97,6 +103,9 @@ class YukiState:
         # --- 新增：用户昵称到QQ号的映射 ---
         self.user_mapping = UserMapping(ttl_rounds=10)
 
+        # --- 新增：全局模式管理 ---
+        self.mode_manager = ModeManager()
+
         # --- 新增：活跃度感知 ---
         # chat_id: float (0.0 ~ 10.0, 10 代表极度刷屏)
 
@@ -145,6 +154,8 @@ class YukiState:
     def get_setting(mode):
         if mode == "master_private":
             return get_yuki_setting_master_private()
+        if mode == "browser_interaction":
+            return get_yuki_setting_browser_interaction()
         return get_yuki_setting_private() if mode == "private" else get_yuki_setting_group()
 
     def update_energy(self, chat_id):

@@ -11,6 +11,7 @@ import aiohttp
 from PIL import Image, ImageDraw, ImageFont, ImageOps, UnidentifiedImageError
 
 from utils import BASE_DIR
+from utils.http_client import create_tcp_connector
 from utils.logger import get_logger
 
 logger = get_logger("shot_renderer")
@@ -100,7 +101,10 @@ def build_render_messages(history_messages: list[dict], message_objs: list[dict]
 
 
 async def prepare_message_parts(messages: list[RenderMessage]) -> None:
-    async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=18)) as session:
+    async with aiohttp.ClientSession(
+        connector=create_tcp_connector(),
+        timeout=aiohttp.ClientTimeout(total=18),
+    ) as session:
         tasks = [prepare_one_message(session, msg) for msg in messages]
         await asyncio.gather(*tasks, return_exceptions=True)
 
@@ -321,7 +325,7 @@ async def load_avatars(messages: list[RenderMessage]) -> dict[str, Image.Image]:
             return uid, None
 
     timeout = aiohttp.ClientTimeout(total=12)
-    async with aiohttp.ClientSession(timeout=timeout) as session:
+    async with aiohttp.ClientSession(connector=create_tcp_connector(), timeout=timeout) as session:
         pairs = await asyncio.gather(*(fetch(session, uid) for uid in user_ids), return_exceptions=True)
     avatar_map = {}
     for result in pairs:

@@ -200,9 +200,9 @@ class MemoryRAG:
             return filtered
         return []
 
-    def search_diaries(self, query_text, chat_id=None, n_results=8, top_k_keywords=5):
+    def search_diaries(self, query_text, chat_id=None, n_results=8, top_k_keywords=5, speaker_names=None):
         """
-        优化版并行双池检索：真正的 I/O 并发 + 数据库下推过滤 + 宽进严出
+        全局日记检索：取消按群聊硬过滤，对当前群聊和当前发言者做重排加权。
         """
         logger.debug(f"\n[RAG] 开启优化版真并行双池检索流: '{query_text}'")
 
@@ -212,7 +212,8 @@ class MemoryRAG:
             return []
 
         cid_str = str(chat_id) if chat_id else None
-        filter_cond = {"chat_id": {"$in": [cid_str, "manual_record"]}} if cid_str else None
+        filter_cond = None
+        speaker_names = [str(name).strip() for name in (speaker_names or []) if str(name).strip()]
 
         # 1. 提取核心锚点词
         raw_keywords = jieba.analyse.extract_tags(query_text, topK=top_k_keywords, withWeight=True)
@@ -227,11 +228,13 @@ class MemoryRAG:
         def fetch_vector_pool():
             query_embedding = self.model.encode(query_text).tolist()
             # 宽进：语义池多抓取一些做基准，确保长线情感匹配
-            return self.collection.query(
-                query_embeddings=[query_embedding],
-                n_results=max(10, n_results * 2),
-                where=filter_cond
-            )
+            query_kwargs = {
+                "query_embeddings": [query_embedding],
+                "n_results": max(30, n_results * 6),
+            }
+            if filter_cond:
+                query_kwargs["where"] = filter_cond
+            return self.collection.query(**query_kwargs)
 
         def fetch_keyword_pool():
             if not keywords:
@@ -241,10 +244,10 @@ class MemoryRAG:
             contains_filters = [{"$contains": kw} for kw in keywords]
             doc_filter = {"$or": contains_filters} if len(contains_filters) > 1 else contains_filters[0]
 
-            return self.collection.get(
-                where=filter_cond,
-                where_document=doc_filter
-            )
+            get_kwargs = {"where_document": doc_filter}
+            if filter_cond:
+                get_kwargs["where"] = filter_cond
+            return self.collection.get(**get_kwargs)
 
         # 3. 线程池触发真正的并发请求
         with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
@@ -292,7 +295,12 @@ class MemoryRAG:
         final_results = []
         for item in combined_map.values():
             scored_item = self._calculate_final_item(
-                item["doc"], item["meta"], item["base_score"], keywords_with_weight
+                item["doc"],
+                item["meta"],
+                item["base_score"],
+                keywords_with_weight,
+                chat_id=cid_str,
+                speaker_names=speaker_names,
             )
             if scored_item:
                 scored_item["debug"] = f"[{item['source']}] {scored_item['debug']}"
@@ -310,7 +318,14 @@ class MemoryRAG:
         return final_output
 
     @staticmethod
-    def _calculate_final_item(doc, meta, base_score, keywords_with_weight):
+    def _calculate_final_item(
+        doc,
+        meta,
+        base_score,
+        keywords_with_weight,
+        chat_id=None,
+        speaker_names=None,
+    ):
         keyword_boost = 0.0
         matched_words = []
         for kw, weight in keywords_with_weight:
@@ -319,12 +334,28 @@ class MemoryRAG:
                 keyword_boost += weight * 0.5
                 matched_words.append(kw)
 
-        final_score = base_score + keyword_boost
+        current_chat_boost = 0.0
+        if chat_id and str(meta.get("chat_id", "")) == str(chat_id):
+            current_chat_boost = 10.0
+
+        speaker_boost = 0.0
+        speaker_matches = []
+        for name in speaker_names or []:
+            if name and name in doc:
+                speaker_boost += 0.15
+                speaker_matches.append(name)
+        speaker_boost = min(speaker_boost, 0.45)
+
+        final_score = base_score + keyword_boost + current_chat_boost + speaker_boost
         return {
             "content": doc,
             "metadata": meta,
             "score": final_score,
-            "debug": f"基准:{base_score:.2f} + 补偿:{keyword_boost:.2f} (匹配:{matched_words})"
+            "debug": (
+                f"基准:{base_score:.2f} + 关键词补偿:{keyword_boost:.2f} "
+                f"+ 当前群聊:{current_chat_boost:.2f} + 发言者:{speaker_boost:.2f} "
+                f"(匹配:{matched_words}, 发言者匹配:{speaker_matches})"
+            )
         }
 
     def clean_duplicate_diaries(self, dry_run=False):

@@ -4,8 +4,9 @@ from core.engine.engine_decision import EngineDecisionService
 from core.engine.engine_diary import EngineDiaryService
 from core.engine.engine_monitor import EngineMonitorService
 from core.engine.engine_reply import EngineReplyService
-from core.toolchain import FunctionRegistry, ToolCallManager
+from core.toolchain import FunctionRegistry, ToolCallManager, ToolRegistryProvider
 from core.tools import TOOL_SPECS
+from modules.browser_interaction import BROWSER_TOOL_SPECS
 
 
 class YukiEngine:
@@ -21,6 +22,10 @@ class YukiEngine:
         self.sticker_manager = None
         self.tool_registry = FunctionRegistry()
         self.tool_registry.scan_and_register(TOOL_SPECS)
+        self.tool_registry_provider = ToolRegistryProvider(
+            TOOL_SPECS,
+            mode_specs={"browser_interaction": BROWSER_TOOL_SPECS},
+        )
         self.tool_manager = ToolCallManager(self.tool_registry)
         self.napcat_online = True
 
@@ -29,7 +34,7 @@ class YukiEngine:
             self.yuki,
             self.history,
             self.sender,
-            self.tool_registry,
+            self.tool_registry_provider,
             self.tool_manager,
             get_process_callback=lambda: self.process_callback,
             get_image_store=lambda: getattr(self, "image_store", None),

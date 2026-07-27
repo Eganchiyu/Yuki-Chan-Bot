@@ -6,6 +6,8 @@ from urllib.parse import quote_plus
 
 import aiohttp
 
+from utils.http_client import create_tcp_connector
+
 
 def search_diary_fast(date_str=None, keyword=None):
     if not date_str and not keyword:
@@ -243,7 +245,7 @@ async def browser_search_maid(query, max_results=5, search_depth="basic"):
         "include_answer": True,
     }
     timeout = aiohttp.ClientTimeout(total=30)
-    async with aiohttp.ClientSession(timeout=timeout) as session:
+    async with aiohttp.ClientSession(connector=create_tcp_connector(), timeout=timeout) as session:
         async with session.post(_TAVILY_SEARCH_URL, json=payload) as response:
             data = await response.json(content_type=None)
             if response.status >= 400:
@@ -286,7 +288,7 @@ async def amap_search_maid(keywords, search_type="text", location=None, address=
         params = {"key": api_key, "address": address}
         if city:
             params["city"] = city
-        async with aiohttp.ClientSession(timeout=timeout) as session:
+        async with aiohttp.ClientSession(connector=create_tcp_connector(), timeout=timeout) as session:
             async with session.get(_AMAP_GEOCODE_URL, params=params) as response:
                 data = await response.json(content_type=None)
         if data.get("status") != "1":
@@ -320,7 +322,7 @@ async def amap_search_maid(keywords, search_type="text", location=None, address=
             params["region"] = city
         url = _AMAP_TEXT_URL
 
-    async with aiohttp.ClientSession(timeout=timeout) as session:
+    async with aiohttp.ClientSession(connector=create_tcp_connector(), timeout=timeout) as session:
         async with session.get(url, params=params) as response:
             data = await response.json(content_type=None)
             if response.status >= 400:

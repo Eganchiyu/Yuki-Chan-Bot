@@ -11,6 +11,7 @@ from config import cfg
 from core.prompts import VISION_PROMPT
 from modules.vision.utils import log
 from modules.vision.cache import MemeCache
+from utils.http_client import create_tcp_connector
 from utils.logger import get_logger
 
 logger = get_logger("vision_processor")
@@ -129,7 +130,10 @@ class MemeProcessor:
             "max_tokens": 50,
             "temperature": 0.75
         }
-        async with aiohttp.ClientSession(timeout=cfg.REQUEST_TIMEOUT) as session:
+        async with aiohttp.ClientSession(
+            connector=create_tcp_connector(),
+            timeout=cfg.REQUEST_TIMEOUT,
+        ) as session:
             async with session.post(cfg.IMAGE_PROCESS_API_URL, json=payload, headers=headers) as resp:
                 logger.debug(f"[DEBUG] 响应状态码: {resp.status}")
                 if resp.status == 200:
@@ -162,7 +166,7 @@ class MemeProcessor:
 
         try:
             logger.info("[Meme Understanding] 开始下载图片")
-            async with aiohttp.ClientSession() as session:
+            async with aiohttp.ClientSession(connector=create_tcp_connector()) as session:
                 async with session.get(img_url, timeout=aiohttp.ClientTimeout(total=15)) as resp:
                     if resp.status != 200:
                         logger.error(f"[Meme Understanding] 下载失败，HTTP {resp.status}")

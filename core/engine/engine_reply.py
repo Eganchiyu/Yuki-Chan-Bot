@@ -4,7 +4,7 @@ from typing import Any, Callable, Optional
 
 from config import cfg
 from core.prompts import build_chat_context
-from core.toolchain import ToolContext, ToolRuntime
+from core.toolchain import ToolCallManager, ToolContext, ToolRuntime
 from modules.debug.context_snapshot import context_snapshot_store
 from utils.llm_client import llm_chat, llm_chat_raw
 from utils.logger import get_logger
@@ -28,7 +28,8 @@ class EngineReplyService:
         self.yuki = yuki
         self.history = history
         self.sender = sender
-        self.tool_registry = tool_registry
+        self.tool_registry_provider = tool_registry
+        self.tool_registry = tool_registry.get_registry() if hasattr(tool_registry, "get_registry") else tool_registry
         self.tool_manager = tool_manager
         self.get_process_callback = get_process_callback
         self.get_image_store = get_image_store
@@ -65,7 +66,7 @@ class EngineReplyService:
         if tool_names and "delegate_to_maid" in tool_names:
             display_content = clean_content + " | (๑•̀ㅂ•́)و💻"
         if display_content:
-            if mode == "desktop_pet":
+            if mode in {"desktop_pet", "browser_interaction"}:
                 from modules.LiveYukiL2D.server import broadcast
                 await broadcast({"type": "say", "text": display_content})
             else:
@@ -93,12 +94,18 @@ class EngineReplyService:
                 "message_objs": message_objs or [],
             },
         )
+        active_registry = (
+            self.tool_registry_provider.get_registry(mode)
+            if hasattr(self.tool_registry_provider, "get_registry")
+            else self.tool_registry
+        )
+        active_tool_manager = ToolCallManager(active_registry, max_rounds=self.tool_manager.max_rounds)
         self.tool_manager.start_session(str(chat_id), combined_text)
         tool_messages = list(messages)
         sent_thoughts = set()
 
         try:
-            for _ in range(self.tool_manager.max_rounds):
+            for _ in range(active_tool_manager.max_rounds):
                 response_message = await llm_chat_raw(
                     messages=tool_messages,
                     model=cfg.LLM_MODEL,
@@ -107,7 +114,7 @@ class EngineReplyService:
                     frequency_penalty=0.5,
                     presence_penalty=0.4,
                     max_tokens=520,
-                    tools=self.tool_registry.get_tools(),
+                    tools=active_registry.get_tools(),
                     tool_choice="auto",
                 )
                 tool_calls = response_message.get("tool_calls") or []
@@ -138,7 +145,7 @@ class EngineReplyService:
                     return answer, answer
 
                 tool_messages.append(response_message)
-                tool_result_messages = await self.tool_manager.execute_tool_calls(tool_calls, context)
+                tool_result_messages = await active_tool_manager.execute_tool_calls(tool_calls, context)
                 for tool_result_message in tool_result_messages:
                     self.history.append_session_message(
                         chat_id,
@@ -147,6 +154,10 @@ class EngineReplyService:
                         name=tool_result_message.get("name"),
                         tool_call_id=tool_result_message.get("tool_call_id"),
                     )
+                    if mode == "browser_interaction":
+                        await self.yuki.mode_manager.record_step(
+                            f"调用工具 {tool_result_message.get('name')}"
+                        )
                 tool_messages.extend(tool_result_messages)
                 self.merge_pending_messages(chat_id, tool_messages)
 
@@ -160,6 +171,7 @@ class EngineReplyService:
             fallback = self.clean_visible_reply(fallback)
             return fallback, fallback
         finally:
+            active_tool_manager.finish_session(str(chat_id))
             self.tool_manager.finish_session(str(chat_id))
 
     async def api_reply(self, chat_id: str, combined_text: str, session: list, mode,
@@ -183,7 +195,12 @@ class EngineReplyService:
                     built_messages=combined_api_message,
                     tool_context={
                         "tools_enabled": True,
-                        "tool_count": len(self.tool_registry.get_tools()),
+                        "tool_count": len(
+                            self.tool_registry_provider.get_tools(mode)
+                            if hasattr(self.tool_registry_provider, "get_tools")
+                            else self.tool_registry.get_tools()
+                        ),
+                        "mode": mode,
                         "max_rounds": self.tool_manager.max_rounds,
                     },
                 )

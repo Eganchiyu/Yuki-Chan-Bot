@@ -360,9 +360,14 @@ class SessionPipeline:
         mode = context["mode"]
         system_prompt = self.yuki.get_setting(mode)
 
-        session = self.history_manager.get_session(chat_id, system_prompt)
         current_time_str = datetime.datetime.now().strftime("%Y年%m月%d日%H:%M")
-        session.append({"role": "user", "content": context["combined_text"], "time": current_time_str})
+        session = self.history_manager.append_session_message(
+            chat_id,
+            "user",
+            context["combined_text"],
+            time=current_time_str,
+            system_content=system_prompt,
+        )
 
         context["chat_id"] = chat_id
         context["session"] = session
@@ -381,8 +386,8 @@ class SessionPipeline:
         if context.get("ice_break"):
             return context
 
-        # 私聊和桌宠模式：永远回复，跳过群聊潜水决策
-        if context["mode"] in {"private", "master_private", "desktop_pet"}:
+        # 私聊、桌宠和聚焦模式：永远回复，跳过群聊潜水决策
+        if context["mode"] in {"private", "master_private", "desktop_pet", "browser_interaction"}:
             self._update_snapshot(context, should_reply=True)
             return context
 
@@ -421,11 +426,17 @@ class SessionPipeline:
         logger.info(f"[Pipeline] {cfg.ROBOT_NAME.title()} 正在回忆")
         chat_id = context["chat_id"]
         combined_text = context["combined_text"]
+        speaker_names = [
+            str(message.get("name") or "").strip()
+            for message in context.get("message_objs", [])
+            if message.get("name")
+        ]
         dynamic_top_k = 10 if len(combined_text) > 100 else 8
 
         relevant_diaries = self.memory_rag.search_diaries(
             combined_text,
             chat_id=chat_id,
+            speaker_names=speaker_names,
             top_k_keywords=dynamic_top_k,
             n_results=8
         )
@@ -471,7 +482,7 @@ class SessionPipeline:
 
         logger.info(f"[Pipeline] {cfg.ROBOT_NAME.title()} 正在发送消息 (精力: {self.yuki.energy.get(chat_id, 0):.1f})")
 
-        if mode == "desktop_pet":
+        if mode in {"desktop_pet", "browser_interaction"}:
             try:
                 from modules.LiveYukiL2D.server import broadcast
                 await broadcast({"type": "state", "state": "speaking"})

@@ -10,6 +10,9 @@
 ## [未发布]
 
 ### 新增
+- 新增多模式基础框架 `core.modes`，将默认 QQ 群聊包装为 `QQChatMode`，并提供全局唯一聚焦模式状态管理
+- 新增浏览器交互占位模块 `modules/browser_interaction`，支持进入浏览器模式、记录步骤、占位扫描和完成后返回来源会话
+- 新增模式级工具注册 `ToolRegistryProvider`，支持普通 QQChatMode 与浏览器模式暴露不同工具组
 - 主人状态监控按需从 GPS-VPS 获取最新手机定位，并返回高德逆地理解析地址
 - GPS-VPS 云端中转服务缓存最新定位，新客户端连接时立即返回缓存位置
 - GitHub Push 卡片补充 Compare API 提交详情、提交评论数、文件数量、代码增删统计和比较链接
@@ -23,6 +26,9 @@
 - 新增 `config.py` 中 `StructuredMemoryConfig` 配置组，支持通过 `config.yaml` 控制结构化记忆开关和召回数量参数（`enabled`、`max_profiles`、`max_facts`、`max_summaries`），默认关闭
 
 ### 变更
+- 表情包发送阶段的情绪判断改为本地规则，避免每次 `[MEME]` 检索额外调用 LLM 导致发送延迟
+- 旧 RAG 日记召回取消按群聊硬隔离，改为全局召回后对当前群聊日记和当前发言者姓名进行加权重排
+- Prompt 注入全局模式状态，使 QQChatMode 收到新消息时能感知当前浏览器等聚焦模式是否运行
 - `search_group_snapshots` 未提供关键词时改为随机返回本群一定数量截屏，并补充文件名便于自由 roam 后发送
 - 调整 minimal Live2D 呼吸幅度、鼠标跟随灵敏度与阻尼，使头部和身体待机动作更自然
 - 将 `core/maid.py` 解耦为边界判定、通用常量、运行时工具、外部工具、提示词、主循环和 Worker 模块，保留 `core.maid` 兼容导出
@@ -103,6 +109,7 @@
   - 破冰回复现在享受完整的工具链能力（表情包搜索、小女仆委托、RAG 记忆检索等）
 
 ### 修复
+- 修复普通对话流程只将当前用户消息放入临时上下文、未写入 `chat_history.json`，导致后续 LLM 调用缺少用户历史记录的问题
 - 修复小女仆快速查询日记时硬编码 `core/yuki_memory` 导致重复创建空 ChromaDB 的问题
 - 修复启动后台任务时小女仆 Worker 导入到同名模块导致 `'module' object is not callable` 的问题
 - 修复退出清理阶段调用不存在的 `cfg._save_raw()` 导致配置保存报错的问题

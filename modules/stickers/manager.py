@@ -18,6 +18,7 @@ from sentence_transformers import SentenceTransformer
 
 from config import cfg
 from modules.vision.processor import MemeProcessor
+from utils.http_client import create_tcp_connector
 from utils.logger import get_logger
 
 logger = get_logger("stickers")
@@ -36,18 +37,29 @@ STICKER_ANALYSIS_PROMPT = """
 请直接看图进行分析。
 """
 
-EMOTION_JUDGE_PROMPT = """
-你现在是Yuki的情绪分析器。请对下面这句话判断**主要情绪**，只输出一个词（必须严格从以下列表选择）：
-撒娇、吐槽、无语、生气、开心、委屈、调情、震惊、摸鱼、高冷、抽象、群内梗、中性
+STICKER_EMOTIONS = (
+    "撒娇", "吐槽", "无语", "生气", "开心", "委屈", "调情",
+    "震惊", "摸鱼", "高冷", "抽象", "群内梗", "中性",
+)
 
-Yuki的回复内容：{yuki_message}
-"""
+EMOTION_KEYWORDS = {
+    "撒娇": ("撒娇", "抱抱", "贴贴", "蹭蹭", "嘛", "啦"),
+    "吐槽": ("吐槽", "槽点", "什么鬼", "离谱", "绷不住"),
+    "无语": ("无语", "沉默", "算了", "呃", "啊这"),
+    "生气": ("生气", "气死", "怒", "讨厌", "哼"),
+    "开心": ("开心", "高兴", "快乐", "笑", "嘿嘿", "哈哈"),
+    "委屈": ("委屈", "难过", "哭", "呜", "呜呜"),
+    "调情": ("调情", "喜欢", "亲", "宝贝", "老婆"),
+    "震惊": ("震惊", "惊", "吓", "卧槽", "真的假的"),
+    "摸鱼": ("摸鱼", "偷懒", "摆烂", "躺平"),
+    "高冷": ("高冷", "冷淡", "不理", "随便"),
+    "抽象": ("抽象", "逆天", "典", "乐", "怪"),
+    "群内梗": ("群内梗", "梗", "群友", "草"),
+}
 
 
 class StickerManager:
     def __init__(self):
-        from utils.llm_client import llm_chat as _llm_chat
-        self._llm_chat = _llm_chat
         self.vl_processor = MemeProcessor()
         self.model = SentenceTransformer(cfg.EMBED_MODEL)
 
@@ -73,7 +85,7 @@ class StickerManager:
             if image_ref.startswith("http://") or image_ref.startswith("https://"):
                 # 网络图片：异步下载到内存
                 import aiohttp
-                async with aiohttp.ClientSession() as session:
+                async with aiohttp.ClientSession(connector=create_tcp_connector()) as session:
                     async with session.get(image_ref, timeout=15) as resp:
                         if resp.status != 200:
                             raise Exception(f"HTTP {resp.status}")
@@ -151,7 +163,10 @@ class StickerManager:
 
             import aiohttp
             # 这里直接走专门的图像处理通道，不走文本 LLM 的通道
-            async with aiohttp.ClientSession(timeout=cfg.REQUEST_TIMEOUT) as session:
+            async with aiohttp.ClientSession(
+                connector=create_tcp_connector(),
+                timeout=cfg.REQUEST_TIMEOUT,
+            ) as session:
                 async with session.post(cfg.IMAGE_PROCESS_API_URL, json=payload, headers=headers) as resp:
                     if resp.status == 200:
                         data = await resp.json()
@@ -187,16 +202,19 @@ class StickerManager:
         return self.model.encode(text).tolist()
 
     async def _judge_emotion(self, yuki_message: str) -> str:
-        prompt = EMOTION_JUDGE_PROMPT.format(yuki_message=yuki_message)
+        """本地判断表情检索情绪，避免发送阶段额外调用 LLM。"""
+        text = yuki_message.strip()
+        if not text:
+            return "中性"
 
-        raw = await self._llm_chat(
-            messages=[{"role": "user", "content": prompt}],
-            model=cfg.LLM_MODEL,
-            temperature=0.0,
-            max_tokens=20
-        )
+        if text in STICKER_EMOTIONS:
+            return text
 
-        return raw.strip() or "中性"
+        for emotion, keywords in EMOTION_KEYWORDS.items():
+            if any(keyword in text for keyword in keywords):
+                return emotion
+
+        return "中性"
 
         # ====================== 核心算法：重排与状态管理 ======================
 
@@ -223,7 +241,7 @@ class StickerManager:
 
             # 冷却因子：三天不用，热度衰减显著
             current_heat = last_heat * math.exp(-0.3 * days_since_last_used)
-            penalty = 1.2 * current_heat
+            penalty = 1.8 * current_heat
 
             # 暂存当前残余热度，供后续选中时升温使用
             cand["current_heat"] = current_heat

@@ -61,12 +61,20 @@ class HistoryManager:
         with self._lock:
             return str(chat_id) in self._get_data_locked()
 
-    def append_session_message(self, chat_id: str, role: str, content: str, **extra):
+    def append_session_message(
+        self,
+        chat_id: str,
+        role: str,
+        content: str,
+        system_content: str | None = None,
+        **extra,
+    ):
         """向单个会话追加一条消息，并同步落盘。"""
         cid = str(chat_id)
         with self._lock:
             data = self._get_data_locked()
             session = data.setdefault(cid, [])
+            self._ensure_system_message(session, system_content)
             item = {"role": role, "content": content,
                     "time": datetime.datetime.now().strftime("%Y年%m月%d日%H:%M")}
             item.update(extra)
