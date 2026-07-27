@@ -6,7 +6,12 @@
 - 全局 aiohttp Session 复用
 - 平台参数适配（sanitize_payload）
 """
+import json
+import os
+import ssl
+import sys
 import time
+import urllib.request
 from typing import List, Dict, Any, Optional
 
 import aiohttp
@@ -15,6 +20,60 @@ from config import cfg
 from utils.logger import get_logger
 
 logger = get_logger("llm_client")
+
+# #region debug-point C:debug-report
+_debug_env_path = os.path.join(os.getcwd(), ".dbg", "llm-ssl-handshake.env")
+_debug_server_url = "http://127.0.0.1:7777/event"
+_debug_session_id = "llm-ssl-handshake"
+try:
+    with open(_debug_env_path, "r", encoding="utf-8") as _debug_env_file:
+        for _debug_env_line in _debug_env_file:
+            if _debug_env_line.startswith("DEBUG_SERVER_URL="):
+                _debug_server_url = _debug_env_line.split("=", 1)[1].strip()
+            elif _debug_env_line.startswith("DEBUG_SESSION_ID="):
+                _debug_session_id = _debug_env_line.split("=", 1)[1].strip()
+except Exception:
+    pass
+
+
+def _debug_report(hypothesis_id: str, location: str, msg: str, data: Dict[str, Any]) -> None:
+    """向调试服务上报运行时证据。"""
+    try:
+        body = json.dumps({
+            "sessionId": _debug_session_id,
+            "runId": os.environ.get("YUKI_DEBUG_RUN_ID", "pre-fix"),
+            "hypothesisId": hypothesis_id,
+            "location": location,
+            "msg": f"[DEBUG] {msg}",
+            "data": data,
+            "ts": int(time.time() * 1000),
+        }, ensure_ascii=False).encode("utf-8")
+        urllib.request.urlopen(
+            urllib.request.Request(
+                _debug_server_url,
+                data=body,
+                headers={"Content-Type": "application/json"},
+            ),
+            timeout=1,
+        ).read()
+    except Exception:
+        pass
+# #endregion
+
+def _create_ssl_context() -> ssl.SSLContext:
+    """创建 SSL 上下文，优先使用文件 CA，避免读取损坏的 Windows 证书存储。"""
+    cafile = os.environ.get("SSL_CERT_FILE")
+    if not cafile or not os.path.exists(cafile):
+        try:
+            import certifi
+
+            cafile = certifi.where()
+        except Exception:
+            cafile = ssl.get_default_verify_paths().cafile
+    if cafile and os.path.exists(cafile):
+        return ssl.create_default_context(cafile=cafile)
+    return ssl.create_default_context()
+
 
 # 全局 aiohttp Session（TCP 连接复用）
 _global_session: Optional[aiohttp.ClientSession] = None
@@ -56,11 +115,27 @@ async def _get_global_session() -> aiohttp.ClientSession:
             limit=10,
             use_dns_cache=True,
             ttl_dns_cache=300,
+            ssl=_create_ssl_context(),
         )
         _global_session = aiohttp.ClientSession(
             connector=connector,
             timeout=aiohttp.ClientTimeout(total=60, connect=10),
         )
+        # #region debug-point A:session-created
+        _debug_report("A", "utils/llm_client.py:_get_global_session", "创建新的全局 aiohttp session", {
+            "session_id": id(_global_session),
+            "connector_id": id(connector),
+            "closed": _global_session.closed,
+        })
+        # #endregion
+    else:
+        # #region debug-point A:session-reused
+        _debug_report("A", "utils/llm_client.py:_get_global_session", "复用已有全局 aiohttp session", {
+            "session_id": id(_global_session),
+            "connector_id": id(_global_session.connector),
+            "closed": _global_session.closed,
+        })
+        # #endregion
     return _global_session
 
 
@@ -86,15 +161,62 @@ async def chat_completion_raw(
     payload = _sanitize_payload(model, payload)
 
     client_timeout = aiohttp.ClientTimeout(total=timeout, connect=10)
-    async with session.post(
-        endpoint, json=payload, headers=headers, timeout=client_timeout
-    ) as resp:
-        if resp.status == 200:
-            data = await resp.json()
-            return data["choices"][0]["message"]
-        else:
-            err_info = await resp.text()
-            raise Exception(f"HTTP {resp.status}: {err_info}")
+    # #region debug-point B:before-post
+    _debug_report("B", "utils/llm_client.py:chat_completion_raw", "准备发送 LLM POST 请求", {
+        "endpoint_host": _normalize_url(base_url).split("//", 1)[-1].split("/", 1)[0],
+        "model": model,
+        "session_id": id(session),
+        "payload_keys": sorted(payload.keys()),
+        "timeout": timeout,
+    })
+    # #endregion
+    # #region debug-point C:ssl-env
+    _debug_report("C", "utils/llm_client.py:chat_completion_raw", "SSL 与代理环境快照", {
+        "python_executable": sys.executable,
+        "python_version": sys.version,
+        "openssl": ssl.OPENSSL_VERSION,
+        "ssl_default_paths": str(ssl.get_default_verify_paths()),
+        "http_proxy": bool(os.environ.get("HTTP_PROXY") or os.environ.get("http_proxy")),
+        "https_proxy": bool(os.environ.get("HTTPS_PROXY") or os.environ.get("https_proxy")),
+        "all_proxy": bool(os.environ.get("ALL_PROXY") or os.environ.get("all_proxy")),
+        "ssl_cert_file": os.environ.get("SSL_CERT_FILE"),
+        "requests_ca_bundle": os.environ.get("REQUESTS_CA_BUNDLE"),
+    })
+    # #endregion
+    try:
+        async with session.post(
+            endpoint, json=payload, headers=headers, timeout=client_timeout
+        ) as resp:
+            if resp.status == 200:
+                data = await resp.json()
+                # #region debug-point B:post-ok
+                _debug_report("B", "utils/llm_client.py:chat_completion_raw", "LLM POST 请求成功", {
+                    "status": resp.status,
+                    "content_type": resp.headers.get("Content-Type"),
+                })
+                # #endregion
+                return data["choices"][0]["message"]
+            else:
+                err_info = await resp.text()
+                # #region debug-point E:http-error
+                _debug_report("E", "utils/llm_client.py:chat_completion_raw", "LLM POST 返回 HTTP 错误", {
+                    "status": resp.status,
+                    "content_type": resp.headers.get("Content-Type"),
+                    "error_prefix": err_info[:300],
+                })
+                # #endregion
+                raise Exception(f"HTTP {resp.status}: {err_info}")
+    except Exception as exc:
+        # #region debug-point D:post-exception
+        _debug_report("D", "utils/llm_client.py:chat_completion_raw", "LLM POST 抛出异常", {
+            "exception_type": type(exc).__name__,
+            "exception": str(exc),
+            "session_id": id(session),
+            "connector_id": id(session.connector),
+            "session_closed": session.closed,
+        })
+        # #endregion
+        raise
 
 
 async def chat_completion(
