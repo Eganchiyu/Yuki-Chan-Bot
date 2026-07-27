@@ -233,3 +233,47 @@ def test_send_qq_file_auto_detects_plain_file(tmp_path):
         assert sent_files[0][0] == "test_chat"
 
     asyncio.run(run())
+
+
+def test_parse_rich_message_miniapp_accepts_napcat_json_segment():
+    async def run():
+        from core.tools import parse_rich_message_tool
+
+        context = build_context()
+        context.metadata["message_objs"] = [
+            {
+                "name": "今夜は踊り狂乱です",
+                "message_id": 1376986332,
+                "segments": [
+                    {
+                        "type": "json",
+                        "data": {
+                            "data": json.dumps(
+                                {
+                                    "prompt": "[QQ小程序]捷克狼犬-我未来三年的生日礼物换的狗",
+                                    "meta": {
+                                        "detail_1": {
+                                            "title": "哔哩哔哩",
+                                            "desc": "捷克狼犬-我未来三年的生日礼物换的狗",
+                                            "qqdocurl": "https://b23.tv/CxLmUuP",
+                                        }
+                                    },
+                                },
+                                ensure_ascii=False,
+                            )
+                        },
+                    }
+                ],
+            }
+        ]
+
+        result = await parse_rich_message_tool(context, rich_type="miniapp")
+
+        assert result.success is True
+        assert result.data["type"] == "miniapp"
+        assert result.data["message_id"] == 1376986332
+        assert "小程序" in result.content
+        assert "捷克狼犬" in result.content
+        assert "https://b23.tv/CxLmUuP" in result.content
+
+    asyncio.run(run())

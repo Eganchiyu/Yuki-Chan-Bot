@@ -616,16 +616,6 @@ export class LAppModel extends CubismUserModel {
     this._model.addParameterValueById(this._idParamEyeBallY, this._dragY);
 
     const idleWave = Math.sin(this._userTimeSeconds * 1.7);
-    this._model.addParameterValueById(
-      this._idParamMouthForm,
-      0.16 + idleWave * 0.035,
-      0.35
-    );
-    this._model.addParameterValueById(
-      this._idParamMouthOpenY,
-      0.045 + Math.max(0, idleWave) * 0.025,
-      0.25
-    );
 
     if (this._breath != null) {
       this._breath.updateParameters(this._model, deltaTimeSeconds);
@@ -658,6 +648,15 @@ export class LAppModel extends CubismUserModel {
     if (this._pose != null) {
       this._pose.updateParameters(this._model, deltaTimeSeconds);
     }
+
+    this._model.setParameterValueById(
+      this._idParamMouthForm,
+      Math.min(1.0, 1.0 + idleWave * 0.02)
+    );
+    this._model.setParameterValueById(
+      this._idParamMouthOpenY,
+      0.18 + Math.max(0, idleWave) * 0.04
+    );
 
     this._model.update();
   }
