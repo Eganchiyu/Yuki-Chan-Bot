@@ -28,27 +28,27 @@ BADGE_RADIUS = 10
 SECTION_GAP = 22
 MIN_BODY_HEIGHT = 120
 
-# 设计系统：颜色
-BACKGROUND_COLOR = "#f6f8fa"
-CARD_BG_COLOR = "#ffffff"
-CARD_BORDER_COLOR = "#d8dee4"
-TITLE_COLOR = "#1f2328"
-BODY_COLOR = "#57606a"
-FOOTER_COLOR = "#57606a"
-LINK_COLOR = "#0969da"
-ADDITIONS_COLOR = "#1a7f37"
-DELETIONS_COLOR = "#cf222e"
-MUTED_COLOR = "#6e7781"
+# 设计系统：颜色（现代、协调、层级清晰）
+BACKGROUND_COLOR = "#f3f4f6"          # 温暖浅灰，减轻视觉疲劳
+CARD_BG_COLOR = "#ffffff"             # 纯白卡片，干净通透
+CARD_BORDER_COLOR = "#e5e7eb"         # 柔和边框，让阴影成为主角
+TITLE_COLOR = "#111827"               # 深墨黑，标题对比更强
+BODY_COLOR = "#4b5563"                # 均衡灰，正文阅读舒适
+FOOTER_COLOR = "#6b7280"              # 比正文稍浅，层级分明
+LINK_COLOR = "#2563eb"                # 鲜亮蓝，链接更醒目
+ADDITIONS_COLOR = "#16a34a"           # 清新绿，与 Push 事件统一
+DELETIONS_COLOR = "#dc2626"           # 醒目红，与 Discussion 事件统一
+MUTED_COLOR = "#9ca3af"               # 柔和灰，用于次要注释
 
-# 事件类型配色
+# 事件类型配色（更鲜明、对比更舒适的现代色调）
 EVENT_COLORS: dict[str, str] = {
-    "PushEvent": "#1a7f37",
-    "IssuesEvent": "#8956e3",
+    "PushEvent": "#16a34a",
+    "IssuesEvent": "#7c3aed",
     "PullRequestEvent": "#2563eb",
-    "IssueCommentEvent": "#6e7781",
-    "PullRequestReviewCommentEvent": "#6e7781",
-    "DiscussionEvent": "#d73a49",
-    "DiscussionCommentEvent": "#6e7781",
+    "IssueCommentEvent": "#6b7280",
+    "PullRequestReviewCommentEvent": "#6b7280",
+    "DiscussionEvent": "#dc2626",
+    "DiscussionCommentEvent": "#6b7280",
 }
 
 BADGE_LABELS: dict[str, str] = {
