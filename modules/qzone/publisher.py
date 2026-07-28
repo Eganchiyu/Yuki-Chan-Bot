@@ -10,6 +10,7 @@ import base64
 import urllib.request
 import urllib.parse
 from typing import Optional, List
+from utils.http_client import urlopen
 from utils.logger import get_logger
 
 logger = get_logger("qzone")
@@ -85,7 +86,7 @@ def _http_post(url: str, data: dict, cookies: str, referer: str,
     req.add_header("Referer", referer)
     req.add_header("Content-Type", content_type)
     req.add_header("Origin", "https://user.qzone.qq.com")
-    resp = urllib.request.urlopen(req, timeout=30)
+    resp = urlopen(req, timeout=30)
     return resp.read().decode("utf-8", errors="replace")
 
 

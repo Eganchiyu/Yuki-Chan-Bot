@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import httpx
 
+from utils.http_client import requests_verify
+
 _GITHUB_API_BASE = "https://api.github.com"
 _DEFAULT_TIMEOUT = 30.0
 
@@ -34,6 +36,7 @@ class GitHubClient:
             base_url=base_url,
             headers=github_headers(token),
             timeout=httpx.Timeout(timeout),
+            verify=requests_verify(),
         )
 
     async def __aenter__(self) -> GitHubClient:

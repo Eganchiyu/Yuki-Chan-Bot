@@ -14,6 +14,7 @@ import urllib.request
 import urllib.parse
 from typing import Optional, List
 
+from utils.http_client import urlopen
 from utils.logger import get_logger
 
 logger = get_logger("qzone_monitor")
@@ -112,7 +113,7 @@ def _http_get(url: str, params: dict, cookies: str, referer: str) -> str:
     req.add_header("Cookie", cookies)
     req.add_header("User-Agent", UA)
     req.add_header("Referer", referer)
-    return urllib.request.urlopen(req, timeout=15).read().decode("utf-8", errors="replace")
+    return urlopen(req, timeout=15).read().decode("utf-8", errors="replace")
 
 
 # ── API 封装 ───────────────────────────────────────────────
@@ -219,7 +220,7 @@ async def describe_image(url: str, connector=None) -> Optional[str]:
         if cookies:
             req.add_header("Cookie", cookies)
 
-        resp = urllib.request.urlopen(req, timeout=10)
+        resp = urlopen(req, timeout=10)
         image_data = resp.read()
 
         # 压缩

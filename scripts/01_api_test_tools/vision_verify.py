@@ -8,6 +8,7 @@ from pathlib import Path
 # 将项目根目录加入路径以导入 config
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from config import cfg
+from utils.http_client import create_tcp_connector
 
 # --- 配置区 ---
 API_KEY = cfg.LLM_API_KEY
@@ -84,7 +85,7 @@ async def verify_b64_model(session, model_name):
 
 async def main():
     print(f"🧪 开始 Base64 模式下视觉模型通路验证...\n")
-    async with aiohttp.ClientSession() as session:
+    async with aiohttp.ClientSession(connector=create_tcp_connector()) as session:
         for model in MODELS_TO_CHECK:
             print(f"正在验证 [{model}] ...", end="", flush=True)
             success, cost, result = await verify_b64_model(session, model)

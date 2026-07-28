@@ -73,6 +73,59 @@ from utils.logger import get_logger
 - 记录错误日志
 - 提供降级方案
 
+### 1.4 网络连接规范
+
+项目所有外部网络请求必须统一使用 `utils.http_client` 提供的 SSL/certifi 入口，避免直接使用系统默认证书链导致 `[ASN1: NOT_ENOUGH_DATA] not enough data (_ssl.c:4040)` 等 SSL 错误。
+
+**aiohttp 请求**：
+- 必须使用 `create_tcp_connector()` 创建连接器。
+- 禁止直接 `aiohttp.ClientSession()` 发起 HTTPS 请求。
+
+```python
+from utils.http_client import create_tcp_connector
+
+async with aiohttp.ClientSession(connector=create_tcp_connector()) as session:
+    async with session.get(url) as resp:
+        data = await resp.text()
+```
+
+**urllib 请求**：
+- 必须使用 `utils.http_client.urlopen()`。
+- 禁止直接使用 `urllib.request.urlopen()`。
+
+```python
+from utils.http_client import urlopen
+
+with urlopen(url, timeout=10) as response:
+    data = response.read()
+```
+
+**requests / httpx 请求**：
+- 必须使用 `requests_verify()` 指定 certifi CA。
+
+```python
+from utils.http_client import requests_verify
+
+requests.get(url, verify=requests_verify(), timeout=10)
+httpx.AsyncClient(verify=requests_verify())
+```
+
+**WebSocket 连接**：
+- `ws://` 不需要 SSL。
+- `wss://` 必须传入 `create_ssl_context()`。
+
+```python
+from urllib.parse import urlparse
+from utils.http_client import create_ssl_context
+
+connect_kwargs = {}
+if urlparse(ws_url).scheme == "wss":
+    connect_kwargs["ssl"] = create_ssl_context()
+
+async with websockets.connect(ws_url, **connect_kwargs) as websocket:
+    ...
+```
+
 ---
 
 ## 二、Git 提交规范
@@ -128,21 +181,6 @@ Closes #123
 - [ ] **Changelog 更新**：记录了重要变更
 - [ ] **无敏感信息**：API Key、密码等未暴露
 
-### 2.3 分支管理
-
-**主分支**：
-- `main`: 生产环境代码
-- `develop`: 开发分支
-
-**功能分支**：
-- `feature/<功能名>`: 新功能开发
-- `fix/<问题名>`: Bug 修复
-- `docs/<文档名>`: 文档更新
-
-**分支命名**：
-- 使用小写字母和连字符
-- 例如：`feature/function-call`, `fix/memory-leak`
-
 ---
 
 ## 三、文档规范
@@ -191,18 +229,6 @@ Closes #123
 - 使用 `.gitignore` 排除敏感文件
 - 使用环境变量存储敏感配置
 - 定期轮换 API Key
-
-### 4.2 代码安全
-
-**输入验证**：
-- 验证所有外部输入
-- 防止 SQL 注入、XSS 等攻击
-- 限制输入长度和类型
-
-**错误处理**：
-- 不暴露内部错误详情
-- 记录详细错误日志
-- 提供友好的错误提示
 
 ---
 
@@ -320,10 +346,10 @@ git config init.defaultBranch main
 
 ### 8.4 Python 运行环境
 
-运行项目脚本、测试、lint 或 typecheck 前，必须先在 PowerShell 中启用 Conda 环境：
+运行项目脚本、测试、lint 或 typecheck 前，必须先在 PowerShell 中启用 uv 创建的项目虚拟环境：
 
 ```powershell
-conda activate ai_env
+.\.venv\Scripts\activate
 ```
 
 ---
@@ -350,32 +376,8 @@ conda activate ai_env
 - 是否有潜在的 Bug
 - 是否有安全隐患
 - 是否有性能问题
-
 ---
 
-## 十、附录
-
-### 10.1 参考资源
-
-- [PEP 8 - Python 代码风格指南](https://peps.python.org/pep-0008/)
-- [Google Python 风格指南](https://google.github.io/styleguide/pyguide.html)
-- [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)
-- [语义化版本](https://semver.org/lang/zh-CN/)
-- [Conventional Commits](https://www.conventionalcommits.org/zh-hans/v1.0.0/)
-
-### 10.2 常见问题
-
-**Q: 如何处理敏感信息？**
-A: 使用环境变量存储，不要提交到代码库。
-
-**Q: 如何更新文档？**
-A: 修改代码后，同步更新 `docs/` 目录下的相关文档。
-
-**Q: 如何提交代码？**
-A: 遵循提交规范，一次提交只做一件事。
-
----
-
-**文档版本**：v1.0  
-**最后更新**：2026-06-01  
+**文档版本**：v1.0.0
+**最后更新**：2026-07-28
 **维护人员**：项目开发团队

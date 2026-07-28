@@ -6,9 +6,11 @@ import os
 import threading
 import time
 import urllib.parse
-import urllib.request
 from datetime import datetime
 from typing import Any
+from urllib.parse import urlparse
+
+from utils.http_client import create_ssl_context, urlopen
 
 try:
     import websockets
@@ -40,7 +42,7 @@ def _reverse_geocode(longitude: Any, latitude: Any) -> dict[str, Any] | None:
         "output": "JSON",
     })
     url = f"{AMAP_REVERSE_GEOCODE_URL}?{params}"
-    with urllib.request.urlopen(url, timeout=AMAP_REVERSE_GEOCODE_TIMEOUT_SECONDS) as response:
+    with urlopen(url, timeout=AMAP_REVERSE_GEOCODE_TIMEOUT_SECONDS) as response:
         data = json.loads(response.read().decode("utf-8"))
 
     if data.get("status") != "1":
@@ -84,7 +86,11 @@ async def _fetch_latest_location() -> dict[str, Any]:
     if websockets is None:
         raise RuntimeError("websockets 未安装，GPS-VPS 接收端不可用")
 
-    async with websockets.connect(GPS_VPS_SERVER_URL) as websocket:
+    connect_kwargs = {}
+    if urlparse(GPS_VPS_SERVER_URL).scheme == "wss":
+        connect_kwargs["ssl"] = create_ssl_context()
+
+    async with websockets.connect(GPS_VPS_SERVER_URL, **connect_kwargs) as websocket:
         message = await asyncio.wait_for(websocket.recv(), timeout=GPS_VPS_FETCH_TIMEOUT_SECONDS)
 
     try:

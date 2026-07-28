@@ -12,7 +12,7 @@ from typing import List, Dict, Any, Optional
 import aiohttp
 
 from config import cfg
-from utils.http_client import create_ssl_context as _create_ssl_context
+from utils.http_client import create_tcp_connector
 from utils.logger import get_logger
 
 logger = get_logger("llm_client")
@@ -53,11 +53,10 @@ async def _get_global_session() -> aiohttp.ClientSession:
     """获取全局共享的 aiohttp Session，复用 TCP 连接。"""
     global _global_session
     if _global_session is None or _global_session.closed:
-        connector = aiohttp.TCPConnector(
+        connector = create_tcp_connector(
             limit=10,
             use_dns_cache=True,
             ttl_dns_cache=300,
-            ssl=_create_ssl_context(),
         )
         _global_session = aiohttp.ClientSession(
             connector=connector,

@@ -10,6 +10,7 @@ import aiohttp
 import asyncio
 import os
 import config as cfg
+from utils.http_client import create_tcp_connector
 
 class MemoryAuditor:
     def __init__(self):
@@ -37,7 +38,7 @@ class MemoryAuditor:
 
         for attempt in range(retries):
             try:
-                async with aiohttp.ClientSession() as session:
+                async with aiohttp.ClientSession(connector=create_tcp_connector()) as session:
                     async with session.post(self.api_url, json=payload, headers=headers, timeout=20) as resp:
                         if resp.status == 200:
                             data = await resp.json()
@@ -74,7 +75,7 @@ class MemoryAuditor:
 
         for attempt in range(retries):
             try:
-                async with aiohttp.ClientSession() as session:
+                async with aiohttp.ClientSession(connector=create_tcp_connector()) as session:
                     async with session.post(self.api_url, json=payload, headers=headers, timeout=30) as resp:
                         if resp.status == 200:
                             data = await resp.json()
@@ -269,7 +270,7 @@ def semantic_deduplication(rag, chat_id, threshold=0.92):
         print(f"✅ 审计完成！未发现相似度高于 {threshold} 的冗余记录。")
         return
 
-    print(f"\n{" 发现冗余建议 ":!^40}")
+    print(f"\n{' 发现冗余建议 ':!^40}")
     for i, j, score in redundant_pairs[:10]:  # 最多显示10组预览
         print(f"\n[相似度: {score:.4f}]")
         print(f"保留项: {docs[i]}...")

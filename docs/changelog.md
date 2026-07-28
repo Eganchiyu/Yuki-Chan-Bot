@@ -26,6 +26,7 @@
 - 新增 `config.py` 中 `StructuredMemoryConfig` 配置组，支持通过 `config.yaml` 控制结构化记忆开关和召回数量参数（`enabled`、`max_profiles`、`max_facts`、`max_summaries`），默认关闭
 
 ### 变更
+- 统一项目网络连接 SSL 配置，新增 `utils.http_client` 作为 certifi CA 入口，并覆盖 aiohttp、urllib、httpx、requests 和 wss WebSocket 调用
 - 表情包发送阶段的情绪判断改为本地规则，避免每次 `[MEME]` 检索额外调用 LLM 导致发送延迟
 - 旧 RAG 日记召回取消按群聊硬隔离，改为全局召回后对当前群聊日记和当前发言者姓名进行加权重排
 - Prompt 注入全局模式状态，使 QQChatMode 收到新消息时能感知当前浏览器等聚焦模式是否运行

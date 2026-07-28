@@ -7,6 +7,7 @@ from urllib.parse import urlparse, urlencode, parse_qs, urlunparse
 from typing import Optional, Dict
 from config import cfg
 from asyncio import Future
+from utils.http_client import create_ssl_context
 from utils.logger import get_logger
 
 logger = get_logger("ws_connection")
@@ -58,11 +59,16 @@ class BotConnector:
                     logger.warning("[Network] 检测到连接状态异常，正在重建...")
 
                 connect_url = self._get_connection_url()
+                connect_kwargs = {}
+                if urlparse(connect_url).scheme == "wss":
+                    connect_kwargs["ssl"] = create_ssl_context()
+
                 self.websocket = await websockets.connect(
                     connect_url,
                     ping_interval=20,
                     ping_timeout=60,
-                    close_timeout=10
+                    close_timeout=10,
+                    **connect_kwargs,
                 )
                 logger.info(f"[Network] 全局连接已建立: {self.ws_url}")
 

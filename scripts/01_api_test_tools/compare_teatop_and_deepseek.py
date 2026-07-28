@@ -8,6 +8,7 @@ from pathlib import Path
 # 将项目根目录加入路径以导入 config
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from config import cfg
+from utils.http_client import create_tcp_connector
 
 # --- 配置区 ---
 # 1. 官方 DeepSeek 配置
@@ -48,7 +49,7 @@ async def fetch_test(session, url, key, model_name, provider_name):
 
 async def run_benchmark(provider, url, key, model, rounds=5):
     print(f"🚀 开始测试 {provider} ({model})...")
-    async with aiohttp.ClientSession() as session:
+    async with aiohttp.ClientSession(connector=create_tcp_connector()) as session:
         results = []
         for i in range(rounds):
             res = await fetch_test(session, url, key, model, provider)

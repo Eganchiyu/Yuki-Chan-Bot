@@ -5,6 +5,9 @@ from datetime import datetime, timezone
 
 import websockets
 from websockets.exceptions import ConnectionClosed
+from urllib.parse import urlparse
+
+from utils.http_client import create_ssl_context
 
 SERVER_URL = "ws://8.217.41.28:8765"
 SEND_INTERVAL = 3
@@ -27,7 +30,10 @@ async def send_locations() -> None:
     while True:
         try:
             print(f"[CONNECT] 正在连接服务器: {SERVER_URL}")
-            async with websockets.connect(SERVER_URL) as websocket:
+            connect_kwargs = {}
+            if urlparse(SERVER_URL).scheme == "wss":
+                connect_kwargs["ssl"] = create_ssl_context()
+            async with websockets.connect(SERVER_URL, **connect_kwargs) as websocket:
                 print("[CONNECTED] 已连接服务器，开始发送模拟 GPS 数据")
 
                 while True:

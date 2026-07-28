@@ -8,6 +8,7 @@ from pathlib import Path
 # 将项目根目录加入路径以导入 config
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from config import cfg
+from utils.http_client import create_tcp_connector
 
 TEATOP_API_KEY = cfg.LLM_API_KEY
 BASE_URL = cfg.LLM_BASE_URL + "/chat/completions"
@@ -161,7 +162,7 @@ async def hunt_model_stable(session, model_name, rounds=3):
 
 async def main():
     print(f"📡 V3.0 深度全量对照实验开始... \n")
-    async with aiohttp.ClientSession() as session:
+    async with aiohttp.ClientSession(connector=create_tcp_connector()) as session:
         tasks = [hunt_model_stable(session, m) for m in MODELS_TO_HUNT]
         reports = await asyncio.gather(*tasks)
 

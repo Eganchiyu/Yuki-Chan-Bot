@@ -296,6 +296,7 @@ class MessageSender:
 # ============ 查询支持音色的测试代码 ============
 if __name__ == "__main__":
     import requests
+    from utils.http_client import requests_verify
 
     print("正在获取 NapCat 支持的 AI 音色列表...")
     # 从配置中获取 NapCat HTTP 地址，测试群号使用配置中的第一个群组
@@ -305,7 +306,8 @@ if __name__ == "__main__":
     try:
         res = requests.post(
             f"{BASE_URL}/get_ai_characters",
-            json={"group_id": str(TEST_GROUP_ID), "chat_type": 1}
+            json={"group_id": str(TEST_GROUP_ID), "chat_type": 1},
+            verify=requests_verify(),
         ).json()
 
         if res.get("status") == "ok":
