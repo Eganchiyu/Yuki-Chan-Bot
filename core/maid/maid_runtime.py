@@ -2,6 +2,7 @@ import ast
 import asyncio
 import json
 import os
+import shutil
 import subprocess
 import sys
 import venv
@@ -18,17 +19,67 @@ from core.maid.maid_common import (
 )
 
 
-async def _ensure_maid_env() -> str:
-    """获取小女仆专属虚拟环境的 Python 执行路径。如果不存在则自动创建。"""
+def _get_maid_python_exec() -> str:
+    """获取小女仆专属虚拟环境的 Python 执行路径。"""
     if os.name == 'nt':
-        python_exec = os.path.join(MAID_VENV_DIR, "Scripts", "python.exe")
-    else:
-        python_exec = os.path.join(MAID_VENV_DIR, "bin", "python")
+        return os.path.join(MAID_VENV_DIR, "Scripts", "python.exe")
+    return os.path.join(MAID_VENV_DIR, "bin", "python")
+
+
+def _handle_rmtree_error(func, path, exc_info) -> None:
+    """处理 Windows 虚拟环境只读文件或权限残留导致的删除失败。"""
+    try:
+        os.chmod(path, 0o700)
+        func(path)
+    except Exception as e:
+        logger.warning(f"[Maid] 删除虚拟环境残留失败: {path}, {e}")
+
+
+async def _is_maid_env_usable(python_exec: str) -> tuple[bool, str]:
+    """确认虚拟环境解释器真实可启动，避免保留已失效的旧环境。"""
+    if not os.path.exists(python_exec):
+        return False, "未找到 Python 执行文件"
+
+    try:
+        process = await asyncio.create_subprocess_exec(
+            python_exec, "--version",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=10)
+    except Exception as e:
+        return False, str(e)
+
+    output = _decode_process_output(stdout or stderr).strip()
+    if process.returncode != 0:
+        return False, output or f"python --version 返回 {process.returncode}"
+    return True, output
+
+
+async def _create_maid_env() -> None:
+    logger.info("[Maid] 正在创建专属虚拟环境 (初次创建可能需要几秒钟)...")
+    await asyncio.to_thread(venv.create, MAID_VENV_DIR, with_pip=True)
+    logger.info("[Maid] 专属虚拟环境创建完毕。")
+
+
+async def _rebuild_maid_env(reason: str) -> None:
+    logger.warning(f"[Maid] 检测到虚拟环境不可用，将重建：{reason}")
+    if os.path.exists(MAID_VENV_DIR):
+        await asyncio.to_thread(shutil.rmtree, MAID_VENV_DIR, onerror=_handle_rmtree_error)
+    await _create_maid_env()
+
+
+async def _ensure_maid_env() -> str:
+    """获取小女仆专属虚拟环境的 Python 执行路径。如果不存在或损坏则自动创建。"""
+    python_exec = _get_maid_python_exec()
 
     if not os.path.exists(python_exec):
-        logger.info("[Maid] 检测到无虚拟环境，正在创建专属虚拟环境 (初次创建可能需要几秒钟)...")
-        await asyncio.to_thread(venv.create, MAID_VENV_DIR, with_pip=True)
-        logger.info("[Maid] 专属虚拟环境创建完毕。")
+        logger.info("[Maid] 检测到无虚拟环境。")
+        await _create_maid_env()
+    else:
+        usable, reason = await _is_maid_env_usable(python_exec)
+        if not usable:
+            await _rebuild_maid_env(reason)
 
     return python_exec
 

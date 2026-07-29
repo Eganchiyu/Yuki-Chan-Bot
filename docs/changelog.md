@@ -26,6 +26,7 @@
 - 新增 `config.py` 中 `StructuredMemoryConfig` 配置组，支持通过 `config.yaml` 控制结构化记忆开关和召回数量参数（`enabled`、`max_profiles`、`max_facts`、`max_summaries`），默认关闭
 
 ### 变更
+- 小女仆专属虚拟环境启动前会验证 Python 是否可用，检测到旧解释器丢失或环境损坏时自动重建
 - GitHub 仓库监控的单仓库推送目标改为 `chat_ids` 列表，支持一个仓库推送到多个群聊
 - 统一项目网络连接 SSL 配置，新增 `utils.http_client` 作为 certifi CA 入口，并覆盖 aiohttp、urllib、httpx、requests 和 wss WebSocket 调用
 - 表情包发送阶段的情绪判断改为本地规则，避免每次 `[MEME]` 检索额外调用 LLM 导致发送延迟
