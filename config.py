@@ -403,9 +403,9 @@ class GitHubMonitorRepoConfig:
         comment="轮询间隔（秒）",
         section="github_monitor"
     )
-    chat_id: str = config_field(
-        "",
-        comment="推送到的群号/QQ号（留空则使用 default_chat_ids）",
+    chat_ids: List[str] = config_field_factory(
+        list,
+        comment="推送到的群号/QQ号列表（留空则使用 default_chat_ids）",
         section="github_monitor"
     )
     modes: List[str] = config_field_factory(

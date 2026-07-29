@@ -50,14 +50,14 @@ class GitHubRepoConfig:
         repo: str,
         token: str = "",
         poll_interval: int = _DEFAULT_POLL_INTERVAL,
-        chat_id: str = "",
+        chat_ids: Optional[List[str]] = None,
         modes: Optional[List[str]] = None,
     ):
         self.owner = owner
         self.repo = repo
         self.token = token
         self.poll_interval = poll_interval
-        self.chat_id = chat_id
+        self.chat_ids = chat_ids or []
         self.modes = modes or ["group"]
 
     @property
@@ -318,9 +318,9 @@ class GitHubMonitor:
 
     async def _send_to_chats(self, repo: GitHubRepoConfig, content: str, card_path: str = "") -> None:
         """将构建好的内容推送到关联的 chat_ids。"""
-        chat_ids = [repo.chat_id] if repo.chat_id else getattr(
+        chat_ids = _normalize_chat_ids(repo.chat_ids or getattr(
             getattr(cfg, "github_monitor", None), "default_chat_ids", []
-        ) or []
+        ))
 
         if not chat_ids:
             logger.warning("[GitHubMonitor] %s 事件未配置 chat_id，跳过推送", repo.key)
@@ -453,10 +453,18 @@ async def ensure_monitor_started(
     await _monitor_instance.start()
 
 
+def _normalize_chat_ids(value: Any) -> List[str]:
+    """将 chat_id / chat_ids 配置统一转换为字符串列表。"""
+    if value is None or value == "":
+        return []
+    if isinstance(value, (list, tuple, set)):
+        return [str(cid).strip() for cid in value if str(cid).strip()]
+    return [str(value).strip()]
+
+
 def _load_repos_from_config() -> List[GitHubRepoConfig]:
     """从 config 加载仓库列表。"""
     repos_cfg = getattr(getattr(cfg, "github_monitor", None), "repos", []) or []
-    default_chat_ids = getattr(getattr(cfg, "github_monitor", None), "default_chat_ids", []) or []
     default_token = getattr(getattr(cfg, "github_monitor", None), "github_token", "") or ""
     default_interval = getattr(getattr(cfg, "github_monitor", None), "poll_interval", _DEFAULT_POLL_INTERVAL) or _DEFAULT_POLL_INTERVAL
 
@@ -466,12 +474,13 @@ def _load_repos_from_config() -> List[GitHubRepoConfig]:
         repo = str(r.get("repo", "")).strip()
         if not owner or not repo:
             continue
+        chat_ids = _normalize_chat_ids(r.get("chat_ids", r.get("chat_id", "")))
         repos.append(GitHubRepoConfig(
             owner=owner,
             repo=repo,
             token=str(r.get("token", default_token)).strip(),
             poll_interval=int(r.get("poll_interval", default_interval)),
-            chat_id=str(r.get("chat_id", "")).strip(),
+            chat_ids=chat_ids,
             modes=r.get("modes", ["group"]),
         ))
     return repos
