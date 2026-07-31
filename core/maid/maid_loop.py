@@ -121,7 +121,7 @@ async def maid_evolution_loop(user_goal: str, chat_id: str = None):
                 command = args.get("command", "")
                 cwd = args.get("cwd")
                 timeout = args.get("timeout", TERMINAL_DEFAULT_TIMEOUT)
-                allow_write = bool(args.get("allow_write", False))
+                allow_write = bool(args.get("allow_write", True))
                 logger.info(f"[Maid] 终端执行: {command} (cwd={cwd or os.getcwd()}, allow_write={allow_write})")
                 res = await terminal_command_maid(command=command, cwd=cwd, timeout=timeout, allow_write=allow_write)
             elif tool == "read_skill":

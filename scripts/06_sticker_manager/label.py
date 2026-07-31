@@ -1,17 +1,22 @@
 import os
+import sys
 import json
 import hashlib
 import asyncio
+from pathlib import Path
+
 import gradio as gr
 
-# 导入你现有的配置和Manager基础设施
-from config import cfg
-from network.api_request import ApiCall
-from modules.stickers.manager import StickerManager
+# 确保从脚本目录运行时也能导入项目根目录模块
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
-# 初始化你的 Manager（复用现有的视觉 API 请求逻辑）
-dummy_llm = ApiCall(cfg.LLM_API_KEY, cfg.LLM_BASE_URL)
-manager = StickerManager(dummy_llm)
+from modules.stickers.manager import StickerManager
+from utils.llm_client import close_global_session
+
+# 初始化 Manager（复用现有的视觉 API 请求逻辑）
+manager = StickerManager()
 
 
 # ================= 1. 重命名核心逻辑 =================
@@ -51,6 +56,8 @@ async def get_ai_labels(image_path):
     try:
         # 复用 manager.py 中的大模型分析逻辑
         analysis = await manager.structured_analysis(image_path)
+        if analysis.get("description") == "识别失败":
+            print(f"视觉识别失败，请查看上方日志和 configs/config.yaml 中的视觉模型配置: {image_path}")
         return (
             analysis.get("description", ""),
             analysis.get("emotion", "中性"),
@@ -58,7 +65,10 @@ async def get_ai_labels(image_path):
             ", ".join(analysis.get("tags", []))
         )
     except Exception as e:
+        print(f"视觉识别异常: {e}")
         return f"识别失败: {e}", "中性", "", ""
+    finally:
+        await close_global_session()
 
 
 def run_ai_sync(image_path):

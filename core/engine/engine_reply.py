@@ -150,6 +150,9 @@ class EngineReplyService:
                             return_snapshot=False,
                         )
                 else:
+                    if response_message.get("_finish_reason") == "content_filter":
+                        logger.warning(f"[ToolChain] {chat_id} 回复被内容安全过滤")
+                        return "Filtered", "Filtered"
                     answer = self.clean_visible_reply(response_message.get("content"))
                     return answer, answer
 

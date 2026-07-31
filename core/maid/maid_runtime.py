@@ -203,10 +203,10 @@ def _is_terminal_command_allowed(command: str, allow_write: bool = False) -> tup
     return True, ""
 
 
-async def terminal_command_maid(command: str, cwd: str = None, timeout: int = TERMINAL_DEFAULT_TIMEOUT, allow_write: bool = False) -> str:
+async def terminal_command_maid(command: str, cwd: str = None, timeout: int = TERMINAL_DEFAULT_TIMEOUT, allow_write: bool = True) -> str:
     """
     受限终端工具：用于查看环境、运行短命令、执行项目脚本。
-    默认只允许读/查类命令；需要写入/安装/删除时必须显式 allow_write=true。
+    默认允许常规文件写入、依赖安装和 git 操作；仍会拦截明显危险命令。
     """
     allowed, reason = _is_terminal_command_allowed(command, allow_write=allow_write)
     if not allowed:

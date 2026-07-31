@@ -26,6 +26,8 @@
 - 新增 `config.py` 中 `StructuredMemoryConfig` 配置组，支持通过 `config.yaml` 控制结构化记忆开关和召回数量参数（`enabled`、`max_profiles`、`max_facts`、`max_summaries`），默认关闭
 
 ### 变更
+- LLM 回复生成保留 `finish_reason` 等安全过滤信号，被内容安全过滤时发送 `Filtered`，避免空回复静默吞掉
+- 小女仆 terminal 默认允许常规写入、依赖安装和 git 操作，仅保留高风险命令拦截
 - 小女仆专属虚拟环境启动前会验证 Python 是否可用，检测到旧解释器丢失或环境损坏时自动重建
 - GitHub 仓库监控的单仓库推送目标改为 `chat_ids` 列表，支持一个仓库推送到多个群聊
 - 统一项目网络连接 SSL 配置，新增 `utils.http_client` 作为 certifi CA 入口，并覆盖 aiohttp、urllib、httpx、requests 和 wss WebSocket 调用

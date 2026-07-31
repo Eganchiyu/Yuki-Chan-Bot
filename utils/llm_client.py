@@ -92,7 +92,16 @@ async def chat_completion_raw(
     ) as resp:
         if resp.status == 200:
             data = await resp.json()
-            return data["choices"][0]["message"]
+            choice = data["choices"][0]
+            message = choice["message"]
+            finish_reason = choice.get("finish_reason")
+            if finish_reason:
+                message["_finish_reason"] = finish_reason
+            if choice.get("content_filter_results"):
+                message["_content_filter_results"] = choice["content_filter_results"]
+            if finish_reason == "content_filter":
+                logger.warning("[LLM] 回复被内容安全过滤")
+            return message
 
         err_info = await resp.text()
         raise Exception(f"HTTP {resp.status}: {err_info}")
@@ -195,6 +204,8 @@ async def llm_chat(
         模型生成的文本；全部失败时返回降级提示消息
     """
     message = await llm_chat_raw(messages, model=model, **kwargs)
+    if message.get("_finish_reason") == "content_filter":
+        return "Filtered"
     return message.get("content") or ""
 
 
@@ -228,7 +239,13 @@ async def vision_chat(
 async def close_global_session() -> None:
     """关闭全局 aiohttp Session，在程序退出时调用。"""
     global _global_session
-    if _global_session and not _global_session.closed:
-        await _global_session.close()
+    if _global_session is None:
+        return
+    try:
+        if not _global_session.closed:
+            await _global_session.close()
+    except Exception:
+        # 兼容 session 绑定在已关闭事件循环上的情况
+        pass
+    finally:
         _global_session = None
-        logger.info("[LLM] 全局 Session 已关闭")

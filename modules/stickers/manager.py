@@ -19,6 +19,7 @@ from sentence_transformers import SentenceTransformer
 from config import cfg
 from modules.vision.processor import MemeProcessor
 from utils.http_client import create_tcp_connector
+from utils.llm_client import vision_chat
 from utils.logger import get_logger
 
 logger = get_logger("stickers")
@@ -138,42 +139,26 @@ class StickerManager:
                 img_data = f.read()
                 b64_str = base64.b64encode(img_data).decode('utf-8')
 
-            payload = {
-                "model": cfg.VISION_MODEL,
-                "messages": [
-                    {
-                        "role": "user",
-                        "content": [
-                            {
-                                "type": "image_url",
-                                "image_url": {"url": f"data:image/jpeg;base64,{b64_str}"}
-                            },
-                            {"type": "text", "text": prompt_text}
-                        ]
-                    }
-                ],
-                "max_tokens": 400,
-                "temperature": 0.3
-            }
+            messages = [
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": f"data:image/jpeg;base64,{b64_str}"}
+                        },
+                        {"type": "text", "text": prompt_text}
+                    ]
+                }
+            ]
 
-            headers = {
-                "Authorization": f"Bearer {cfg.IMAGE_PROCESS_API_KEY}",
-                "Content-Type": "application/json"
-            }
-
-            import aiohttp
-            # 这里直接走专门的图像处理通道，不走文本 LLM 的通道
-            async with aiohttp.ClientSession(
-                connector=create_tcp_connector(),
-                timeout=cfg.REQUEST_TIMEOUT,
-            ) as session:
-                async with session.post(cfg.IMAGE_PROCESS_API_URL, json=payload, headers=headers) as resp:
-                    if resp.status == 200:
-                        data = await resp.json()
-                        raw = data["choices"][0]["message"]["content"]
-                    else:
-                        error_text = await resp.text()
-                        raise Exception(f"Vision API HTTP {resp.status}: {error_text}")
+            # 复用统一视觉客户端，自动规范化 OpenAI 兼容接口地址
+            raw = await vision_chat(
+                messages=messages,
+                model=cfg.VISION_MODEL,
+                max_tokens=400,
+                temperature=0.3,
+            )
 
             # 清洗结果
             cleaned = raw.strip()
@@ -229,10 +214,12 @@ class StickerManager:
             # 1. 语义基础分 (来自 RAG 的余弦相似度，权重最高)
             semantic_score = cand.get("score_vector", 0.0) * 5.0
 
-            # 2. 新鲜度奖励 (指数衰减)
+            # 2. 新鲜度奖励：新入库表情需要有短期试用窗口
             create_time = cand.get("create_time", current_time)
-            days_since_creation = (current_time - create_time) / (24 * 3600)
-            freshness_bonus = math.exp(-0.1 * days_since_creation)
+            days_since_creation = max((current_time - create_time) / (24 * 3600), 0.0)
+            freshness_bonus = 1.2 * math.exp(-0.08 * days_since_creation)
+            if cand.get("use_count", 0) == 0:
+                freshness_bonus += 1.0
 
             # 3. 积热冷却惩罚 (防发散与真正遗忘机制)
             last_heat = cand.get("heat", 0.0)
@@ -246,14 +233,21 @@ class StickerManager:
             # 暂存当前残余热度，供后续选中时升温使用
             cand["current_heat"] = current_heat
 
-            # 4. 正反馈偏好加成 (群友越爱看，发得越多)
-            pref_bonus = 0.8 * cand.get("preference", 0)
+            # 4. 正反馈偏好加成：使用对数压缩，避免老表情历史偏好无限压制新表情
+            pref_bonus = 0.8 * math.log1p(max(cand.get("preference", 0), 0))
 
             # 5. 随机游走噪声 (人类灵魂)
             noise = random.uniform(0, 0.2)
 
             # 综合打分
-            cand["final_score"] = semantic_score + freshness_bonus - penalty + pref_bonus + noise
+            cand["final_score"] = (
+                semantic_score
+                + cand.get("score_keyword", 0.0)
+                + freshness_bonus
+                - penalty
+                + pref_bonus
+                + noise
+            )
 
         # 降序排列，取 Top 8
         candidates.sort(key=lambda x: x["final_score"], reverse=True)
