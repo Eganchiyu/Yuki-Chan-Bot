@@ -16,6 +16,17 @@ YukiV6 配置系统
 """
 
 import os
+
+# Fix invalid SSL_CERT_FILE/DIR environment variables
+# 防止 httpx 因指向不存在文件而报 FileNotFoundError
+def _fix_invalid_ssl_env():
+    import os as _os
+    for _var in ('SSL_CERT_FILE', 'SSL_CERT_DIR'):
+        _val = _os.environ.get(_var, '')
+        if _val and not _os.path.exists(_val):
+            _os.environ.pop(_var, None)
+_fix_invalid_ssl_env()
+
 from dataclasses import dataclass, field, fields
 from typing import List, Optional, Any
 

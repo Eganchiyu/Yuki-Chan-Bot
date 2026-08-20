@@ -33,8 +33,8 @@ def get_ca_file() -> str:
 def configure_ssl_environment() -> str:
     """为 requests/urllib/httpx 等库设置统一 CA 环境变量。"""
     cafile = get_ca_file()
-    os.environ.setdefault("SSL_CERT_FILE", cafile)
-    os.environ.setdefault("REQUESTS_CA_BUNDLE", cafile)
+    os.environ["SSL_CERT_FILE"] = cafile
+    os.environ["REQUESTS_CA_BUNDLE"] = cafile
     return cafile
 
 

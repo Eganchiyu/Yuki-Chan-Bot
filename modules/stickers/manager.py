@@ -21,6 +21,7 @@ from modules.vision.processor import MemeProcessor
 from utils.http_client import create_tcp_connector
 from utils.llm_client import vision_chat
 from utils.logger import get_logger
+from utils.paths import normalize_stored_path
 
 logger = get_logger("stickers")
 
@@ -515,7 +516,7 @@ if __name__ == "__main__":
                         "heat": round(meta.get("heat", 0.0), 2),
                         "used": meta.get("use_count", 0),
                         "desc": meta.get("description", "无描述"),
-                        "path": meta.get("image_ref", "路径丢失")
+                        "path": normalize_stored_path(meta.get("image_ref", "路径丢失"))
                     })
 
                 # 排序：好感度优先，热度次之

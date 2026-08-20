@@ -11,6 +11,7 @@ from typing import Any
 from config import cfg
 from modules.debug.context_snapshot import PIPELINE_STAGES, context_snapshot_store
 from utils.logger import get_logger
+from utils.paths import normalize_stored_path
 
 logger = get_logger("session_pipeline")
 
@@ -543,7 +544,7 @@ class SessionPipeline:
                     best_meme_data = await self.sticker_manager.get_suitable_sticker(search_query, chat_id)
 
                     if best_meme_data:
-                        image_path = os.path.abspath(best_meme_data['image_ref'])
+                        image_path = os.path.abspath(normalize_stored_path(best_meme_data['image_ref']))
                         self.yuki.last_sent_meme[chat_id] = best_meme_data['id']
 
                         # 发送 CQ 码
