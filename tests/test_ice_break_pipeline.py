@@ -211,7 +211,6 @@ async def test_feed_message_filters_bot_unless_whitelisted():
     pipeline.yuki.last_message_time = {}
     pipeline.history_manager = MagicMock()
     pipeline.enqueue_message = AsyncMock(side_effect=enqueue_message)
-    pipeline.wake_quickly = MagicMock()
     gateway = AsyncMock()
 
     original_whitelist = list(listen_main.cfg.target.whitelist)

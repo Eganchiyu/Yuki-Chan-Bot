@@ -13,7 +13,7 @@ from config import cfg
 from core.session_pipeline import IncomingMessage
 from init import save_group_state
 from modules.shot_memory import shot_live_buffer
-from network.napcat import smart_truncate
+from network.napcat import mentions_self, smart_truncate
 from utils.logger import get_logger
 
 logger = get_logger("napcat_listen")
@@ -120,14 +120,17 @@ def handle_group_switch(pipeline, gateway, group_id, gid_str, user_id, raw_msg):
 
 
 async def handle_poke_event(gateway, pipeline, data: dict, mode: str):
-    """处理戳一戳事件，把"谁戳了谁"注入消息管线。"""
+    """处理戳一戳事件：只把"戳 Yuki"记进管线，按普通消息入队（不插队）。"""
     if mode == "mixed":
         mode = "group"
     group_id = data.get("group_id")
     poker_id = data.get("user_id")       # 戳人者
     target_id = data.get("target_id")    # 被戳者
 
-    # 屏蔽机器人自己发出的戳一戳：否则会回灌消息管线，导致再次触发对话
+    # 只处理戳到 Yuki 的：其他人的互戳与机器人自己发出的戳都丢弃，
+    # 否则机器人回戳会回灌管线、再次触发对话
+    if not target_id or int(target_id) != cfg.SELF_QQ:
+        return
     if poker_id and int(poker_id) == cfg.SELF_QQ:
         return
 
@@ -139,24 +142,20 @@ async def handle_poke_event(gateway, pipeline, data: dict, mode: str):
     if cfg.TARGET_GROUPS and group_id not in cfg.TARGET_GROUPS:
         return
 
-    async def display_name(user_id, fallback="某人"):
-        if not user_id:
-            return fallback
-        if int(user_id) == cfg.SELF_QQ:
-            return cfg.ROBOT_NAME
-        info = await gateway.get_member_info(gid_str, str(user_id)) or {}
-        return info.get("card") or info.get("nickname") or fallback
+    poker_name = "某人"
+    if poker_id:
+        info = await gateway.get_member_info(gid_str, str(poker_id)) or {}
+        poker_name = info.get("card") or info.get("nickname") or "某人"
 
-    poker_name = await display_name(poker_id)
-    poked_name = await display_name(target_id)
-    logger.info(f"[NapCat] 戳一戳事件: {poker_name}({poker_id}) 戳了戳 {poked_name}({target_id}) (群:{gid_str})")
+    logger.info(f"[NapCat] 戳一戳事件: {poker_name}({poker_id}) 戳了戳 {cfg.ROBOT_NAME}({target_id}) (群:{gid_str})")
 
+    # 不调用快速唤醒：与普通群消息同一条路径，照常走防抖
     await pipeline.enqueue_message(
         gid_str,
         mode,
         message_obj=IncomingMessage(
             name=poker_name,
-            content=f'[{poker_name} 戳了戳 {poked_name}]',
+            content=f'[{poker_name} 戳了戳 {cfg.ROBOT_NAME}]',
             raw_text="[戳一戳]",
             user_id=int(poker_id) if poker_id else None,
             is_bot=False,
@@ -337,8 +336,16 @@ async def feed_message(
     ):
         return
 
-    # 非 Bot 消息且提到 Yuki 时快速唤醒（跳过防抖 + 必回）
-    if not incoming_message.is_bot and cfg.ROBOT_NAME.lower() in incoming_message.raw_text.lower():
-        pipeline.wake_quickly(cid_str)
-
-    await pipeline.enqueue_message(cid_str, mode, message_obj=incoming_message)
+    # 被叫到（叫名字或被 @）就跳过防抖并强制回复：一个是关键词命中，
+    # 一个是结构化 at 段（必须比对机器人自己的 QQ）
+    called = (
+        cfg.ROBOT_NAME.lower() in incoming_message.raw_text.lower()
+        or mentions_self(incoming_message.segments, incoming_message.raw_text, cfg.SELF_QQ)
+    )
+    await pipeline.enqueue_message(
+        cid_str,
+        mode,
+        message_obj=incoming_message,
+        debounce_flag=not called,
+        force_reply=True if called else None,
+    )

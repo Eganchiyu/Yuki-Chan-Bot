@@ -85,7 +85,6 @@ class SessionPipeline:
         self._skip_debounce: dict = {}  # chat_id -> bool (是否跳过本次防抖的持久化标志)
 
         self.last_process_end_time: dict = {}
-        self._chat_mode: dict = {}
         self.last_msg_time = {}
 
         self.stages = [
@@ -140,7 +139,6 @@ class SessionPipeline:
                               ice_break=False):
         """核心入列机制：写入缓冲 -> 重置定时器 -> 等待执行锁"""
         chat_id_str = str(chat_id)
-        self._chat_mode[chat_id_str] = mode
 
         # 1. 安全写入缓冲区
         if message_obj:
@@ -165,8 +163,8 @@ class SessionPipeline:
                 buffer.append(incoming_message.to_dict())
             self.last_msg_time[chat_id_str] = time.time()
 
-        # 2. 状态融合：只要当前批次中有任何要求跳过防抖的指令，立刻锁定 skip 状态
-        # (修复 Bug：解决普通消息覆盖了 wake_quickly 导致叫名字依然防抖的问题)
+        # 2. 本轮是否需要跳过防抖：被直接叫到（名字/被 @）时上游会带
+        #    debounce_flag=False + force_reply=True，这里把状态锁住供定时器读取
         should_skip = (force_reply is not None and force_reply) or (not debounce_flag) or ice_break
         if should_skip:
             self._skip_debounce[chat_id_str] = True
@@ -210,15 +208,6 @@ class SessionPipeline:
         task = asyncio.create_task(_wait_and_process())
         self._timer_tasks[chat_id_str] = task
         return task
-
-    def wake_quickly(self, chat_id):
-        """收到呼叫时：直接设置强制跳过防抖状态，并重置控制流"""
-        cid = str(chat_id)
-        self._skip_debounce[cid] = True  # 锁定本轮无视防抖
-
-        mode = self._chat_mode.get(cid, "group")
-        # 直接调用入列方法刷新流程
-        asyncio.create_task(self.enqueue_message(cid, mode, debounce_flag=False, force_reply=True))
 
     def _new_pipeline_context(self, chat_id, mode, debounce_flag, force_reply, ice_break) -> dict:
         """创建单次管线上下文，集中声明跨阶段数据的初始形态。"""

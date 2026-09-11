@@ -101,6 +101,22 @@ def extract_reply_ids(text: str) -> list:
     return re.findall(r'\[CQ:reply,id=(\d+)\]', text)
 
 
+def mentions_self(segments, raw_text: str, self_qq) -> bool:
+    """消息里是否 @ 了指定 QQ。
+
+    以结构化 segments 为准（NapCat 配的是 messagePostFormat=array），
+    raw_text 只作兜底，且容忍 [CQ:at,qq=x,name=y] 这类带附加参数的形式。
+    @全体成员（qq=all）不算。
+    """
+    target = str(self_qq)
+    for seg in segments or []:
+        if not isinstance(seg, dict) or seg.get("type") != "at":
+            continue
+        if str((seg.get("data") or {}).get("qq", "")) == target:
+            return True
+    return bool(re.search(rf'\[CQ:at,qq={re.escape(target)}(?:,[^\]]*)?\]', raw_text or ""))
+
+
 def replace_reply_placeholder(data) -> str:
     """把被引用消息渲染成一行可读文本。"""
     if not data:
