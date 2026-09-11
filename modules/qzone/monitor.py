@@ -64,47 +64,33 @@ def _parse_jsonp(raw: str) -> Optional[dict]:
 
 
 async def _get_auth(connector, force_refresh=False) -> tuple:
-    """获取认证信息: (cookies, g_tk, uin)。30秒内缓存复用。"""
+    """获取认证信息: (cookies, g_tk, uin)。30秒内缓存复用。
+
+    这里只需要 call()，网关内部已有常驻 reader 负责收响应，不必（也不能）
+    自己再迭代一次 listen()：那样会抢主监听的事件，finally 里的 close()
+    还会把主连接关掉。
+    """
     import time as _time
     now = _time.time()
     if not force_refresh and _auth_cache["cookies"] and now - _auth_cache["ts"] < 30:
         return _auth_cache["cookies"], _auth_cache["g_tk"], _auth_cache["uin"]
 
-    need_listener = connector.websocket is None
-    listener_task = None
-    temp_listener = False
+    cookie_resp = await connector.get_cookies("user.qzone.qq.com")
+    if not cookie_resp or cookie_resp.get("status") != "ok":
+        raise RuntimeError(f"Cookie 获取失败: {(cookie_resp or {}).get('message', '')}")
+    cookies = cookie_resp["data"]["cookies"]
+    p_skey = _extract_cookie(cookies, "p_skey")
+    if not p_skey:
+        raise RuntimeError("Cookie 缺少 p_skey")
+    g_tk = _compute_g_tk(p_skey)
 
-    if need_listener:
-        async def _temp_listener():
-            try:
-                async for _ in connector.listen():
-                    pass
-            except Exception:
-                pass
-        listener_task = asyncio.create_task(_temp_listener())
-        temp_listener = True
-        await asyncio.sleep(0.3)
+    login_resp = await connector.get_login_info()
+    if not login_resp or login_resp.get("status") != "ok":
+        raise RuntimeError("登录信息获取失败")
+    uin = str(login_resp["data"]["user_id"])
 
-    try:
-        cookie_resp = await connector.get_cookies("user.qzone.qq.com")
-        if not cookie_resp or cookie_resp.get("status") != "ok":
-            raise RuntimeError(f"Cookie 获取失败: {(cookie_resp or {}).get('message', '')}")
-        cookies = cookie_resp["data"]["cookies"]
-        p_skey = _extract_cookie(cookies, "p_skey")
-        if not p_skey:
-            raise RuntimeError("Cookie 缺少 p_skey")
-        g_tk = _compute_g_tk(p_skey)
-        login_resp = await connector.get_login_info()
-        if not login_resp or login_resp.get("status") != "ok":
-            raise RuntimeError("登录信息获取失败")
-        uin = str(login_resp["data"]["user_id"])
-
-        _auth_cache.update({"cookies": cookies, "g_tk": g_tk, "uin": uin, "ts": now})
-        return cookies, g_tk, uin
-    finally:
-        if temp_listener and listener_task and not listener_task.done():
-            listener_task.cancel()
-            await connector.close()
+    _auth_cache.update({"cookies": cookies, "g_tk": g_tk, "uin": uin, "ts": now})
+    return cookies, g_tk, uin
 
 
 def _http_get(url: str, params: dict, cookies: str, referer: str) -> str:

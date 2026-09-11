@@ -34,6 +34,7 @@
 - `main.py` 新增单实例守卫（`data/yuki.lock` 上的 flock，进程退出自动释放；`YUKI_ALLOW_MULTI_INSTANCE=1` 可覆盖），避免两个实例同时消费 NapCat 事件
 - QZone 监控与 GitHub 监控的启动改为配置开关（`qzone_monitor.enabled` 默认 false、`github_monitor.enabled` 默认 false），替代原先整段注释与 `getattr` 兜底
 - 新增 `pytest` 异步模式配置（`pyproject.toml` 的 `asyncio_mode = "auto"`），修复 13 个未标注 `@pytest.mark.asyncio` 的用例被误判失败
+- 修复 QZone 监控会破坏主连接的问题：它原来在缺少连接时临时自建 `connector.listen()` 再在 finally 里 `close()`，既抢事件又会关掉主监听的连接；网关的常驻 reader 已能独立完成请求-响应，这段临时 listener 逻辑整体删除
 - NapCat 接入层的传输契约与入站策略加入回归测试：`tests/test_napcat_gateway.py`（本地假 OneBot 服务器验证帧路由、重连、CQ 解析）与 `tests/test_napcat_inbound.py`（被叫到/戳一戳过滤）
 - 将 `modules/system_state` 合并进 `core/tools/tools_status.py`（主人状态监控 + `get_master_status` 工具统一收口），并删除该独立模块
 - DeepSeek 等模型返回空字符时，发送阶段拦截并发送占位提示「Yuki回复了空字符」，避免静默无回复

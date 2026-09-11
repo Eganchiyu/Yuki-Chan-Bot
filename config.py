@@ -471,7 +471,7 @@ class QZoneMonitorConfig:
     """QQ 空间社交监控配置"""
     enabled: bool = config_field(
         False,
-        comment="是否启用 QQ 空间社交监控（启用前必须先完成 NapCat 接收侧整合）",
+        comment="是否启用 QQ 空间社交监控",
         section="qzone_monitor"
     )
 

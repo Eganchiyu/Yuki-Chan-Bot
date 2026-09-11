@@ -32,8 +32,8 @@ async def start_background_tasks(gateway, pipeline, mode: str):
     asyncio.create_task(maid_worker(engine, yuki, gateway, pipeline.history_manager))
 
     # QZone 社交监控（默认关闭，见 configs/config.yaml 的 qzone_monitor.enabled）
-    # ⚠️ 启用前必须先完成接收侧整合：modules/qzone/monitor.py 会在缺少连接时临时
-    #    自建 connector.listen() 再 close()，与主监听抢占同一条 WebSocket。
+    # 网关的常驻 reader 已能独立完成请求-响应，监控侧不再需要自己迭代
+    # listen() 或关闭连接，打开此开关不会影响主监听。
     if cfg.qzone_monitor.enabled:
         try:
             from modules.qzone.monitor import ensure_monitor_started
