@@ -5,8 +5,7 @@ import core.brain
 from config import cfg
 from core.session_pipeline import IncomingMessage
 from init import save_group_state
-from modules.message.CQProtocol import smart_truncate
-from modules.message.GetMeta import MetaGetter
+from network.napcat import smart_truncate
 from modules.shot_memory import shot_live_buffer
 
 connector = None
@@ -17,13 +16,12 @@ history_manager = None
 session_pipeline = None
 group_active_state = None
 logger = None
-meta_getter = None
 
 
 def configure_runtime(components: dict, pipeline, active_state: dict, runtime_logger):
     """注入运行期组件，避免监听层反向导入 main.py。"""
     global connector, sender, yuki, engine, history_manager
-    global session_pipeline, group_active_state, logger, meta_getter
+    global session_pipeline, group_active_state, logger
 
     connector = components["connector"]
     sender = components["sender"]
@@ -33,7 +31,6 @@ def configure_runtime(components: dict, pipeline, active_state: dict, runtime_lo
     session_pipeline = pipeline
     group_active_state = active_state
     logger = runtime_logger
-    meta_getter = MetaGetter(connector)
 
 
 async def start_background_tasks(mode: str):
@@ -168,8 +165,8 @@ async def handle_poke_event(data: dict, mode: str):
     # 查戳人者昵称
     poker_name = "某人"
     poked_name = "某人"
-    if poker_id and meta_getter:
-        member_info = await meta_getter.get_group_member_info(gid_str, str(poker_id))
+    if poker_id:
+        member_info = await connector.get_member_info(gid_str, str(poker_id))
         if member_info:
             poker_name = (member_info.get("card")
                           or member_info.get("nickname")
@@ -177,8 +174,8 @@ async def handle_poke_event(data: dict, mode: str):
     
     if target_id == cfg.SELF_QQ:
         poked_name = cfg.ROBOT_NAME
-    elif target_id and meta_getter:
-        member_info = await meta_getter.get_group_member_info(gid_str, str(target_id))
+    elif target_id:
+        member_info = await connector.get_member_info(gid_str, str(target_id))
         if member_info:
             poked_name = (member_info.get("card")
                             or member_info.get("nickname")

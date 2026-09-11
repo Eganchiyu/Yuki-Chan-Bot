@@ -20,7 +20,6 @@ async def capture_group_snapshot_tool(context, note, limit=12):
     history = context.session[-limit:]
     message_objs = context.metadata.get("message_objs") or []
     live_messages = shot_live_buffer.snapshot(chat_id, limit=limit)
-    connector = getattr(context.sender, "connector", None)
 
     try:
         image_bytes, meta = await render_snapshot(
@@ -28,7 +27,7 @@ async def capture_group_snapshot_tool(context, note, limit=12):
             note,
             history,
             message_objs,
-            connector=connector,
+            gateway=context.sender,
             live_messages=live_messages,
         )
         record = shot_memory_store.save_record(chat_id, note, image_bytes, metadata=meta)

@@ -13,7 +13,6 @@ from core.prompts import sync_system_prompts
 from core.session_pipeline import SessionPipeline
 from init import load_group_state
 from modules.QQNapcatListen.listen_main import configure_runtime, napcat_listen
-from modules.message.CQParser import CQCodeParser
 from core.tools.tools_status import start_monitor_service, stop_monitor_service
 from modules.vision.processor import MemeProcessor
 from network.napcat import NapCatGateway
@@ -38,7 +37,6 @@ def initialize_components():
     # 迁移期别名：NapCatGateway 一个对象同时承担连接与发送，旧调用方仍按
     # connector / sender 两个名字使用它；后续批次统一收敛到 gateway。
     connector = sender = gateway
-    parser = CQCodeParser(gateway)
 
     from modules.vision.image_store import ImageStore
     image_store = ImageStore()
@@ -67,7 +65,6 @@ def initialize_components():
         "gateway": gateway,
         "connector": connector,
         "sender": sender,
-        "parser": parser,
         "meme_processor": meme_processor,
         "image_store": image_store,
         "yuki": yuki,

@@ -512,9 +512,7 @@ def _create_mock_pipeline():
     from core.session_pipeline import SessionPipeline
 
     components = {
-        "connector": MagicMock(),
         "sender": AsyncMock(),
-        "parser": MagicMock(),
         "meme_processor": MagicMock(),
         "yuki": MagicMock(),
         "history_manager": MagicMock(),
@@ -544,7 +542,7 @@ def _create_mock_pipeline():
     pipeline.engine.api_reply = AsyncMock(return_value=("原始", "回复", ""))
     pipeline.memory_rag.search_diaries = MagicMock(return_value=[])
     pipeline.meme_processor.extract_urls_from_text = MagicMock(return_value=("", []))
-    pipeline.parser.parse_all_cq_codes = AsyncMock(side_effect=lambda x: x)
+    pipeline.sender.parse_cq_codes = AsyncMock(side_effect=lambda text, group_id: text)
 
     return pipeline
 

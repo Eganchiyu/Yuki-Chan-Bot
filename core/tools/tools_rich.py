@@ -201,35 +201,9 @@ def _find_recent_rich_items(context):
     return items
 
 
-def _normalize_forward_messages(data):
-    if isinstance(data, dict):
-        for key in ("messages", "message", "content"):
-            value = data.get(key)
-            if isinstance(value, list):
-                return value
-        if isinstance(data.get("data"), dict):
-            return _normalize_forward_messages(data["data"])
-    if isinstance(data, list):
-        return data
-    return []
-
-
 async def _fetch_forward_messages(context, forward_id):
-    gateway = context.sender
-    params_options = [
-        {"id": forward_id},
-        {"message_id": forward_id},
-        {"forward_id": forward_id},
-    ]
-    last_resp = None
-    for params in params_options:
-        resp = await gateway.call("get_forward_msg", params, timeout=60)
-        last_resp = resp
-        if resp and resp.get("status") == "ok":
-            messages = _normalize_forward_messages(resp.get("data"))
-            if messages:
-                return messages, resp
-    return [], last_resp
+    """参数兼容与内容归一化都在 gateway 内，这里只负责取。"""
+    return await context.sender.get_forward_messages(forward_id)
 
 
 async def _render_forward_messages(context, messages, start, count, max_depth, depth=0):

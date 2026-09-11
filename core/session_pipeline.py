@@ -69,9 +69,7 @@ class SessionPipeline:
     """按 chat_id 串行运行的会话管道，负责把消息流、工具链和回复统一回写到同一 session。"""
 
     def __init__(self, components: dict, group_active_state: dict):
-        self.connector = components["connector"]
         self.sender = components["sender"]
-        self.parser = components["parser"]
         self.meme_processor = components["meme_processor"]
         self.yuki = components["yuki"]
         self.history_manager = components["history_manager"]
@@ -359,7 +357,7 @@ class SessionPipeline:
             for content in understood_contents:
                 combined_text = combined_text.replace("[图片占位符]", content, 1)
 
-        combined_text = await self.parser.parse_all_cq_codes(combined_text, chat_id)
+        combined_text = await self.sender.parse_cq_codes(combined_text, chat_id)
         combined_text = combined_text.replace("\n", " | ").strip()
         logger.info(f"[Pipeline] [{chat_id}] 收到消息: {combined_text[:80]}")
         self.history_manager.append_to_log(chat_id, "User/Group", combined_text)

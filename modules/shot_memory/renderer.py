@@ -44,12 +44,12 @@ class RenderMessage:
     parts: list[RenderPart] = field(default_factory=list)
 
 
-async def render_snapshot(chat_id, note: str, history_messages: list[dict], message_objs: list[dict] | None, connector=None, live_messages: list[dict] | None = None) -> tuple[bytes, dict]:
-    group_meta = await fetch_group_meta(connector, chat_id)
+async def render_snapshot(chat_id, note: str, history_messages: list[dict], message_objs: list[dict] | None, gateway=None, live_messages: list[dict] | None = None) -> tuple[bytes, dict]:
+    group_meta = await fetch_group_meta(gateway, chat_id)
     messages = build_live_render_messages(live_messages) if live_messages else []
     if not messages:
         messages = build_render_messages(history_messages, message_objs)
-    await enrich_member_names(connector, chat_id, messages)
+    await enrich_member_names(gateway, chat_id, messages)
     await prepare_message_parts(messages)
     avatar_map = await load_avatars(messages)
     image = draw_snapshot(group_meta, note, messages, avatar_map)
@@ -258,38 +258,22 @@ def qlogo_url(user_id: str, spec: int = 100) -> str:
     return f"https://q.qlogo.cn/headimg_dl?dst_uin={user_id}&spec={spec}&img_type=jpg"
 
 
-async def fetch_group_meta(connector, chat_id) -> dict:
-    meta = {"group_id": str(chat_id), "group_name": f"群聊 {chat_id}", "group_remark": ""}
-    if not connector:
-        return meta
-    for action in ("get_group_detail_info", "get_group_info"):
-        try:
-            resp = await connector.call(action, {"group_id": int(chat_id)}, timeout=5)
-            data = resp.get("data") if resp else None
-            if isinstance(data, dict):
-                meta["group_name"] = data.get("group_name") or meta["group_name"]
-                meta["group_remark"] = data.get("group_remark") or meta["group_remark"]
-                return meta
-        except Exception as e:
-            logger.debug(f"[ShotRenderer] {action} failed: {e}")
-    return meta
+async def fetch_group_meta(gateway, chat_id) -> dict:
+    if not gateway:
+        return {"group_id": str(chat_id), "group_name": f"群聊 {chat_id}", "group_remark": ""}
+    return await gateway.get_group_meta(chat_id)
 
 
-async def enrich_member_names(connector, chat_id, messages: list[RenderMessage]) -> None:
-    if not connector:
+async def enrich_member_names(gateway, chat_id, messages: list[RenderMessage]) -> None:
+    if not gateway:
         return
     user_ids = sorted({m.user_id for m in messages if m.user_id})
 
     async def fetch(uid: str):
         try:
-            resp = await connector.call(
-                "get_group_member_info",
-                {"group_id": int(chat_id), "user_id": int(uid), "no_cache": False},
-                timeout=5,
-            )
-            data = resp.get("data") if resp else None
-            if isinstance(data, dict):
-                return uid, data.get("card") or data.get("nickname") or ""
+            info = await gateway.get_member_info(chat_id, uid)
+            if isinstance(info, dict):
+                return uid, info.get("card") or info.get("nickname") or ""
         except Exception as e:
             logger.debug(f"[ShotRenderer] get_group_member_info failed uid={uid}: {e}")
         return uid, ""

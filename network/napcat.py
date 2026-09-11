@@ -22,6 +22,7 @@ import asyncio
 import base64
 import json
 import os
+import re
 import uuid
 from datetime import datetime
 from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
@@ -46,6 +47,84 @@ def _is_private(mode: str) -> bool:
     return mode in {"private", "master_private"}
 
 
+# ==================== CQ 码文本工具（纯函数，无 I/O） ====================
+
+def smart_truncate(content, max_len=None, suffix="..."):
+    """超长消息智能截断，保持 CQ 码完整。"""
+    max_len = max_len or cfg.MAX_MESSAGE_LENGTH
+    if len(content) <= max_len:
+        return content
+
+    logger.info(f"[NapCat] 检测到超长消息 ({len(content)} 字符)")
+    parts = re.split(r'(\[CQ:.*?\])', content)
+    result = []
+    for part in parts:
+        if not part:
+            continue
+        if part.startswith("[CQ:") and part.endswith("]"):
+            result.append(part)
+        elif len(part) > 100:
+            result.append(part[:40] + suffix + part[-40:])
+        else:
+            result.append(part)
+
+    content = "".join(result)
+    logger.info(f"[NapCat] 压缩后长度: {len(content)} 字符")
+    return content
+
+
+def replace_other_cq_codes(text: str) -> str:
+    """多媒体码换成占位符，保留可继续处理的 ID。"""
+    text = re.sub(r'\[CQ:image[^\]]*\]', '[图片]', text)
+    text = re.sub(r'\[CQ:face[^\]]*\]', '[表情]', text)
+    text = re.sub(r'\[CQ:record,file=([^\],]+)[^\]]*\]', r'[语音:file_id=\1]', text)
+    text = re.sub(r'\[CQ:video,[^\]]*(?:file|url)=([^,\]]+)[^\]]*\]', r'[视频:file_id=\1]', text)
+    text = re.sub(r'\[CQ:video[^\]]*\]', '[视频]', text)
+    text = re.sub(r'\[CQ:file,id=([^],]+)[^\]]*\]', r'[文件:file_id=\1]', text)
+    text = re.sub(r'\[CQ:file,file=([^],]+)[^\]]*\]', r'[文件:file_id=\1]', text)
+    text = re.sub(r'\[CQ:forward,id=([^,\]]+)[^\]]*\]', r'[合并转发:id=\1]', text)
+    text = re.sub(r'\[CQ:json[^\]]*\]', '[小程序]', text)
+    text = re.sub(r'\[CQ:xml[^\]]*\]', '[XML富文本]', text)
+    return text
+
+
+def extract_at_uids(text: str) -> list:
+    """取出文本里所有被 @ 的 QQ（含 all）。"""
+    return re.findall(r'\[CQ:at,qq=(\d+|all)\]', text)
+
+
+def replace_at_placeholder(text: str, qq, nickname: str) -> str:
+    return re.sub(rf'\[CQ:at,qq={qq}[^\]]*\]', f"@{nickname}", text)
+
+
+def extract_reply_ids(text: str) -> list:
+    return re.findall(r'\[CQ:reply,id=(\d+)\]', text)
+
+
+def replace_reply_placeholder(data) -> str:
+    """把被引用消息渲染成一行可读文本。"""
+    if not data:
+        logger.error("[NapCat] 引用历史回复消息解析失败")
+        return "【引用不明历史消息】"
+    sender = (data.get("sender") or {}).get("nickname", "人")
+    text = re.sub(r'\[CQ:.*?\]', '', data.get("raw_message", ""))
+    return f"【引用{sender}的消息: {smart_truncate(text)}】"
+
+
+def _normalize_forward(data) -> list:
+    """兼容不同 NapCat 版本合并转发响应的嵌套层级。"""
+    if isinstance(data, dict):
+        for key in ("messages", "message", "content"):
+            value = data.get(key)
+            if isinstance(value, list):
+                return value
+        if isinstance(data.get("data"), dict):
+            return _normalize_forward(data["data"])
+    if isinstance(data, list):
+        return data
+    return []
+
+
 class NapCatGateway:
     """NapCat 正向 WebSocket 的唯一持有者。"""
 
@@ -61,6 +140,7 @@ class NapCatGateway:
         self._connect_lock = asyncio.Lock()
         self._pending: dict = {}                      # echo -> Future
         self._events: asyncio.Queue = asyncio.Queue()
+        self._member_cache: dict = {}                 # (group_id, user_id) -> 群成员信息
         self._reader_task = None
         self._closed = False
 
@@ -300,3 +380,71 @@ class NapCatGateway:
     async def get_login_info(self):
         """取当前登录账号信息（user_id、nickname）。"""
         return await self.call("get_login_info", {})
+
+    # ==================== 群 / 成员 / 消息查询 ====================
+
+    async def get_member_info(self, group_id, user_id):
+        """群成员信息（含群名片 card），进程内缓存。"""
+        key = (str(group_id), str(user_id))
+        if key in self._member_cache:
+            return self._member_cache[key]
+
+        resp = await self.call("get_group_member_info", {
+            "group_id": int(group_id) if str(group_id).isdigit() else group_id,
+            "user_id": int(user_id) if str(user_id).isdigit() else user_id,
+            "no_cache": False,
+        })
+        data = resp.get("data") if resp and resp.get("retcode") == 0 else None
+        if isinstance(data, dict):
+            self._member_cache[key] = data
+        return data
+
+    async def get_member_name(self, group_id, user_id) -> str:
+        """群名片优先，其次昵称。"""
+        if str(user_id) == "all":
+            return "全体成员"
+        info = await self.get_member_info(group_id, user_id)
+        if info:
+            name = info.get("card") or info.get("nickname")
+            if name:
+                return name
+        return f"用户{user_id}"
+
+    async def get_msg(self, message_id):
+        """取单条消息（用于解析回复引用）。"""
+        resp = await self.call("get_msg", {"message_id": int(message_id)})
+        return resp.get("data") if resp and resp.get("status") == "ok" else None
+
+    async def get_forward_messages(self, forward_id) -> tuple:
+        """取合并转发内容。NapCat 各版本参数名不同，三套依次尝试。
+
+        返回 (消息列表, 原始响应)，两者都可能是空的。
+        """
+        last = None
+        for params in ({"id": forward_id}, {"message_id": forward_id}, {"forward_id": forward_id}):
+            last = await self.call("get_forward_msg", params, timeout=60)
+            if last and last.get("status") == "ok":
+                messages = _normalize_forward(last.get("data"))
+                if messages:
+                    return messages, last
+        return [], last
+
+    async def get_group_meta(self, group_id) -> dict:
+        """群名与群备注（两个 action 二选一，取决于 NapCat 版本）。"""
+        meta = {"group_id": str(group_id), "group_name": f"群聊 {group_id}", "group_remark": ""}
+        for action in ("get_group_detail_info", "get_group_info"):
+            resp = await self.call(action, {"group_id": int(group_id)}, timeout=5)
+            data = resp.get("data") if resp else None
+            if isinstance(data, dict):
+                meta["group_name"] = data.get("group_name") or meta["group_name"]
+                meta["group_remark"] = data.get("group_remark") or meta["group_remark"]
+                return meta
+        return meta
+
+    async def parse_cq_codes(self, text: str, group_id) -> str:
+        """把 @ 与回复 CQ 码替换成可读文本（图片等交给上层处理）。"""
+        for mid in dict.fromkeys(extract_reply_ids(text)):
+            text = text.replace(f"[CQ:reply,id={mid}]", replace_reply_placeholder(await self.get_msg(mid)))
+        for uid in dict.fromkeys(extract_at_uids(text)):
+            text = replace_at_placeholder(text, uid, await self.get_member_name(group_id, uid))
+        return replace_other_cq_codes(text)
