@@ -138,7 +138,7 @@ async def publish_mood(connector, content: str, visible: int = 1,
     发布 QQ 空间说说。
 
     Args:
-        connector: BotConnector 实例
+        connector: NapCatGateway 实例
         content: 说说文本
         visible: 1=公开 4=仅自己
         image_paths: 图片本地路径列表（可选，最多支持多张）

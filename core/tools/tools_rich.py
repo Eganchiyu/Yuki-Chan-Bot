@@ -215,7 +215,7 @@ def _normalize_forward_messages(data):
 
 
 async def _fetch_forward_messages(context, forward_id):
-    connector = context.sender.connector
+    gateway = context.sender
     params_options = [
         {"id": forward_id},
         {"message_id": forward_id},
@@ -223,7 +223,7 @@ async def _fetch_forward_messages(context, forward_id):
     ]
     last_resp = None
     for params in params_options:
-        resp = await connector.send_request("get_forward_msg", params, f"get_forward_{forward_id}", timeout=60)
+        resp = await gateway.call("get_forward_msg", params, timeout=60)
         last_resp = resp
         if resp and resp.get("status") == "ok":
             messages = _normalize_forward_messages(resp.get("data"))

@@ -1,7 +1,7 @@
 from typing import Dict
 
 from modules.message.GetMeta import MetaGetter
-from network.ws_connection import BotConnector
+from network.napcat import NapCatGateway
 from modules.message.CQProtocol import CQProtocol
 from utils.logger import get_logger
 
@@ -11,7 +11,7 @@ class CQCodeParser:
     """
     调用CQMetaGetter获取原json格式数据，解码数据后调用CQProtocol替换CQ码，返回解析后的原字符串
     """
-    def __init__(self, connector: BotConnector):
+    def __init__(self, connector: NapCatGateway):
         self.connector = connector
         self.nickname_cache: Dict[str, str] = {}
         self.protocol = CQProtocol()

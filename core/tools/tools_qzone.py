@@ -15,8 +15,7 @@ async def publish_qzone_mood_tool(context, content, visible=1, image_paths=None)
         image_paths = [_resolve_image_path(context, p) for p in image_paths]
 
     from modules.qzone import publish_mood
-    connector = context.sender.connector
-    result = await publish_mood(connector, content, visible, image_paths)
+    result = await publish_mood(context.sender, content, visible, image_paths)
 
     if result.get("success"):
         suffix = "（带图）" if result.get("has_image") else ""

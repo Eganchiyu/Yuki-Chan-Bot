@@ -264,7 +264,7 @@ async def fetch_group_meta(connector, chat_id) -> dict:
         return meta
     for action in ("get_group_detail_info", "get_group_info"):
         try:
-            resp = await connector.send_request(action, {"group_id": int(chat_id)}, f"shot_{action}_{chat_id}", timeout=5)
+            resp = await connector.call(action, {"group_id": int(chat_id)}, timeout=5)
             data = resp.get("data") if resp else None
             if isinstance(data, dict):
                 meta["group_name"] = data.get("group_name") or meta["group_name"]
@@ -282,10 +282,9 @@ async def enrich_member_names(connector, chat_id, messages: list[RenderMessage])
 
     async def fetch(uid: str):
         try:
-            resp = await connector.send_request(
+            resp = await connector.call(
                 "get_group_member_info",
                 {"group_id": int(chat_id), "user_id": int(uid), "no_cache": False},
-                f"shot_member_{chat_id}_{uid}",
                 timeout=5,
             )
             data = resp.get("data") if resp else None

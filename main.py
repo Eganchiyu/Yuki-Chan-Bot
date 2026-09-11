@@ -1,6 +1,7 @@
 # main.py
 # by: Eganchiyu
 import asyncio
+import os
 import sys
 import time
 
@@ -15,8 +16,7 @@ from modules.QQNapcatListen.listen_main import configure_runtime, napcat_listen
 from modules.message.CQParser import CQCodeParser
 from core.tools.tools_status import start_monitor_service, stop_monitor_service
 from modules.vision.processor import MemeProcessor
-from network.ws_connection import BotConnector
-from network.ws_sender import MessageSender
+from network.napcat import NapCatGateway
 from utils.logger import get_logger, setup_logging
 
 setup_logging(debug=cfg.DEBUG)
@@ -34,9 +34,11 @@ def initialize_components():
     logger.info(f"[System] {cfg.ROBOT_NAME.title()} 正在初始化...")
     start_time = time.time()
 
-    connector = BotConnector(cfg.NAPCAT_WS_URL, cfg.NAPCAT_WS_TOKEN)
-    sender = MessageSender(connector)
-    parser = CQCodeParser(connector)
+    gateway = NapCatGateway(cfg.NAPCAT_WS_URL, cfg.NAPCAT_WS_TOKEN)
+    # 迁移期别名：NapCatGateway 一个对象同时承担连接与发送，旧调用方仍按
+    # connector / sender 两个名字使用它；后续批次统一收敛到 gateway。
+    connector = sender = gateway
+    parser = CQCodeParser(gateway)
 
     from modules.vision.image_store import ImageStore
     image_store = ImageStore()
@@ -62,6 +64,7 @@ def initialize_components():
     logger.info(f"[System] 初始化完成，耗时 {end_time - start_time:.1f} 秒")
 
     return {
+        "gateway": gateway,
         "connector": connector,
         "sender": sender,
         "parser": parser,
@@ -186,14 +189,54 @@ def _do_cleanup():
     logger.info("[Main] 资源清理完成")
 
 
+# ==================== 单实例守卫 ====================
+
+_instance_lock = None  # 持有文件句柄，随进程退出自动释放锁
+
+
+def acquire_single_instance_lock() -> bool:
+    """同一台机器只允许一个 Yuki 实例，避免两个实例同时消费 NapCat 事件。
+
+    用 data/yuki.lock 上的 flock：进程结束（含被 kill）自动释放，不会留下死锁文件。
+    需要并行跑第二个实例调试时，设置 YUKI_ALLOW_MULTI_INSTANCE=1。
+    """
+    global _instance_lock
+    if os.getenv("YUKI_ALLOW_MULTI_INSTANCE", "").strip().lower() in {"1", "true", "yes", "on"}:
+        logger.warning("[System] YUKI_ALLOW_MULTI_INSTANCE 已开启，跳过单实例检查")
+        return True
+    try:
+        import fcntl
+    except ImportError:
+        return True  # 非 POSIX 平台不做限制
+
+    lock_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "yuki.lock")
+    os.makedirs(os.path.dirname(lock_path), exist_ok=True)
+    handle = open(lock_path, "w", encoding="utf-8")
+    try:
+        fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        handle.close()
+        return False
+    handle.write(str(os.getpid()))
+    handle.flush()
+    _instance_lock = handle
+    return True
+
+
 # ==================== 主程序入口 ====================
 
 if __name__ == "__main__":
     import atexit
-    import os
 
     os.environ.setdefault("NO_PROXY", "127.0.0.1,localhost")
     atexit.register(_do_cleanup)
+
+    if not acquire_single_instance_lock():
+        logger.critical(
+            "[Main] 已有 Yuki 实例在运行（data/yuki.lock 被占用），本次启动中止。"
+            "如需并行调试请设置 YUKI_ALLOW_MULTI_INSTANCE=1"
+        )
+        sys.exit(1)
 
     try:
         components = initialize_components()

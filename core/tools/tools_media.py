@@ -41,7 +41,7 @@ def _guess_download_filename(url, filename=None):
 
 
 async def _download_url_to_workspace(url, filename=None):
-    from network.ws_sender import DOWNLOAD_DIR
+    from network.napcat import DOWNLOAD_DIR
 
     url = _clean_file_reference(url)
     filename = _guess_download_filename(url, filename)
