@@ -18,7 +18,6 @@ session_pipeline = None
 group_active_state = None
 logger = None
 meta_getter = None
-napcat_online = True
 
 
 def configure_runtime(components: dict, pipeline, active_state: dict, runtime_logger):
@@ -202,7 +201,6 @@ async def handle_poke_event(data: dict, mode: str):
 
 
 async def napcat_listen(mode: str):
-    global napcat_online
     """NapCat 输入适配层：接收 QQ 消息并 feed 到会话管道。"""
     await start_background_tasks(mode)
 

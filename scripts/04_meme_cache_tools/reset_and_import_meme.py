@@ -2,8 +2,6 @@ import os
 import asyncio
 import json
 
-from config import cfg
-from network.api_request import ApiCall
 from modules.stickers.manager import StickerManager
 from utils.logger import get_logger
 
@@ -16,8 +14,7 @@ async def reset_and_import():
     print("=" * 50)
 
     # 1. 初始化 Manager
-    dummy_llm = ApiCall(cfg.LLM_API_KEY, cfg.LLM_BASE_URL)
-    manager = StickerManager(dummy_llm)
+    manager = StickerManager()
 
     # 2. 安全清空 stickers 集合，绝对不碰 diaries 集合！
     try:

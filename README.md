@@ -95,7 +95,7 @@ Yuki 具备标准化的工具调用能力，通过 Function Call 机制扩展 LL
 - **QQ 空间监控与发布**：自动发布说说、监控空间动态
 - **GitHub 仓库监控**：监控仓库事件并推送通知
 - **浏览器交互模式**：聚焦模式下的浏览器控制能力
-- **系统状态监控**：GPS 定位接收、系统状态巡检
+- **系统状态监控**：系统空闲与窗口巡检
 - **Shot Memory**：实时记忆渲染，记录群聊截屏留念
 - **Live2D 桌宠**：Electron + Live2D 桌面宠物交互
 - **Debug WebUI**：上下文调试与观测界面
@@ -190,14 +190,14 @@ Yuki 可以调用 AI 图像生成模型，根据描述生成图片。
 
 ### 5. 主人状态感知 — Yuki 知道你在干嘛
 
-**位置**：`modules/system_state/monitor.py`
+**位置**：`core/tools/tools_status.py`
 
 Yuki 能感知主人是否在电脑前，甚至知道你在看什么窗口。
 
 #### 可玩性
 
-- **系统空闲检测**：通过 Win32 API 获取系统空闲时间
-- **窗口感知**：检测当前前台窗口的标题
+- **系统空闲检测**：Windows 走 Win32 API，Linux 走 systemd-logind（兼容 X11/Wayland）
+- **窗口感知**：检测当前前台窗口的标题（Linux 仅支持 X11，Wayland 原生窗口不可获取标题）
 - **状态分级**：online（在线）→ paused（暂离）→ away（离开）→ offline（离线）
 - **精力值联动**：主人离开时 Yuki 会降低活跃度，减少不必要的回复
 
@@ -205,24 +205,7 @@ Yuki 能感知主人是否在电脑前，甚至知道你在看什么窗口。
 
 群友问"Yuki，你主人在吗？" → Yuki 调用 `get_master_status` → 回复"主人正在看 VS Code 写代码呢~" 或 "主人好像不在，要给他留言吗？"
 
-### 6. GPS 定位追踪 — 在外面也能知道你在哪
-
-**位置**：`modules/system_state/gps_receiver.py`
-
-配合手机端的 GPS 发送端，Yuki 可以知道你的实时位置。
-
-#### 可玩性
-
-- **WebSocket 实时通信**：手机端通过 WebSocket 发送 GPS 坐标
-- **高德逆地理编码**：自动将经纬度转为详细地址（省市区街道）
-- **过期检测**：5 分钟未更新标记为"过期"
-- **与主人状态联动**：GPS 状态和系统状态一起返回
-
-#### 效果
-
-问 Yuki "我在哪？" → 返回"你正在北京市朝阳区望京街道..."
-
-### 7. 高德地图搜索 — 出门找吃的一把好手
+### 6. 高德地图搜索 — 出门找吃的一把好手
 
 **位置**：`core/tools.py` 中的 `amap_search_tool`
 
@@ -240,7 +223,7 @@ Yuki 可以查询高德地图，帮你找地点。
 小女仆 + 高德地图：让小女仆"帮我查一下附近评分最高的火锅店，把地址发给我"
 ---
 
-### 8. 戳一戳 — 骚扰群友
+### 7. 戳一戳 — 骚扰群友
 
 **位置**：`core/tools.py` 中的 `poke_tool`
 
@@ -350,7 +333,6 @@ YukiV6/
 │   ├── browser_interaction/         # 浏览器交互聚焦模式
 │   ├── qzone/                       # QQ 空间监控与发布
 │   ├── shot_memory/                 # 实时记忆渲染（截屏记录）
-│   ├── system_state/                # 系统状态监控（GPS 等）
 │   └── LiveYukiL2D/                 # Live2D 桌宠交互
 │
 ├── network/                         # 网络通信层
@@ -447,7 +429,7 @@ python main.py
 
 ```bash
 # Step 1: 启动可视化打标工具
-python modules/label.py
+python scripts/06_sticker_manager/label.py
 
 # Step 2: 导入到向量库
 python scripts/04_meme_cache_tools/reset_and_import_meme.py
