@@ -35,14 +35,10 @@ YukiV6/
 │
 ├── modules/                   # 功能模块
 │   ├── QQNapcatListen/        # QQ 消息监听
-│   │   └── listen_main.py     # WebSocket 监听、消息缓冲
+│   │   └── listen_main.py     # NapCat 入站适配（事件 → 会话管线）
 │   ├── QQNapcatSend/          # QQ 消息发送（已迁移至 network）
 │   ├── memory/                # 记忆系统
 │   │   └── rag.py             # RAG 向量检索引擎
-│   ├── message/               # 消息处理
-│   │   ├── CQParser.py        # CQ 码解析器
-│   │   ├── CQProtocol.py      # CQ 协议工具
-│   │   └── GetMeta.py         # 元数据提取
 │   ├── stickers/              # 表情包管理
 │   │   └── manager.py         # 表情包学习与 RLHF
 │   └── vision/                # 视觉处理
@@ -51,8 +47,7 @@ YukiV6/
 │       └── utils.py           # 工具函数
 │
 ├── network/                   # 网络通信层
-│   ├── ws_connection.py       # WebSocket 连接管理
-│   └── ws_sender.py           # 消息发送器
+│   └── napcat.py              # NapCat 接入层（连接/帧路由/CQ 协议/收发）
 │
 ├── utils/                     # 工具函数
 │   ├── logger.py              # 日志系统
@@ -242,55 +237,48 @@ maid_task_queue: asyncio.Queue     # 小女仆任务队列
 
 ---
 
-### 3.10 modules/QQNapcatListen/listen_main.py - 输入适配层
+### 3.10 modules/QQNapcatListen/listen_main.py - 入站适配层
 
 **职责**：
-- WebSocket 消息监听
+- 把 NapCat 事件翻译成 `IncomingMessage` 并投给 `SessionPipeline`
 - 群聊开关控制（`/关闭`, `/开启`）
-- QQ 消息标准化并 feed 到 `SessionPipeline`
 - **双模路由**：群聊模式下同时接收主人私聊消息，路由为 `master_private` 模式
+- 戳一戳：只处理戳到机器人自己的事件，按普通消息入队（不插队）
+- 快速唤醒：命中机器人名字或 @ 到机器人时，跳过防抖并强制回复
 - RLHF 正反馈捕捉
 - 帮助指令拦截
 
+**依赖**（只有两个，显式传参，无模块级全局）：
+- `gateway`: `network.napcat.NapCatGateway`
+- `pipeline`: `SessionPipeline`（已持有 yuki / engine / history_manager / group_active_state）
+
 **关键函数**：
-- `configure_runtime()`: 注入运行时组件，避免反向导入 `main.py`
-- `napcat_listen()`: 主监听循环
-- `start_background_tasks()`: 启动后台任务
+- `napcat_listen(gateway, pipeline, mode)`: 主事件循环
+- `start_background_tasks()`: 启动后台任务（日记检查/破冰/精力衰减、可选监控）
 - `handle_group_switch()`: 处理群聊开关
-- `feed_message()`: 将标准化消息放入会话缓冲并唤醒会话泵
+- `handle_poke_event()`: 处理戳一戳
+- `feed_message()`: 将标准化消息放入会话缓冲并按需唤醒会话泵
 
 ---
 
-### 3.11 network/ - 网络通信层
+### 3.11 network/napcat.py - NapCat 接入层
 
-#### ws_connection.py - WebSocket 连接
-
-**类**：`BotConnector`
+**类**：`NapCatGateway`（原来的 `BotConnector` + `MessageSender` 合并为一个对象）
 
 **职责**：
-- WebSocket 连接管理
-- 自动重连机制
-- 响应 Future 管理
+- WebSocket 连接管理、token 拼接、断线重连（收敛为一处）
+- 帧路由：`echo` 命中挂起请求 → 唤醒 `call()`；带 `post_type` 的帧 → 事件队列；
+  其它 → 丢弃。因此 **出站不依赖有人消费事件流**，API 响应也不会混进事件流
+- 出站动作：`send()` / `send_local_image()` / `send_local_file()` /
+  `send_local_voice()` / `send_poke()` / `download_file()`
+- 通用原语：`call(action, params, timeout)`（统一生成 echo 与超时）
+- 查询：`get_member_info()`（进程内缓存）/ `get_member_name()` / `get_msg()` /
+  `get_forward_messages()` / `get_group_meta()` / `get_cookies()` / `get_login_info()`
+- CQ 协议：`parse_cq_codes()` 与一组纯函数（`smart_truncate`、
+  `replace_other_cq_codes`、`extract_at_uids`、`mentions_self` 等）
+- 运行计数：`stats`（frames/events/dropped/reconnects/calls/call_failures）
 
-**特性**：
-- 连接池复用
-- 心跳检测（ping/pong）
-- 自动重连
-
-#### ws_sender.py - 消息发送器
-
-**类**：`MessageSender`
-
-**职责**：
-- 消息发送（文本、图片、语音）
-- 失败重试机制
-- CQ 码构建
-
-**支持的发送类型**：
-- `send()`: 文本消息
-- `send_local_image()`: 本地图片
-- `send_local_voice()`: 本地语音
-- `send_ai_voice()`: AI 语音
+**边界**：只做传输 + 协议，不 import `core/` / `modules/` 的业务代码。
 
 ---
 
@@ -516,15 +504,16 @@ from main import yuki, engine, sender, history_manager, logger, connector, group
 │                        服务器环境                                │
 ├─────────────────────────────────────────────────────────────────┤
 │  NapCat (QQ Bot Framework)                                      │
-│  ├── WebSocket Server (ws://localhost:3001)                     │
-│  └── HTTP Server (http://localhost:3004)                        │
+│  ├── WebSocket Server (ws://127.0.0.1:3001，正向 WS，唯一在用)   │
+│  ├── HTTP Server (未启用：onebot11 配置 httpServers 为空)        │
+│  └── WebUI (http://localhost:6099)                              │
 └─────────────────────────────────────────────────────────────────┘
                               │
                               ▼
 ┌─────────────────────────────────────────────────────────────────┐
 │  YukiV6 主程序                                                  │
-│  ├── WebSocket Client (连接 NapCat)                             │
-│  ├── WebUI Server (http://127.0.0.1:1314)                      │
+│  ├── network/napcat.py (NapCatGateway：连接/帧路由/收发)         │
+│  ├── WebUI Server (http://127.0.0.1:8777)                      │
 │  └── 后台任务                                                   │
 │      ├── 精力衰减心跳                                           │
 │      ├── 日记检查                                               │

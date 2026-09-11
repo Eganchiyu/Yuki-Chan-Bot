@@ -24,6 +24,17 @@
 - 新增 `config.py` 中 `StructuredMemoryConfig` 配置组，支持通过 `config.yaml` 控制结构化记忆开关和召回数量参数（`enabled`、`max_profiles`、`max_facts`、`max_summaries`），默认关闭
 
 ### 变更
+- NapCat 接入层合并为单一文件 `network/napcat.py`（`NapCatGateway` 同时承担原 `BotConnector` 与 `MessageSender`），删除 `ws_connection.py` / `ws_sender.py`
+- NapCat 读端改为常驻 reader + 帧路由：`echo` 命中挂起请求则唤醒调用方，带 `post_type` 的帧进事件队列，其余丢弃。**出站不再依赖有人消费事件流**，API 响应也不再混进事件流（此前 `send_request()` 的 Future 只有在 `listen()` 被迭代时才会被 resolve）
+- `modules/message/` 三个文件（`CQProtocol` / `CQParser` / `GetMeta`）并入 `network/napcat.py`：CQ 码替换、群成员与消息查询、合并转发解析统一收口为网关方法
+- 入站适配层 `listen_main.py` 去掉 9 个模块级全局与 `configure_runtime()` 注入式 setter，依赖收敛为 `napcat_listen(gateway, pipeline)`
+- 删除 `SessionPipeline.wake_quickly()`：被叫到时改为在真实入队上一次到位（`debounce_flag=False` + `force_reply=True`），不再起"幽灵"入队任务再由真实入队 cancel 它
+- 被叫到的判定新增"被 @"：以结构化 `at` 段为准（`messagePostFormat=array`），`raw_text` 兜底且容忍 `[CQ:at,qq=x,name=y]`，`@全体成员` 不算
+- 戳一戳恢复"只处理戳到机器人自己"的过滤（原注释里的过滤误写为 `cfg.TARGET_QQ`），并统一按普通消息入队，不再插队
+- `main.py` 新增单实例守卫（`data/yuki.lock` 上的 flock，进程退出自动释放；`YUKI_ALLOW_MULTI_INSTANCE=1` 可覆盖），避免两个实例同时消费 NapCat 事件
+- QZone 监控与 GitHub 监控的启动改为配置开关（`qzone_monitor.enabled` 默认 false、`github_monitor.enabled` 默认 false），替代原先整段注释与 `getattr` 兜底
+- 新增 `pytest` 异步模式配置（`pyproject.toml` 的 `asyncio_mode = "auto"`），修复 13 个未标注 `@pytest.mark.asyncio` 的用例被误判失败
+- NapCat 接入层的传输契约与入站策略加入回归测试：`tests/test_napcat_gateway.py`（本地假 OneBot 服务器验证帧路由、重连、CQ 解析）与 `tests/test_napcat_inbound.py`（被叫到/戳一戳过滤）
 - 将 `modules/system_state` 合并进 `core/tools/tools_status.py`（主人状态监控 + `get_master_status` 工具统一收口），并删除该独立模块
 - DeepSeek 等模型返回空字符时，发送阶段拦截并发送占位提示「Yuki回复了空字符」，避免静默无回复
 - 小女仆终端/技能执行超时的进程树终止适配 Linux：POSIX 下以独立进程组（`start_new_session` + `os.killpg`）整组 `SIGKILL`，Windows 保留 `taskkill /T` 路径

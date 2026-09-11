@@ -139,7 +139,33 @@ telnet 127.0.0.1 3001
 3. 确保端口 3001 未被占用
 4. 检查防火墙设置
 
-### 2.2 WebSocket 连接断开
+### 2.2 同一个 NapCat 上挂了两个 Yuki 实例
+
+**症状**：群里偶发重复回复；`ss -tnp | grep 3001` 看到多条来自 `python` 的连接；
+Context Debug WebUI（8777）连不上。
+
+**原因**：两个 `python main.py` 都在消费同一条 NapCat 事件流，各自跑一遍管线。
+
+**排查**：
+
+```bash
+# 看有几条连到 3001 的客户端连接，以及是谁
+ss -tnp | grep 3001
+
+# 看有几个 main.py
+ps -eo pid,stat,etime,cmd | grep "main.py" | grep -v grep
+```
+
+注意被 SIGSTOP 挂起（`STAT` 为 `T`）的进程仍会占着 WebSocket 与端口，需要显式 kill。
+
+**解决方案**：
+
+1. 只保留一个实例：`kill <多余的 pid>`
+2. 启动时会自动检查 `data/yuki.lock`（flock，随进程退出释放），已有实例在跑
+   会直接中止并提示，不会再出现静默双开
+3. 确实需要并行跑第二个实例（例如调试）时设置 `YUKI_ALLOW_MULTI_INSTANCE=1`
+
+### 2.3 WebSocket 连接断开
 
 **症状**：日志显示 `WebSocket disconnected` 或 `Connection lost`
 

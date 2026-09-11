@@ -323,8 +323,7 @@ YukiV6/
 │   └── tools.py                     # 标准工具集合（14 个工具）
 │
 ├── modules/                         # 功能模块
-│   ├── QQNapcatListen/              # QQ 消息监听（输入适配层）
-│   ├── message/                     # CQ 码解析与消息标准化
+│   ├── QQNapcatListen/              # QQ 入站适配（事件 → 会话管线）
 │   ├── memory/                      # RAG 记忆系统（ChromaDB + text2vec）
 │   ├── stickers/                    # 表情包管理
 │   ├── vision/                      # 视觉/表情包理解（VLM）
@@ -336,8 +335,7 @@ YukiV6/
 │   └── LiveYukiL2D/                 # Live2D 桌宠交互
 │
 ├── network/                         # 网络通信层
-│   ├── ws_connection.py             # NapCat WebSocket 连接管理
-│   └── ws_sender.py                 # 消息发送器（文本/图片/语音/文件）
+│   └── napcat.py                    # NapCat 接入层（连接/帧路由/CQ 协议/收发）
 │
 ├── utils/                           # 工具与基础设施
 │   ├── llm_client.py                # LLM 客户端（主备故障转移）

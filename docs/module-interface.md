@@ -22,7 +22,7 @@ def __init__(self, yuki, sender, history_manager, memory_rag)
 
 **参数**：
 - `yuki: YukiState` - 状态管理实例
-- `sender: MessageSender` - 消息发送器
+- `sender: NapCatGateway` - NapCat 接入层实例（`network/napcat.py`，收发同一对象）
 - `history_manager: HistoryManager` - 历史记录管理器
 - `memory_rag: MemoryRAG` - RAG 记忆系统实例
 
@@ -275,54 +275,9 @@ def __init__(self, registry, max_rounds=4)
 
 ## 三、消息模块
 
-### 3.1 CQParser - CQ 码解析器
-
-**位置**：`modules/message/CQParser.py`
-
-**类**：`CQParser`
-
-**职责**：解析 CQ 码，提取文本、图片、@、回复等信息。
-
-#### 公共方法
-
-##### `parse(message) -> dict`
-
-解析消息。
-
-**参数**：
-- `message: str` - 原始消息
-
-**返回**：`dict` - 解析结果，包含 `text`、`images`、`at_list`、`reply_id` 等字段
-
-##### `extract_text(message) -> str`
-
-提取纯文本。
-
-**参数**：
-- `message: str` - 原始消息
-
-**返回**：`str` - 纯文本内容
-
----
-
-### 3.2 GetMeta - 元数据提取
-
-**位置**：`modules/message/GetMeta.py`
-
-**类**：`GetMeta`
-
-**职责**：提取消息元数据。
-
-#### 公共方法
-
-##### `get_sender_info(event) -> dict`
-
-提取发送者信息。
-
-**参数**：
-- `event: dict` - 事件数据
-
-**返回**：`dict` - 发送者信息，包含 `user_id`、`nickname`、`card` 等字段
+CQ 码解析与消息元数据查询已并入 NapCat 接入层（见 6.1 `NapCatGateway`）：
+`parse_cq_codes()` 负责 @ 与回复替换，`get_member_info()` / `get_msg()` 负责
+群成员与消息元数据，`smart_truncate()` 等纯函数负责文本归一化。
 
 ---
 
@@ -386,92 +341,94 @@ def __init__(self, registry, max_rounds=4)
 
 ## 六、网络模块
 
-### 6.1 BotConnector - WebSocket 连接
+### 6.1 NapCatGateway - NapCat 接入层
 
-**位置**：`network/ws_connection.py`
+**位置**：`network/napcat.py`（原 `ws_connection.py` + `ws_sender.py` 已合并至此）
 
-**类**：`BotConnector`
+**类**：`NapCatGateway`
 
-**职责**：WebSocket 连接管理、自动重连机制。
+**职责**：连接管理、帧路由、出站动作、CQ 协议与群/成员/消息查询。
+边界只到传输 + 协议，不 import `core/` / `modules/`。
 
 #### 构造函数
 
 ```python
-def __init__(self, ws_url, token=None)
+def __init__(self, ws_url=None, ws_token=None)
 ```
 
 **参数**：
-- `ws_url: str` - WebSocket 地址
-- `token: Optional[str]` - 认证 Token
+- `ws_url: str` - WebSocket 地址，缺省取 `cfg.NAPCAT_WS_URL`
+- `ws_token: Optional[str]` - 认证 Token，缺省取 `cfg.NAPCAT_WS_TOKEN`
+
+#### 并发模型
+
+一个常驻 `_reader()` 协程独占读端：`echo` 命中挂起请求则唤醒对应 `call()`；
+带 `post_type` 的帧投进事件队列供 `listen()` 消费；其它帧丢弃。
+因此出站不依赖有人消费事件流，API 响应也不会混进事件流。
 
 #### 公共方法
 
-##### `async connect() -> None`
+##### `async call(action, params, timeout=5.0) -> dict | None`
 
-连接 WebSocket。
+通用动作原语：发送 OneBot 动作并等待其响应，超时/异常返回 `None`。
 
-**返回**：无
+##### `async listen() -> AsyncIterator[dict]`
 
-##### `async disconnect() -> None`
+入站事件流（响应帧不会出现在这里）。只应由一个消费者迭代。
 
-断开 WebSocket。
+##### `async send(chat_id, message, mode="private") -> None`
 
-**返回**：无
+发送文本或 CQ 码；发完即返回，不等响应（流式回复走这里）。
 
-##### `async send_request(action, params) -> dict`
+##### `async send_local_image(chat_id, local_path, mode="private") -> None`
 
-发送请求。
+##### `async send_local_file(chat_id, local_path, mode="private") -> None`
 
-**参数**：
-- `action: str` - 操作类型
-- `params: dict` - 参数
+##### `async send_local_voice(chat_id, local_path, mode="group") -> None`
 
-**返回**：`dict` - 响应数据
+##### `async send_poke(user_id, group_id) -> dict`
 
----
+戳一戳（仅群聊），返回 NapCat 响应字典。
 
-### 6.2 MessageSender - 消息发送器
+##### `async download_file(file_id, filename=None) -> dict`
 
-**位置**：`network/ws_sender.py`
+按 `file_id` 取回文件并落到 `workspace/`，返回
+`{"success", "file_path", "filename", "error"}`。
 
-**类**：`MessageSender`
+##### `async get_member_info(group_id, user_id) -> dict | None`
 
-**职责**：消息发送（文本、图片、语音）。
+群成员信息（含群名片），带进程内缓存。
 
-#### 公共方法
+##### `async get_member_name(group_id, user_id) -> str`
 
-##### `async send(target, message, mode="group") -> bool`
+群名片优先，其次昵称；`all` 返回「全体成员」。
 
-发送文本消息。
+##### `async get_msg(message_id) -> dict | None`
 
-**参数**：
-- `target: str` - 目标 ID
-- `message: str` - 消息内容
-- `mode: str` - 发送模式（"group" 或 "private"）
+##### `async get_forward_messages(forward_id) -> tuple[list, dict | None]`
 
-**返回**：`bool` - 是否成功发送
+合并转发内容，兼容三套参数名并做了响应归一化。
 
-##### `async send_local_image(target, image_path, mode="group") -> bool`
+##### `async get_group_meta(group_id) -> dict`
 
-发送本地图片。
+群名与群备注。
 
-**参数**：
-- `target: str` - 目标 ID
-- `image_path: str` - 图片路径
-- `mode: str` - 发送模式
+##### `async get_cookies(domain="user.qzone.qq.com") -> dict | None`
 
-**返回**：`bool` - 是否成功发送
+##### `async get_login_info() -> dict | None`
 
-##### `async send_local_voice(target, voice_path, mode="group") -> bool`
+##### `async parse_cq_codes(text, group_id) -> str`
 
-发送本地语音。
+把 @ 与回复 CQ 码替换成可读文本。
 
-**参数**：
-- `target: str` - 目标 ID
-- `voice_path: str` - 语音路径
-- `mode: str` - 发送模式
+##### `async close() -> None`
 
-**返回**：`bool` - 是否成功发送
+**模块级纯函数**：`smart_truncate()`、`replace_other_cq_codes()`、
+`extract_at_uids()`、`replace_at_placeholder()`、`extract_reply_ids()`、
+`replace_reply_placeholder()`、`mentions_self()`。
+
+**运行计数**：`gateway.stats`（frames / events / dropped / reconnects /
+calls / call_failures）。
 
 ---
 
@@ -514,13 +471,20 @@ def __init__(self, ws_url, token=None)
 
 ## 八、使用示例
 
-### 8.1 发送消息
+### 8.1 发送消息与调用动作
 
 ```python
-from network.ws_sender import MessageSender
+from network.napcat import NapCatGateway
 
-sender = MessageSender(connector)
-await sender.send("123456789", "Hello!", mode="group")
+gateway = NapCatGateway()                     # 缺省读 cfg.NAPCAT_WS_URL / TOKEN
+await gateway.send("123456789", "Hello!", mode="group")
+await gateway.send_local_image("123456789", "/path/pic.png", mode="group")
+
+resp = await gateway.call("get_msg", {"message_id": 12345})   # 通用动作原语
+
+# 入站：常驻 reader 已在网关内部运行，这里只消费事件
+async for event in gateway.listen():
+    ...
 ```
 
 ### 8.2 调用 LLM
