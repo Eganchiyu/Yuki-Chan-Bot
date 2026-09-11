@@ -466,6 +466,16 @@ class GitHubMonitorConfig:
     )
 
 
+@dataclass
+class QZoneMonitorConfig:
+    """QQ 空间社交监控配置"""
+    enabled: bool = config_field(
+        False,
+        comment="是否启用 QQ 空间社交监控（启用前必须先完成 NapCat 接收侧整合）",
+        section="qzone_monitor"
+    )
+
+
 # ==================== 主配置类 ====================
 
 @dataclass
@@ -556,6 +566,11 @@ class Config:
         GitHubMonitorConfig,
         comment="GitHub 仓库监控配置",
         section="github_monitor"
+    )
+    qzone_monitor: QZoneMonitorConfig = config_field_factory(
+        QZoneMonitorConfig,
+        comment="QQ 空间社交监控配置",
+        section="qzone_monitor"
     )
 
     # 并发/调试

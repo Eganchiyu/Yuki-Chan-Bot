@@ -15,7 +15,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from config import (
     Config, APIConfig, ModelConfig, ConnectionConfig, TargetConfig,
     DiaryConfig, RAGConfig, EnergyConfig, AttentionConfig, PathsConfig,
-    TimingConfig, RequestTimeoutConfig,
+    TimingConfig, RequestTimeoutConfig, QZoneMonitorConfig,
     load_config, save_config, _deep_merge, _dict_to_dataclass,
     generate_default_config, _ATTR_MAP, _SECTION_HEADERS
 )
@@ -96,6 +96,11 @@ class TestConfigDataclasses:
         assert paths.cache_dir == "./data"
         assert paths.cache_file == "./data/meme_cache.json"
 
+    def test_qzone_monitor_config_defaults(self):
+        """测试 QZoneMonitorConfig 默认值（默认关闭）"""
+        qzone = QZoneMonitorConfig()
+        assert qzone.enabled is False
+
     def test_timing_config_defaults(self):
         """测试 TimingConfig 默认值"""
         timing = TimingConfig()
@@ -130,6 +135,12 @@ class TestMainConfig:
         assert isinstance(config.attention, AttentionConfig)
         assert isinstance(config.paths, PathsConfig)
         assert isinstance(config.timing, TimingConfig)
+
+    def test_monitor_switches_default_off(self):
+        """两个可选监控的开关默认必须关闭"""
+        config = Config()
+        assert config.qzone_monitor.enabled is False
+        assert config.github_monitor.enabled is False
 
     def test_config_computed_properties(self):
         """测试计算属性"""

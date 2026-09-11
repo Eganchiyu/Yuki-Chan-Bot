@@ -45,16 +45,20 @@ async def start_background_tasks(mode: str):
     from core.maid.maid_worker import maid_worker
     asyncio.create_task(maid_worker(engine, yuki, sender, history_manager))
 
-    # QZone 社交监控（暂时关闭）
-    # try:
-    #     from modules.qzone.monitor import ensure_monitor_started
-    #     asyncio.create_task(ensure_monitor_started(connector, engine, getattr(engine, 'rag', None)))
-    #     logger.info("[NapCat] QZone 社交监控已启动")
-    # except Exception as e:
-    #     logger.warning(f"[NapCat] QZone 监控启动失败: {e}")
+    # QZone 社交监控（默认关闭，见 configs/config.yaml 的 qzone_monitor.enabled）
+    # ⚠️ 启用前必须先完成 NapCat 接收侧整合：当前 modules/qzone/monitor.py 在缺少
+    #    连接时会临时自建 connector.listen() 再 close()，与主监听循环抢占同一条
+    #    WebSocket，开启后会饿死主监听。
+    if cfg.qzone_monitor.enabled:
+        try:
+            from modules.qzone.monitor import ensure_monitor_started
+            asyncio.create_task(ensure_monitor_started(connector, engine, getattr(engine, 'rag', None)))
+            logger.info("[NapCat] QZone 社交监控已启动")
+        except Exception as e:
+            logger.warning(f"[NapCat] QZone 监控启动失败: {e}")
 
-    # GitHub 仓库监控
-    if getattr(getattr(cfg, "github_monitor", None), "enabled", False):
+    # GitHub 仓库监控（默认关闭，见 configs/config.yaml 的 github_monitor.enabled）
+    if cfg.github_monitor.enabled:
         try:
             from modules.github_monitor import ensure_monitor_started
             asyncio.create_task(ensure_monitor_started(session_pipeline))
