@@ -12,7 +12,7 @@ from core.history_manager import HistoryManager
 from core.prompts import sync_system_prompts
 from core.session_pipeline import SessionPipeline
 from init import load_group_state
-from modules.QQNapcatListen.listen_main import configure_runtime, napcat_listen
+from modules.QQNapcatListen.listen_main import napcat_listen
 from core.tools.tools_status import start_monitor_service, stop_monitor_service
 from modules.vision.processor import MemeProcessor
 from network.napcat import NapCatGateway
@@ -33,10 +33,8 @@ def initialize_components():
     logger.info(f"[System] {cfg.ROBOT_NAME.title()} 正在初始化...")
     start_time = time.time()
 
-    gateway = NapCatGateway(cfg.NAPCAT_WS_URL, cfg.NAPCAT_WS_TOKEN)
-    # 迁移期别名：NapCatGateway 一个对象同时承担连接与发送，旧调用方仍按
-    # connector / sender 两个名字使用它；后续批次统一收敛到 gateway。
-    connector = sender = gateway
+    # NapCatGateway 一个对象同时承担收发；下游统一以 sender 这个名字使用它
+    sender = NapCatGateway(cfg.NAPCAT_WS_URL, cfg.NAPCAT_WS_TOKEN)
 
     from modules.vision.image_store import ImageStore
     image_store = ImageStore()
@@ -62,8 +60,6 @@ def initialize_components():
     logger.info(f"[System] 初始化完成，耗时 {end_time - start_time:.1f} 秒")
 
     return {
-        "gateway": gateway,
-        "connector": connector,
         "sender": sender,
         "meme_processor": meme_processor,
         "image_store": image_store,
@@ -127,7 +123,7 @@ def start_desktop_pet_if_enabled(pipeline, pipeline_loop):
 async def run_runtime() -> None:
     try:
         start_desktop_pet_if_enabled(session_pipeline, asyncio.get_running_loop())
-        await napcat_listen("mixed")
+        await napcat_listen(session_pipeline.sender, session_pipeline, "mixed")
     finally:
         from utils.llm_client import close_global_session
         await close_global_session()
@@ -239,7 +235,6 @@ if __name__ == "__main__":
         components = initialize_components()
         session_pipeline = SessionPipeline(components, group_active_state)
         components["engine"].process_callback = main_process
-        configure_runtime(components, session_pipeline, group_active_state, logger)
         start_context_debug_webui_if_enabled()
 
         warmup_groups(components["yuki"], components["history_manager"])

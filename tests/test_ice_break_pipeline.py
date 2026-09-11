@@ -205,16 +205,14 @@ async def test_feed_message_filters_bot_unless_whitelisted():
     async def enqueue_message(chat_id, mode, message_obj=None, **kwargs):
         enqueued_messages.append((chat_id, mode, message_obj))
 
-    listen_main.yuki = MagicMock()
-    listen_main.yuki.last_sent_meme = {}
-    listen_main.yuki.ice_break_fail_count = {}
-    listen_main.yuki.last_message_time = {}
-    listen_main.engine = MagicMock()
-    listen_main.history_manager = MagicMock()
-    listen_main.sender = AsyncMock()
-    listen_main.session_pipeline = MagicMock()
-    listen_main.session_pipeline.enqueue_message = AsyncMock(side_effect=enqueue_message)
-    listen_main.session_pipeline.wake_quickly = MagicMock()
+    pipeline = MagicMock()
+    pipeline.yuki.last_sent_meme = {}
+    pipeline.yuki.ice_break_fail_count = {}
+    pipeline.yuki.last_message_time = {}
+    pipeline.history_manager = MagicMock()
+    pipeline.enqueue_message = AsyncMock(side_effect=enqueue_message)
+    pipeline.wake_quickly = MagicMock()
+    gateway = AsyncMock()
 
     original_whitelist = list(listen_main.cfg.target.whitelist)
     original_max_message_length = listen_main.cfg.max_message_length
@@ -222,6 +220,8 @@ async def test_feed_message_filters_bot_unless_whitelisted():
     listen_main.cfg.max_message_length = 500
     try:
         await listen_main.feed_message(
+            pipeline,
+            gateway,
             "10000",
             "普通机器人消息",
             "group",
@@ -232,6 +232,8 @@ async def test_feed_message_filters_bot_unless_whitelisted():
         assert not enqueued_messages, "非白名单 BOT 应被拦截"
 
         await listen_main.feed_message(
+            pipeline,
+            gateway,
             "10000",
             "白名单机器人消息",
             "group",
