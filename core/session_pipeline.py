@@ -514,6 +514,12 @@ class SessionPipeline:
             logger.info(f"[Pipeline] 发送语音完成")
             return context
 
+        # deepseek 等模型有时会返回空字符，拦截并发送占位提示，避免静默无回复
+        if not answer_text or not answer_text.strip():
+            logger.warning(f"[Pipeline] {cfg.ROBOT_NAME.title()} 回复内容为空，拦截并发送占位提示")
+            await self.sender.send(chat_id, "Yuki回复了空字符", mode=send_mode)
+            return context
+
         # === 2. 流式发送文本与表情包 ===
         # 按 [MEME:xxx] 切分，() 保留分隔符，结果类似于 ['文本1', '[MEME:关键词]', '文本2']
         parts = re.split(r'(\[MEME:.*?\])', answer_text)

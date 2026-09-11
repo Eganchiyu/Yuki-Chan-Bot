@@ -13,8 +13,6 @@
 - 新增多模式基础框架 `core.modes`，将默认 QQ 群聊包装为 `QQChatMode`，并提供全局唯一聚焦模式状态管理
 - 新增浏览器交互占位模块 `modules/browser_interaction`，支持进入浏览器模式、记录步骤、占位扫描和完成后返回来源会话
 - 新增模式级工具注册 `ToolRegistryProvider`，支持普通 QQChatMode 与浏览器模式暴露不同工具组
-- 主人状态监控按需从 GPS-VPS 获取最新手机定位，并返回高德逆地理解析地址
-- GPS-VPS 云端中转服务缓存最新定位，新客户端连接时立即返回缓存位置
 - GitHub Push 卡片补充 Compare API 提交详情、提交评论数、文件数量、代码增删统计和比较链接
 - GitHub 仓库监控新增 Pillow 事件小卡片渲染，并复用 WebSocket 图片发送逻辑推送到指定群聊
 - 新增 `get_master_status` 工具，返回主人在线状态、活跃状态和当前聚焦窗口标题
@@ -26,6 +24,11 @@
 - 新增 `config.py` 中 `StructuredMemoryConfig` 配置组，支持通过 `config.yaml` 控制结构化记忆开关和召回数量参数（`enabled`、`max_profiles`、`max_facts`、`max_summaries`），默认关闭
 
 ### 变更
+- 将 `modules/system_state` 合并进 `core/tools/tools_status.py`（主人状态监控 + `get_master_status` 工具统一收口），并删除该独立模块
+- DeepSeek 等模型返回空字符时，发送阶段拦截并发送占位提示「Yuki回复了空字符」，避免静默无回复
+- 小女仆终端/技能执行超时的进程树终止适配 Linux：POSIX 下以独立进程组（`start_new_session` + `os.killpg`）整组 `SIGKILL`，Windows 保留 `taskkill /T` 路径
+- 主人状态监控适配 Linux：空闲检测改用 systemd-logind（兼容 X11/Wayland），前台窗口改为查询 X11 `_NET_ACTIVE_WINDOW`，保留 Windows（Win32）原始路径
+- 移除 GPS-VPS 手机定位功能：删除 `modules/system_state/gps_receiver.py`，`get_master_status` 不再返回 GPS 定位结果
 - 真实运行代码暂时关闭浏览器模式工具注入，保留浏览器模块及注册代码供后续启用
 - LLM 回复生成保留 `finish_reason` 等安全过滤信号，被内容安全过滤时发送 `Filtered`，避免空回复静默吞掉
 - 小女仆 terminal 默认允许常规写入、依赖安装和 git 操作，仅保留高风险命令拦截

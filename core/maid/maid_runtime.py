@@ -3,6 +3,7 @@ import asyncio
 import json
 import os
 import shutil
+import signal
 import subprocess
 import sys
 import venv
@@ -24,6 +25,11 @@ def _get_maid_python_exec() -> str:
     if os.name == 'nt':
         return os.path.join(MAID_VENV_DIR, "Scripts", "python.exe")
     return os.path.join(MAID_VENV_DIR, "bin", "python")
+
+
+def _new_session_kwargs() -> dict:
+    """POSIX 下让子进程独立成进程组，便于超时时整组终止；Windows 不接受该参数。"""
+    return {"start_new_session": True} if os.name != "nt" else {}
 
 
 def _handle_rmtree_error(func, path, exc_info) -> None:
@@ -151,20 +157,27 @@ async def _ensure_skill_deps(script_path: str, python_exec: str):
 
 
 async def _kill_process_tree(process) -> None:
-    """Windows 下优先 taskkill /T，失败再 kill 当前进程。"""
+    """终止整个进程树。Windows 用 taskkill /T；POSIX 用进程组整组 SIGKILL。"""
     if process.returncode is not None:
         return
-    try:
-        subprocess.run(
-            ["taskkill", "/F", "/T", "/PID", str(process.pid)],
-            capture_output=True,
-            check=False,
-        )
-    except Exception:
+    if os.name == "nt":
         try:
-            process.kill()
-        except ProcessLookupError:
+            subprocess.run(
+                ["taskkill", "/F", "/T", "/PID", str(process.pid)],
+                capture_output=True,
+                check=False,
+            )
+        except Exception:
             pass
+    else:
+        # 子进程以 start_new_session 启动，属于独立进程组，可安全整组终止
+        try:
+            os.killpg(os.getpgid(process.pid), signal.SIGKILL)
+        except Exception:
+            try:
+                process.kill()
+            except ProcessLookupError:
+                pass
     try:
         await process.wait()
     except Exception:
@@ -228,6 +241,7 @@ async def terminal_command_maid(command: str, cwd: str = None, timeout: int = TE
             cwd=workdir,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            **(_new_session_kwargs()),
         )
         try:
             stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=timeout)
@@ -307,22 +321,16 @@ async def run_skill(name):
         process = await asyncio.create_subprocess_exec(
             python_exec, path,
             stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE
+            stderr=asyncio.subprocess.PIPE,
+            **(_new_session_kwargs()),
         )
 
         try:
             stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=60)
-        except (asyncio.TimeoutError, asyncio.exceptions.TimeoutError):  # 修改这里
-            # 发现超时，物理抹除进程树
-            try:
-                # /F 强制终止，/T 终止子进程（如任务管理器窗口）
-                subprocess.run(['taskkill', '/F', '/T', '/PID', str(process.pid)],
-                               capture_output=True, check=False)
-            except:
-                process.kill()  # 最后的碎纸机
-
-            await process.wait()  # 确保资源彻底回收
-            return "错误：执行超时（60s）。物理进程已被强制终止。请检查代码是出现否阻塞等问题"
+        except (asyncio.TimeoutError, asyncio.exceptions.TimeoutError):
+            # 超时则物理抹除整个进程树
+            await _kill_process_tree(process)
+            return "错误：执行超时（60s）。物理进程已被强制终止。请检查代码是否出现阻塞等问题"
 
         stdout_res = _decode_process_output(stdout).strip()
         stderr_res = _decode_process_output(stderr).strip()
