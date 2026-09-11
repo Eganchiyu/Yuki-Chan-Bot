@@ -349,6 +349,16 @@ class PathsConfig:
         comment="缓存文件路径",
         section="paths"
     )
+    ncm_cookie_file: str = config_field(
+        "~/.cache/ncm_cookie.txt",
+        comment="网易云音乐登录 Cookie 文件路径（浏览器 F12 复制，抓歌用）",
+        section="paths"
+    )
+    ncm_download_dir: str = config_field(
+        "./output/ncm",
+        comment="网易云音乐下载目录",
+        section="paths"
+    )
 
 
 @dataclass

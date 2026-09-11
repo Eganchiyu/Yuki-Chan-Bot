@@ -197,7 +197,7 @@
 
 ## 二、标准工具 API
 
-**位置**：`core/tools.py`
+**位置**：`core/tools/`（各工具按职责拆分于 `core/tools/tools_*.py`，统一由 `core/tools/tools.py` 装配）
 
 ### 2.1 search_diary_tool
 

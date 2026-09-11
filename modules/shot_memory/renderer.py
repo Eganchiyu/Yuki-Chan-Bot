@@ -540,6 +540,10 @@ def load_font(size: int, bold: bool = False):
             r"C:\Windows\Fonts\simsun.ttc",
         ])
     candidates.extend([
+        "/usr/share/fonts/sarasa-gothic/Sarasa-Bold.ttc",
+        "/usr/share/fonts/noto-cjk/NotoSansCJK-Bold.ttc",
+        "/usr/share/fonts/sarasa-gothic/Sarasa-Regular.ttc",
+        "/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc",
         "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
         "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
     ])

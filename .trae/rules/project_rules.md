@@ -1,383 +1,97 @@
 # YukiV6 项目开发公约
 
-本文件定义了 YukiV6 项目的开发规范和约定，所有开发者（包括 AI 助手）必须遵守。
+本文件定义 YukiV6 项目的工程约定，所有开发者（含 AI）必须遵守。规则优先以现有代码为最终依据，本文件仅索引关键约束。
 
 ---
 
 ## 一、代码规范
 
-### 1.1 命名规范
+### 1.1 命名与风格
 
-**文件命名**：
-- 使用小写字母和下划线：`history_manager.py`
-- 测试文件以 `test_` 开头：`test_maid_search_diary.py`
-- 配置文件使用小写字母：`config.py`
+- **文件命名**：小写 + 下划线，按职责分目录分文件，如 `core/tools/tools_media.py`、`core/engine/engine_reply.py`；测试文件以 `test_` 开头。
+- **类**：PascalCase（`YukiEngine`、`HistoryManager`）。
+- **函数/方法/变量**：snake_case；私有加 `_` 前缀（`_get_data_locked`）；常量/配置属性全大写（`cfg.TOOL_CALL_TIMEOUT` 之类以 `cfg.*` 访问）。
+- **异步**：用 `async def` 声明，不加 `async_` 前缀；内部一律 `await`，避免在 async 中做阻塞 IO（长阻塞用 `asyncio.to_thread`）。
+- **缩进**：4 空格，不用 Tab；单行建议 ≤100 字符；导入顺序：标准库 → 第三方 → 项目内部。
+- **注释/docstring**：使用中文，复杂逻辑必须注释，公共函数写 docstring。
 
-**类命名**：
-- 使用 PascalCase：`YukiEngine`, `MemoryRAG`
-- 单例类以功能命名：`ProviderRegistry`, `MemoryRAG`
+### 1.2 配置访问（config.py）
 
-**函数/方法命名**：
-- 使用 snake_case：`get_tools()`, `scan_and_register()`
-- 私有方法以 `_` 开头：`_initialize()`, `_load_blacklist()`
-- 异步方法不加 `async_` 前缀，通过 `async def` 声明
+- 配置以 `config.py` 中 dataclass 为单一数据源，运行时统一 `from config import cfg` 访问，**禁止散落硬编码常量**（API Key、超时、路径等一律走 `cfg`）。
+- 新增配置项：在对应 dataclass 用 `config_field()` / `config_field_factory()` 定义，然后运行 `python config.py sync` 同步 yaml。
+- `configs/config.yaml` 含敏感字段，已在 `.gitignore`，禁止提交。
 
-**变量命名**：
-- 使用 snake_case：`chat_id`, `group_active_state`
-- 常量使用大写：`MAX_RETRIES`, `DEBOUNCE_TIME`
-- 私有变量以 `_` 开头：`_functions`, `_handlers`
+### 1.3 工具链协议（core/toolchain.py）
 
-### 1.2 代码风格
+- 新增工具：在 `core/tools/tools_*.py` 内实现 handler，返回 `ToolResult`（成功失败统一封装），再到 `core/tools/tools.py` 的 `TOOL_SPECS` 中登记 `ToolSpec(name, description, parameters, handler)`。
+- handler 签名固定为 `handler(context, **args)`，入参来自 LLM 的 `arguments` JSON；必须抛异常或返回 `ToolResult.failure(...)` 而非裸报错。
+- 工具内使用 `ToolResult(success=..., content=..., data=..., error=...)`；不要直接写 CQ 文件码，发文件优先用 `send_qq_file`。
 
-**缩进**：
-- 使用 4 空格缩进
-- 不使用 Tab
+### 1.4 模块结构
 
-**行长度**：
-- 建议每行不超过 100 字符
-- 长行使用换行或括号包裹
+- 职责单一、按领域分包：`core/engine/*`（门面 + decision/diary/monitor/reply 子服务）、`core/tools/*`（工具）、`core/maid/*`（小女仆）、`core/toolchain.py`（注册与调用执行）。
+- 新增/调整模块结构须同步 `docs/architecture.md`。
 
-**导入顺序**：
-```python
-# 1. 标准库
-import asyncio
-import os
+### 1.5 并发与数据安全
 
-# 2. 第三方库
-import chromadb
-from sentence_transformers import SentenceTransformer
+- 共享状态用锁保护：`HistoryManager` 用 `threading.Lock`；写入用「临时文件 + `os.replace`」实现原子落盘，杜绝半写。
+- 批量/阻塞操作后台化：用 `asyncio.create_task` / `asyncio.to_thread`；避免在 async 函数里用阻塞文件/网络调用。
 
-# 3. 项目内部模块
-from config import cfg
-from utils.logger import get_logger
-```
+### 1.6 网络请求（必须走 utils.http_client）
 
-**注释**：
-- 使用中文注释（与项目文档保持一致）
-- 复杂逻辑必须添加注释
-- 函数/方法使用 docstring 说明用途
+所有外部 HTTPS 请求统一经 `utils/http_client.py`，禁止直接用系统默认证书链，否则会触发 `[ASN1: NOT_ENOUGH_DATA]` 类 SSL 错误。
 
-### 1.3 异步编程规范
-
-**异步函数**：
-- 使用 `async def` 声明
-- 使用 `await` 调用异步函数
-
-**并发控制**：
-- 使用 `asyncio.Lock()` 保护共享状态
-- 使用 `asyncio.create_task()` 创建后台任务
-- 避免在异步函数中使用阻塞操作
-
-**错误处理**：
-- 使用 `try/except` 捕获异常
-- 记录错误日志
-- 提供降级方案
-
-### 1.4 网络连接规范
-
-项目所有外部网络请求必须统一使用 `utils.http_client` 提供的 SSL/certifi 入口，避免直接使用系统默认证书链导致 `[ASN1: NOT_ENOUGH_DATA] not enough data (_ssl.c:4040)` 等 SSL 错误。
-
-**aiohttp 请求**：
-- 必须使用 `create_tcp_connector()` 创建连接器。
-- 禁止直接 `aiohttp.ClientSession()` 发起 HTTPS 请求。
+- aiohttp：`aiohttp.ClientSession(connector=create_tcp_connector(), timeout=...)`。
+- urllib：`utils.http_client.urlopen()`。
+- requests / httpx：`verify=requests_verify()`。
+- WebSocket：`wss://` 必须传 `ssl=create_ssl_context()`，`ws://` 不需要。
 
 ```python
 from utils.http_client import create_tcp_connector
-
-async with aiohttp.ClientSession(connector=create_tcp_connector()) as session:
+async with aiohttp.ClientSession(connector=create_tcp_connector(), timeout=aiohttp.ClientTimeout(total=120)) as session:
     async with session.get(url) as resp:
-        data = await resp.text()
-```
-
-**urllib 请求**：
-- 必须使用 `utils.http_client.urlopen()`。
-- 禁止直接使用 `urllib.request.urlopen()`。
-
-```python
-from utils.http_client import urlopen
-
-with urlopen(url, timeout=10) as response:
-    data = response.read()
-```
-
-**requests / httpx 请求**：
-- 必须使用 `requests_verify()` 指定 certifi CA。
-
-```python
-from utils.http_client import requests_verify
-
-requests.get(url, verify=requests_verify(), timeout=10)
-httpx.AsyncClient(verify=requests_verify())
-```
-
-**WebSocket 连接**：
-- `ws://` 不需要 SSL。
-- `wss://` 必须传入 `create_ssl_context()`。
-
-```python
-from urllib.parse import urlparse
-from utils.http_client import create_ssl_context
-
-connect_kwargs = {}
-if urlparse(ws_url).scheme == "wss":
-    connect_kwargs["ssl"] = create_ssl_context()
-
-async with websockets.connect(ws_url, **connect_kwargs) as websocket:
-    ...
+        data = await resp.read()
 ```
 
 ---
 
 ## 二、Git 提交规范
 
-### 2.1 提交信息格式
-
-```
-<type>(<scope>): <subject>
-
-<body>
-
-<footer>
-```
-
-**类型（type）**：
-- `feat`: 新功能
-- `fix`: Bug 修复
-- `docs`: 文档更新
-- `style`: 代码格式调整（不影响逻辑）
-- `refactor`: 代码重构
-- `perf`: 性能优化
-- `test`: 测试相关
-- `chore`: 构建/工具相关
-
-**范围（scope）**：
-- 可选，表示影响范围
-- 例如：`core`, `modules`, `providers`, `docs`
-
-**主题（subject）**：
-- 简短描述，不超过 50 字符
-- 使用中文
-- 不以句号结尾
-
-**示例**：
-```
-feat(core): 实现 FunctionRegistry 注册中心
-
-- 支持批量扫描注册
-- 支持单个注册/注销
-- 支持获取 tools 列表
-
-Closes #123
-```
-
-### 2.2 提交前检查清单
-
-提交前必须完成以下检查：
-
-- [ ] **代码风格**：符合项目命名规范
-- [ ] **Gitignore**：敏感文件未被提交
-- [ ] **测试通过**：相关测试全部通过
-- [ ] **文档更新**：修改了文档（如有必要）
-- [ ] **Changelog 更新**：记录了重要变更
-- [ ] **无敏感信息**：API Key、密码等未暴露
+- 信息格式 `type(scope): subject`，subject 用中文、≤50 字符、不以句号结尾；`type` ∈ feat/fix/refactor/docs/style/perf/test/chore。
+- 一次提交只做一件事，避免无关文件；提交前检查：无敏感信息、`.gitignore` 正确、相关改动可运行。
 
 ---
 
 ## 三、文档规范
 
-### 3.1 必须维护的文档
+以下文档须随对应代码变更同步更新：
 
-以下文档必须随代码同步更新：
+| 文档 | 更新时机 |
+|------|----------|
+| `docs/changelog.md` | 每次提交，记录到 `[未发布]` |
+| `docs/architecture.md` | 模块/职责/数据流变更 |
+| `docs/development-plan.md` | 任务与里程碑变更 |
+| `README.md` | 项目说明变更 |
 
-| 文档 | 路径 | 更新时机 |
-|------|------|----------|
-| 架构文档 | `docs/architecture.md` | 模块结构变更时 |
-| 开发规划 | `docs/development-plan.md` | 计划变更时 |
-| 更新日志 | `docs/changelog.md` | 每次提交时 |
-| README | `README.md` | 项目说明变更时 |
-
-### 3.2 文档更新规则
-
-**Changelog 更新**：
-- 每次提交必须更新 `docs/changelog.md`
-- 记录在 `[未发布]` 部分
-- 发布版本时，将 `[未发布]` 替换为版本号
-
-**架构文档更新**：
-- 新增/删除模块时更新
-- 模块职责变更时更新
-- 数据流变更时更新
-
-**开发规划更新**：
-- 任务状态变更时更新
-- 新增任务时更新
-- 里程碑完成时更新
+新增工具时请参考 `docs/toolchain-usage.md` 的既有约定，避免文档与代码脱节。
 
 ---
 
-## 四、安全规范
+## 四、安全与发布
 
-### 4.1 敏感信息保护
-
-**禁止提交的信息**：
-- API Key / Secret
-- 数据库密码
-- 私钥文件
-- 配置文件中的敏感字段
-
-**保护措施**：
-- 使用 `.gitignore` 排除敏感文件
-- 使用环境变量存储敏感配置
-- 定期轮换 API Key
+- **敏感信息**：API Key / 密码 / token 一律走 `cfg` + 环境变量，禁止硬编码；通过 `.gitignore` 排除，提交前自查。
+- **版本号**：遵循语义化版本 `vX.Y.Z`；发版时把 `docs/changelog.md` 的 `[未发布]` 换成版本号，再打 Tag 与 GitHub Release。
 
 ---
 
-## 五、测试规范
+## 五、AI 助手约束
 
-### 5.1 测试要求
+- **必须**：遵循上文命名/网络/工具链规范；保留既有对外入口的兼容（如 `YukiEngine` 的门面方法），不破坏现调用方；改动最小化。
+- **禁止**：硬编码敏感信息、删除现有功能、引入无必要的新依赖、忽略错误处理与降级。
+- **变更后**：更新 `docs/changelog.md`，必要时更新架构/规划文档。
+- **运行/测试/lint 前**：先激活 uv 项目虚拟环境（`.venv/Scripts/activate`）。
 
-**必须测试的场景**：
-- 核心功能
-- 边界条件
-- 错误处理
-- 并发场景
+> 本文件只收录与代码直接相关的硬规则；凡发现与现有代码冲突，以代码为准并反馈修正本文件。
 
-**测试文件位置**：
-- 测试文件放在 `tests/` 目录
-- 文件名以 `test_` 开头
-
-### 5.2 测试命名
-
-```python
-def test_search_diary_returns_results():
-    """测试搜索日记返回结果"""
-    pass
-
-def test_search_diary_with_empty_query():
-    """测试空查询的处理"""
-    pass
-```
-
----
-
-## 六、发布规范
-
-### 6.1 版本号规则
-
-遵循 [语义化版本](https://semver.org/lang/zh-CN/)：
-
-- **主版本号（X.y.z）**：重大架构变更、不兼容的 API 修改
-- **次版本号（x.Y.z）**：新功能添加、功能增强
-- **修订号（x.y.Z）**：Bug 修复、文档更新
-
-### 6.2 发布流程
-
-1. 更新 `docs/changelog.md`，将 `[未发布]` 替换为版本号
-2. 创建 Git Tag：`git tag vX.Y.Z`
-3. 推送 Tag：`git push origin vX.Y.Z`
-4. 创建 GitHub Release
-
----
-
-## 七、AI 助手规范
-
-### 7.1 代码生成规则
-
-**必须遵守**：
-- 遵循项目命名规范
-- 添加必要的注释
-- 不引入新的依赖（除非必要）
-- 不修改未明确要求的代码
-
-**禁止行为**：
-- 硬编码敏感信息
-- 删除现有功能
-- 引入破坏性变更
-- 忽略错误处理
-
-### 7.2 文档更新规则
-
-**每次代码变更后**：
-- 更新 `docs/changelog.md`
-- 更新相关架构文档（如有必要）
-- 更新开发规划（如有必要）
-
-### 7.3 提交规范
-
-**提交信息**：
-- 使用中文
-- 遵循提交信息格式
-- 简明扼要
-
-**提交内容**：
-- 一次提交只做一件事
-- 避免提交无关文件
-- 确保代码可运行
-
----
-
-## 八、工具配置
-
-### 8.1 Git 配置
-
-```bash
-# 设置用户信息
-git config user.name "Your Name"
-git config user.email "your.email@example.com"
-
-# 设置默认分支
-git config init.defaultBranch main
-```
-
-### 8.2 编辑器配置
-
-**推荐设置**：
-- 缩进：4 空格
-- 行长度：100 字符
-- 编码：UTF-8
-- 换行符：LF
-
-### 8.3 代码格式化
-
-**Python**：
-- 使用 Black 格式化
-- 使用 isort 排序导入
-- 使用 flake8 检查代码风格
-
-### 8.4 Python 运行环境
-
-运行项目脚本、测试、lint 或 typecheck 前，必须先在 PowerShell 中启用 uv 创建的项目虚拟环境：
-
-```powershell
-.\.venv\Scripts\activate
-```
-
----
-
-## 九、协作规范
-
-### 9.1 问题反馈
-
-**Bug 报告**：
-- 描述问题现象
-- 提供复现步骤
-- 附上错误日志
-- 说明环境信息
-
-**功能建议**：
-- 描述需求背景
-- 说明预期效果
-- 提供实现思路（可选）
-
-### 9.2 代码审查
-
-**审查要点**：
-- 代码风格是否符合规范
-- 是否有潜在的 Bug
-- 是否有安全隐患
-- 是否有性能问题
----
-
-**文档版本**：v1.0.0
-**最后更新**：2026-07-28
-**维护人员**：项目开发团队
+**文档版本**：v2.0.0
+**最后更新**：2026-09-11

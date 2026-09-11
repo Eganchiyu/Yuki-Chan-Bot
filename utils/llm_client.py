@@ -28,16 +28,43 @@ _fallback_state: Dict[str, Any] = {
 }
 
 
-def _sanitize_payload(model: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+_GEMINI_UNSUPPORTED_PARAMS = (
+    "frequency_penalty",
+    "presence_penalty",
+    "logit_bias",
+)
+
+
+def _is_gemini_endpoint(model: str, base_url: str = "") -> bool:
+    """识别 Google Gemini / Gemma 官方或兼容端点。"""
+    blob = f"{model or ''} {base_url or ''}".lower()
+    return (
+        "generativelanguage.googleapis.com" in blob
+        or "gemini" in blob
+        or "gemma-" in blob
+    )
+
+
+def _sanitize_payload(
+    model: str,
+    payload: Dict[str, Any],
+    base_url: str = "",
+) -> Dict[str, Any]:
     """平台参数适配：清理/转换不兼容参数。"""
+    model_lower = (model or "").lower()
     # 仅对 OpenAI 推理模型（o1/o3）添加 reasoning_effort
     if getattr(cfg, "DISABLE_THINKING", False) and "reasoning_effort" not in payload:
-        model_lower = (model or "").lower()
         if model_lower.startswith("o1") or model_lower.startswith("o3"):
             payload["reasoning_effort"] = "low"
+        elif _is_gemini_endpoint(model, base_url):
+            payload["reasoning_effort"] = "none"
     # DashScope 视觉模型不支持 response_format
-    if model and "vl" in model.lower() and "response_format" in payload:
+    if model and "vl" in model_lower and "response_format" in payload:
         del payload["response_format"]
+    # Gemini OpenAI 兼容层不接受若干 OpenAI 专用采样参数
+    if _is_gemini_endpoint(model, base_url):
+        for key in _GEMINI_UNSUPPORTED_PARAMS:
+            payload.pop(key, None)
     return payload
 
 
@@ -84,7 +111,7 @@ async def chat_completion_raw(
     }
     # 显式禁用 SSE 流式，避免部分 API 默认返回 text/event-stream
     payload = {"model": model, "messages": messages, "stream": False, **kwargs}
-    payload = _sanitize_payload(model, payload)
+    payload = _sanitize_payload(model, payload, base_url=base_url)
 
     client_timeout = aiohttp.ClientTimeout(total=timeout, connect=10)
     async with session.post(

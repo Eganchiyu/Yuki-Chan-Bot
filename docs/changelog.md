@@ -26,6 +26,7 @@
 - 新增 `config.py` 中 `StructuredMemoryConfig` 配置组，支持通过 `config.yaml` 控制结构化记忆开关和召回数量参数（`enabled`、`max_profiles`、`max_facts`、`max_summaries`），默认关闭
 
 ### 变更
+- 真实运行代码暂时关闭浏览器模式工具注入，保留浏览器模块及注册代码供后续启用
 - LLM 回复生成保留 `finish_reason` 等安全过滤信号，被内容安全过滤时发送 `Filtered`，避免空回复静默吞掉
 - 小女仆 terminal 默认允许常规写入、依赖安装和 git 操作，仅保留高风险命令拦截
 - 小女仆专属虚拟环境启动前会验证 Python 是否可用，检测到旧解释器丢失或环境损坏时自动重建
@@ -38,6 +39,7 @@
 - 调整 minimal Live2D 呼吸幅度、鼠标跟随灵敏度与阻尼，使头部和身体待机动作更自然
 - 将 `core/maid.py` 解耦为边界判定、通用常量、运行时工具、外部工具、提示词、主循环和 Worker 模块，保留 `core.maid` 兼容导出
 - 将 `core/engine.py` 解耦为回复工具链、回复决策、日记摘要和后台监控 service，保留 `YukiEngine` 门面调用方式不变
+- 将 `core/tools.py` 解耦为 `core/tools/` 包：按职责拆分为状态、定时、日记、小女仆、消息、富文本、截屏、媒体、检索、空间、浏览器、网易云等子服务，`TOOL_SPECS` 汇总于 `core/tools/tools.py`，并保留 `core.tools` 导入路径与公开 handler 名称不变
 - 二次重新评估 `docs/core-technical-debt.md`：将当前重点调整为历史并发一致性、消息失败恢复、后台任务生命周期、Maid 执行边界和核心行为测试缺口，并更新 P0/P1/P2 整改顺序与状态清单
 - 统一 `ToolResult` 工具结果协议，使用稳定错误码，增加参数校验、超时保护和异常脱敏
 - 删除 `HistoryManager` 的 `get_chat` / `append_chat` 历史兼容别名，统一使用 session 级接口
@@ -114,6 +116,8 @@
   - 破冰回复现在享受完整的工具链能力（表情包搜索、小女仆委托、RAG 记忆检索等）
 
 ### 修复
+- 屏蔽机器人自己发出的戳一戳事件，避免回灌消息管线导致重复触发对话
+- 合并同一人连续戳同一目标的戳一戳消息为一条并累计「x次数」，压缩上下文占用
 - 修复普通对话流程只将当前用户消息放入临时上下文、未写入 `chat_history.json`，导致后续 LLM 调用缺少用户历史记录的问题
 - 修复小女仆快速查询日记时硬编码 `core/yuki_memory` 导致重复创建空 ChromaDB 的问题
 - 修复启动后台任务时小女仆 Worker 导入到同名模块导致 `'module' object is not callable` 的问题

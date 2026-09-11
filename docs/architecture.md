@@ -28,7 +28,7 @@ YukiV6/
 │   ├── engine.py              # 主引擎：LLM 决策、工具链调用、回复生成
 │   ├── session_pipeline.py    # 按 chat_id 串行运行的持久会话管道
 │   ├── toolchain.py           # Function Call 注册、状态、延迟执行和结果封装
-│   ├── tools.py               # 标准工具集合、schema 与 handler
+│   ├── tools/                 # 标准工具集合：按职责拆分的子服务与 TOOL_SPECS 装配
 │   ├── history_manager.py     # 历史记录管理
 │   ├── maid.py                # 小女仆子代理系统
 │   └── prompts.py             # 提示词模板管理
@@ -186,13 +186,13 @@ maid_task_queue: asyncio.Queue     # 小女仆任务队列
 
 ---
 
-### 3.6 core/toolchain.py 与 core/tools.py - Function Call 工具链
+### 3.6 core/toolchain.py 与 core/tools/ - Function Call 工具链
 
 **职责**：
 - `FunctionRegistry` 负责注册 `ToolSpec` 并向 LLM 提供 schema
 - `ToolCallManager` 负责解析模型返回的 `tool_calls`、顺序执行工具、封装 OpenAI tool 消息
 - `ToolContext` 在多轮工具调用期间携带 `chat_id`、运行模式、当前历史、用户输入与最小运行时依赖
-- `core/tools.py` 通过 `TOOL_SPECS` 统一声明日记查询、定时任务、小女仆委托、主人私聊、浏览器搜索、QQ 文件发送、外部内容注入等标准工具
+- `core/tools/` 按职责拆分标准工具子服务（状态、定时、日记、小女仆、消息、富文本、截屏、媒体、检索、空间、浏览器、网易云等），由 `core/tools/tools.py` 通过 `TOOL_SPECS` 统一装配声明，`core/tools/__init__.py` 保持 `core.tools` 旧引用路径兼容
 
 **执行策略**：
 - 工具调用按顺序执行，避免共享状态并发写入

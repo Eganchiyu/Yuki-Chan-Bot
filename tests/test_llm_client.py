@@ -76,6 +76,11 @@ def test_sanitize_payload_disable_thinking():
         assert "reasoning_effort" in result3
 
         print("  [PASS] DISABLE_THINKING=True 时仅对 o1/o3 模型注入 reasoning_effort")
+
+        payload4 = {"model": "gemini-3.1-flash-lite", "messages": []}
+        result4 = _sanitize_payload("gemini-3.1-flash-lite", payload4)
+        assert result4.get("reasoning_effort") == "none"
+        print("  [PASS] Gemini 在 DISABLE_THINKING=True 时注入 reasoning_effort=none")
     finally:
         # 恢复原始值
         cfg._raw.setdefault("model", {})["disable_thinking"] = original_value
@@ -111,6 +116,42 @@ def test_sanitize_payload_normal_model():
     assert result["response_format"] == {"type": "json_object"}
 
     print("  [PASS] 普通模型正确保留 response_format")
+
+
+def test_sanitize_payload_gemini_penalties():
+    """Gemini 兼容层需去掉 frequency/presence_penalty，否则会 400。"""
+    print("\n[测试 4b] Gemini 不兼容采样参数过滤")
+
+    payload = {
+        "model": "gemini-3.1-flash-lite",
+        "messages": [],
+        "temperature": 1.1,
+        "top_p": 0.9,
+        "frequency_penalty": 0.5,
+        "presence_penalty": 0.4,
+        "max_tokens": 520,
+    }
+    result = _sanitize_payload(
+        "gemini-3.1-flash-lite",
+        payload,
+        base_url="https://generativelanguage.googleapis.com/v1beta/openai",
+    )
+    assert "frequency_penalty" not in result
+    assert "presence_penalty" not in result
+    assert result["temperature"] == 1.1
+    assert result["top_p"] == 0.9
+    assert result["max_tokens"] == 520
+
+    deepseek_payload = {
+        "model": "deepseek-v4-flash",
+        "frequency_penalty": 0.5,
+        "presence_penalty": 0.4,
+    }
+    deepseek_result = _sanitize_payload("deepseek-v4-flash", deepseek_payload)
+    assert deepseek_result["frequency_penalty"] == 0.5
+    assert deepseek_result["presence_penalty"] == 0.4
+
+    print("  [PASS] Gemini 过滤 penalty，DeepSeek 保留 penalty")
 
 
 def test_get_fallback_message():

@@ -1,6 +1,6 @@
 # Toolchain 用法与调用流程说明
 
-本文档基于 `core/toolchain.py`、`core/tools.py` 和当前项目调用点整理，说明 YukiV6 Function Call 工具链的职责、使用方式和扩展规范。
+本文档基于 `core/toolchain.py`、`core/tools/` 包和当前项目调用点整理，说明 YukiV6 Function Call 工具链的职责、使用方式和扩展规范。
 
 ---
 
@@ -11,7 +11,7 @@
 | 文件 | 职责 |
 |------|------|
 | `core/toolchain.py` | 提供 `ToolSpec`、工具注册中心、工具调用上下文、运行时依赖、工具执行器和标准结果封装 |
-| `core/tools.py` | 定义标准工具 handler，并通过 `TOOL_SPECS` 统一声明 schema 与 handler |
+| `core/tools.py` → `core/tools/` 包 | 按职责定义标准工具 handler（`core/tools/tools_*.py`），并由 `core/tools/tools.py` 通过 `TOOL_SPECS` 统一声明 schema 与 handler；`core/tools/__init__.py` 保持 `core.tools` 旧引用兼容 |
 
 当前工具链由 `core/engine.py` 接入：
 
@@ -172,7 +172,7 @@ ToolCallManager.execute_tool_calls()
 
 ## 四、标准工具清单
 
-当前 `core/tools.py` 注册了以下工具：
+当前 `core/tools/tools.py` 注册了以下工具：
 
 | 工具名 | handler | 功能 |
 |--------|---------|------|
@@ -326,7 +326,7 @@ Function Call 工具链是新的标准调用入口，但这些标签逻辑仍在
 ## 十一、关联文件
 
 - `core/toolchain.py`：工具链基础设施。
-- `core/tools.py`：标准工具集合。
+- `core/tools/`：标准工具集合（按职责拆分的子服务与 `TOOL_SPECS` 装配）。
 - `core/engine.py`：工具链接入与多轮对话流程。
 - `utils/llm_client.py`：LLM 原始 message 返回接口。
 - `config.py`：工具调用等待时间配置。

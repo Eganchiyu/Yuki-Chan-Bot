@@ -143,6 +143,10 @@ async def handle_poke_event(data: dict, mode: str):
     poker_id = data.get("user_id")       # 戳人者
     target_id = data.get("target_id")    # 被戳者
 
+    # 屏蔽机器人自己发出的戳一戳：否则会回灌消息管线，导致再次触发对话
+    if poker_id and int(poker_id) == cfg.SELF_QQ:
+        return
+
     # # 只处理戳到 Yuki 的事件
     # if not target_id or int(target_id) != cfg.TARGET_QQ:
     #     return

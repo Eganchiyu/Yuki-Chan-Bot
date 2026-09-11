@@ -149,8 +149,22 @@ class SessionPipeline:
             incoming_message = IncomingMessage.from_mapping(message_obj)
             if not incoming_message.owner_id:
                 incoming_message.owner_id = chat_id_str
-            self.yuki.message_buffer.setdefault(chat_id_str, [])
-            self.yuki.message_buffer[chat_id_str].append(incoming_message.to_dict())
+            buffer = self.yuki.message_buffer.setdefault(chat_id_str, [])
+            merged = False
+            if incoming_message.source == "napcat.notice.poke" and buffer:
+                last = buffer[-1]
+                last_base = last.get("poke_base") or last.get("content")
+                # 同一人连续戳同一目标时，合并为一条并累计次数，压缩上下文占用
+                if (last.get("source") == "napcat.notice.poke"
+                        and last.get("user_id") == incoming_message.user_id
+                        and last_base == incoming_message.content):
+                    count = last.get("poke_count", 1) + 1
+                    last["poke_base"] = last_base
+                    last["poke_count"] = count
+                    last["content"] = f"{last_base} x{count}"
+                    merged = True
+            if not merged:
+                buffer.append(incoming_message.to_dict())
             self.last_msg_time[chat_id_str] = time.time()
 
         # 2. 状态融合：只要当前批次中有任何要求跳过防抖的指令，立刻锁定 skip 状态
