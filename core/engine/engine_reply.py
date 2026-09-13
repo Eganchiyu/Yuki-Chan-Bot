@@ -24,6 +24,7 @@ class EngineReplyService:
             tool_manager,
             get_process_callback: Callable[[], Any],
             get_image_store: Callable[[], Any],
+            get_meme_processor: Callable[[], Any] = lambda: None,
     ):
         self.yuki = yuki
         self.history = history
@@ -33,6 +34,7 @@ class EngineReplyService:
         self.tool_manager = tool_manager
         self.get_process_callback = get_process_callback
         self.get_image_store = get_image_store
+        self.get_meme_processor = get_meme_processor
 
     @staticmethod
     def clean_visible_reply(content):
@@ -43,7 +45,23 @@ class EngineReplyService:
         clean_content = re.sub(r'<layout>.*?</layout>', '', clean_content, flags=re.DOTALL).strip()
         return clean_content
 
-    def merge_pending_messages(self, chat_id, tool_messages):
+    async def _resolve_pending_image(self, meme_processor, img):
+        """工具调用期间新增图片，按与主管线一致的开关处理。"""
+        url, is_meme = img["url"], img["is_meme"]
+        if cfg.LLM_NATIVE_VISION_ENABLED and not is_meme and self.get_image_store():
+            result = await meme_processor.register_from_url(url)
+            if result.get("attachment"):
+                return f"[图片]{self._idx_tag(result.get('index'))}", result["attachment"]
+        result = await meme_processor.understand_from_url(url, is_meme=is_meme)
+        desc = result.get("description") or "未知图片/表情"
+        kind = "表情" if is_meme else "图片"
+        return f"[{kind}:{desc}]{self._idx_tag(result.get('index'))}", None
+
+    @staticmethod
+    def _idx_tag(index):
+        return f"[img:{index}]" if index else ""
+
+    async def merge_pending_messages(self, chat_id, tool_messages, image_budget=None):
         """工具调用间隙合并同群新消息，避免消息流分叉。"""
         pending_objs = self.yuki.message_buffer.get(chat_id) or self.yuki.message_buffer.get(str(chat_id))
         if not pending_objs:
@@ -52,16 +70,41 @@ class EngineReplyService:
         pending_text = "\n".join([m["content"] for m in pending_objs]).replace("\n", "  ").strip()
         if not pending_text:
             return
+
+        attachments = []
+        meme_processor = self.get_meme_processor()
+        if meme_processor:
+            pending_text, images_info = meme_processor.extract_urls_from_text(pending_text)
+            if images_info:
+                resolved = await asyncio.gather(*[
+                    self._resolve_pending_image(meme_processor, img) for img in images_info
+                ])
+                for content, attachment in resolved:
+                    pending_text = pending_text.replace("[图片占位符]", content, 1)
+                    if attachment:
+                        attachments.append(attachment)
+
         logger.info(f"[ToolChain] {chat_id} 合并工具调用期间新增消息: {pending_text}")
         self.history.append_session_message(
             chat_id,
             "user",
             pending_text,
+            image_attachments=attachments,
             is_pending_during_tool=True,
             save_immediately=False,
             return_snapshot=False,
         )
-        tool_messages.append({"role": "user", "content": f"【工具调用期间新增消息】{pending_text}"})
+        pending_message = {
+            "role": "user",
+            "content": f"【工具调用期间新增消息】{pending_text}",
+            "image_attachments": attachments,
+        }
+        rendered, _ = await self._render_message(
+            pending_message,
+            cfg.LLM_NATIVE_VISION_ENABLED,
+            0 if image_budget is None else image_budget,
+        )
+        tool_messages.append(rendered)
 
     async def send_tool_thought(self, chat_id, mode, content, sent_thoughts, tool_names=None):
         """实时发送工具链中模型产生的阶段性文本。"""
@@ -82,6 +125,76 @@ class EngineReplyService:
         sent_thoughts.add(clean_content)
         logger.info(f"[ToolChain] 实时发送阶段性文本 chat_id={chat_id}: {clean_content}")
         return clean_content
+
+    async def _render_message(self, message, native_vision, image_budget):
+        """把单条消息的附件引用渲染为图片块或转写文本，返回 (消息, 剩余图片额度)。"""
+        item = {key: value for key, value in message.items() if key != "image_attachments"}
+        attachments = message.get("image_attachments") or []
+        image_store = self.get_image_store()
+        meme_processor = self.get_meme_processor()
+        if not attachments or not image_store:
+            return item, image_budget
+
+        content = item.get("content") or ""
+        blocks = [{"type": "text", "text": content}]
+        descriptions = []
+        for attachment in attachments:
+            image_data = image_store.read_attachment(attachment)
+            if not image_data:
+                descriptions.append("[图片已过期]")
+                continue
+            if native_vision and image_budget > 0 and meme_processor:
+                b64_data = meme_processor.compress_image(
+                    image_data,
+                    max_size=cfg.model.native_vision_max_size,
+                    quality=cfg.model.native_vision_quality,
+                )
+                if b64_data:
+                    blocks.append({
+                        "type": "image_url",
+                        "image_url": {"url": f"data:image/jpeg;base64,{b64_data}"},
+                    })
+                    image_budget -= 1
+                    continue
+            description = await meme_processor.understand_bytes(image_data) if meme_processor else "未知图片"
+            descriptions.append(f"[图片:{description}]")
+
+        if native_vision and len(blocks) > 1:
+            if descriptions:
+                blocks[0]["text"] += " " + " ".join(descriptions)
+            item["content"] = blocks
+        elif descriptions:
+            item["content"] = content + " " + " ".join(descriptions)
+        return item, image_budget
+
+    async def _prepare_model_messages(self, messages, native_vision=True):
+        """把历史中的轻量附件引用转换为模型消息或按需转写文本。"""
+        prepared = []
+        image_budget = max(0, cfg.model.native_vision_max_images)
+        user_positions = [
+            i for i, message in enumerate(messages)
+            if message.get("role") == "user" and message.get("image_attachments")
+        ]
+        allowed_positions = set(user_positions[-max(0, cfg.model.native_vision_history_turns):])
+
+        for position, message in enumerate(messages):
+            if position not in allowed_positions:
+                prepared.append({k: v for k, v in message.items() if k != "image_attachments"})
+                continue
+            item, image_budget = await self._render_message(message, native_vision, image_budget)
+            prepared.append(item)
+        return prepared
+
+    @staticmethod
+    def _used_image_slots(messages):
+        """统计已渲染进请求的图片块数量。"""
+        return sum(
+            1
+            for message in messages
+            if isinstance(message.get("content"), list)
+            for block in message["content"]
+            if block.get("type") == "image_url"
+        )
 
     async def chat_with_tools(self, chat_id, combined_text, session, mode, messages, message_objs=None):
         """执行支持多轮工具调用的 LLM 对话。"""
@@ -108,7 +221,16 @@ class EngineReplyService:
         )
         active_tool_manager = ToolCallManager(active_registry, max_rounds=self.tool_manager.max_rounds)
         self.tool_manager.start_session(str(chat_id), combined_text)
-        tool_messages = list(messages)
+
+        async def build_backup_messages():
+            """备用线路不支持视觉时，按需把图片附件转写为文本。"""
+            return await self._prepare_model_messages(messages, native_vision=False)
+
+        native_vision_enabled = cfg.LLM_NATIVE_VISION_ENABLED
+        tool_messages = await self._prepare_model_messages(messages, native_vision=native_vision_enabled)
+        fallback_factory = None
+        if native_vision_enabled and not cfg.BACKUP_NATIVE_VISION_ENABLED:
+            fallback_factory = build_backup_messages
         sent_thoughts = set()
 
         try:
@@ -123,6 +245,7 @@ class EngineReplyService:
                     max_tokens=520,
                     tools=active_registry.get_tools(),
                     tool_choice="auto",
+                    fallback_messages_factory=fallback_factory,
                 )
                 tool_calls = response_message.get("tool_calls") or []
                 if tool_calls:
@@ -173,7 +296,11 @@ class EngineReplyService:
                             f"调用工具 {tool_result_message.get('name')}"
                         )
                 tool_messages.extend(tool_result_messages)
-                self.merge_pending_messages(chat_id, tool_messages)
+                remaining_budget = max(
+                    0,
+                    cfg.model.native_vision_max_images - self._used_image_slots(tool_messages),
+                )
+                await self.merge_pending_messages(chat_id, tool_messages, image_budget=remaining_budget)
 
             fallback = await llm_chat(
                 messages=tool_messages,
@@ -181,6 +308,7 @@ class EngineReplyService:
                 temperature=0.8,
                 top_p=0.8,
                 max_tokens=220,
+                fallback_messages_factory=fallback_factory,
             )
             fallback = self.clean_visible_reply(fallback)
             return fallback, fallback

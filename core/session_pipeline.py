@@ -318,11 +318,16 @@ class SessionPipeline:
         combined_text = "\n".join(merged_contents)
 
         modified_text, images_info = self.meme_processor.extract_urls_from_text(combined_text)
+        native_images = []
         if images_info:
             # 并发执行所有图片理解
             async def understand_image(img):
                 url = img["url"]
                 is_meme = img["is_meme"]
+                if cfg.LLM_NATIVE_VISION_ENABLED and not is_meme and self.image_store:
+                    result = await self.meme_processor.register_from_url(url)
+                    if result.get("attachment"):
+                        return img, {**result, "native": True}
                 result = await self.meme_processor.understand_from_url(url, is_meme=is_meme)
                 return img, result
 
@@ -336,7 +341,12 @@ class SessionPipeline:
                 idx = result.get("index") if isinstance(result, dict) else None
                 idx_tag = f"[img:{idx}]" if idx else ""
 
-                if is_meme and desc:
+                if result.get("native"):
+                    attachment = result.get("attachment")
+                    if attachment:
+                        native_images.append(attachment)
+                    understood_contents.append(f"[图片]{idx_tag}")
+                elif is_meme and desc:
                     understood_contents.append(f"[表情:{desc}]{idx_tag}")
                 elif not is_meme and desc:
                     understood_contents.append(f"[图片:{desc}]{idx_tag}")
@@ -352,7 +362,10 @@ class SessionPipeline:
         self.history_manager.append_to_log(chat_id, "User/Group", combined_text)
 
         context["combined_text"] = combined_text
-        self._update_snapshot(context, combined_text=combined_text)
+        context["native_images"] = native_images
+        self._update_snapshot(
+            context, combined_text=combined_text, native_image_count=len(native_images)
+        )
         return context
 
     async def prepare_chat_context(self, context):
@@ -369,6 +382,7 @@ class SessionPipeline:
             context["combined_text"],
             time=current_time_str,
             system_content=system_prompt,
+            image_attachments=context.get("native_images", []),
             save_immediately=False,
         )
 

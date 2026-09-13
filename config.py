@@ -159,6 +159,30 @@ class ModelConfig:
         comment="视觉/多模态模型；如不需要可留空",
         section="model"
     )
+    llm_native_vision_enabled: bool = config_field(
+        False, comment="主模型原生接收普通图片；表情包仍转写", section="model"
+    )
+    backup_native_vision_enabled: bool = config_field(
+        False, comment="备用模型是否支持原生图片输入", section="model"
+    )
+    native_vision_max_images: int = config_field(
+        4, comment="单次请求最多附带的普通图片数量", section="model"
+    )
+    native_vision_history_turns: int = config_field(
+        3, comment="原生图片保留的用户消息轮数（含当前轮）", section="model"
+    )
+    native_vision_max_size: int = config_field(
+        1600, comment="原生图片最长边像素", section="model"
+    )
+    native_vision_quality: int = config_field(
+        90, comment="原生图片 JPEG 质量（1-100）", section="model"
+    )
+    vision_download_max_bytes: int = config_field(
+        20971520, comment="单张入站图片最大下载字节数", section="model"
+    )
+    vision_download_timeout: float = config_field(
+        15.0, comment="入站图片下载超时秒数", section="model"
+    )
     image_gen: str = config_field(
         "wan2.7-image",
         comment="图像生成模型",
@@ -646,6 +670,16 @@ class Config:
     def BACKUP_MODEL(self) -> str:
         """备用对话模型"""
         return self.model.backup
+
+    @property
+    def LLM_NATIVE_VISION_ENABLED(self) -> bool:
+        """主模型是否原生接收普通图片。"""
+        return self.model.llm_native_vision_enabled
+
+    @property
+    def BACKUP_NATIVE_VISION_ENABLED(self) -> bool:
+        """备用模型是否原生接收普通图片。"""
+        return self.model.backup_native_vision_enabled
 
     @property
     def VISION_MODEL(self) -> str:

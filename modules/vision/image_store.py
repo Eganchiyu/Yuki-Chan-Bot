@@ -1,6 +1,7 @@
 # modules/vision/image_store.py
 import os
 import threading
+import uuid
 from collections import OrderedDict
 from utils.logger import get_logger
 
@@ -33,16 +34,25 @@ class ImageStore:
         """
         保存图片到磁盘并注册索引，返回短索引字符串。
         """
-        idx = self._next_idx()
-        filename = f"{idx}{ext}"
-        save_path = os.path.join(self.store_dir, filename)
-
-        with open(save_path, "wb") as f:
-            f.write(image_data)
+        attachment_id = uuid.uuid4().hex
+        save_path = os.path.join(self.store_dir, f"{attachment_id}{ext}")
+        temp_path = save_path + ".tmp"
+        try:
+            with open(temp_path, "wb") as f:
+                f.write(image_data)
+            os.replace(temp_path, save_path)
+        finally:
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
 
         with self._lock:
+            idx = self._next_idx()
+            previous = self._index.get(idx)
+            if previous and os.path.exists(previous["path"]):
+                os.remove(previous["path"])
             self._index[idx] = {
                 "path": save_path,
+                "id": attachment_id,
                 "round": self._current_round,
                 "url": url,
             }
@@ -54,6 +64,24 @@ class ImageStore:
         """索引 -> 绝对路径，不存在返回 None。"""
         entry = self._index.get(idx)
         return entry["path"] if entry else None
+
+    def attachment(self, idx: str) -> dict | None:
+        """生成可持久化的附件引用，不把文件内容写入历史。"""
+        with self._lock:
+            entry = self._index.get(idx)
+            return {"index": idx, "id": entry["id"]} if entry else None
+
+    def read_attachment(self, attachment: dict) -> bytes | None:
+        """校验唯一身份后读取附件，避免短索引复用导致串图。"""
+        with self._lock:
+            entry = self._index.get(attachment.get("index"))
+            if not entry or entry["id"] != attachment.get("id"):
+                return None
+            try:
+                with open(entry["path"], "rb") as f:
+                    return f.read()
+            except FileNotFoundError:
+                return None
 
     def list_all(self) -> dict[str, str]:
         """返回所有 {索引: 绝对路径} 映射（供调试/工具使用）。"""

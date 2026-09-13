@@ -171,6 +171,7 @@ def _get_fallback_message() -> str:
 async def llm_chat_raw(
     messages: List[Dict[str, Any]],
     model: Optional[str] = None,
+    fallback_messages_factory=None,
     **kwargs,
 ) -> Dict[str, Any]:
     """默认 LLM 对话接口，返回原始 message，支持 tool_calls。"""
@@ -199,11 +200,14 @@ async def llm_chat_raw(
 
     try:
         backup_key = cfg.BACKUP_API_KEY or cfg.LLM_API_KEY
+        backup_messages = messages
+        if fallback_messages_factory and not cfg.BACKUP_NATIVE_VISION_ENABLED:
+            backup_messages = await fallback_messages_factory()
         # 备用线路始终使用自身模型名，不继承主线路的 model 参数
         return await chat_completion_raw(
             base_url=cfg.BACKUP_BASE_URL,
             api_key=backup_key,
-            messages=messages,
+            messages=backup_messages,
             model=cfg.BACKUP_MODEL,
             timeout=60.0,
             **kwargs,

@@ -150,6 +150,53 @@ class MemeProcessor:
                         message=text
                     )
 
+    async def register_from_url(self, img_url):
+        """下载普通图片并注册为原生视觉附件，不调用外挂视觉模型。"""
+        if not self.image_store:
+            return {"index": None, "attachment": None}
+
+        img_url = img_url.replace("&amp;", "&")
+        timeout = aiohttp.ClientTimeout(total=cfg.model.vision_download_timeout)
+        try:
+            async with aiohttp.ClientSession(
+                connector=create_tcp_connector(), timeout=timeout
+            ) as session:
+                async with session.get(img_url) as resp:
+                    if resp.status != 200:
+                        logger.error(f"[NativeVision] 下载失败，HTTP {resp.status}")
+                        return {"index": None, "attachment": None}
+                    if (resp.content_length or 0) > cfg.model.vision_download_max_bytes:
+                        logger.warning("[NativeVision] 图片超过下载大小限制")
+                        return {"index": None, "attachment": None}
+                    content = await resp.read()
+            if not content or len(content) > cfg.model.vision_download_max_bytes:
+                logger.warning("[NativeVision] 图片为空或超过下载大小限制")
+                return {"index": None, "attachment": None}
+
+            idx = self.image_store.register(
+                content, url=img_url, ext=self._guess_ext(img_url)
+            )
+            return {"index": idx, "attachment": self.image_store.attachment(idx)}
+        except Exception as exc:
+            logger.error(f"[NativeVision] 图片注册失败: {exc}")
+            return {"index": None, "attachment": None}
+
+    async def understand_bytes(self, content):
+        """转写已下载的图片，供不支持视觉的备用模型按需降级。"""
+        img_hash = self.get_image_hash(content)
+        cached = self.cache.get(img_hash)
+        if cached:
+            return cached
+        b64_data = self.compress_image(content)
+        if not b64_data:
+            return "未知图片"
+        async with self.semaphore:
+            analysis = await self.call_api(b64_data)
+        clean_analysis = analysis.strip().replace("\n", " ").replace("\r", "")
+        self.cache.set(img_hash, clean_analysis)
+        self.cache.save()
+        return clean_analysis
+
     async def understand_from_url(self, img_url, is_meme=False):
         """理解图片，返回 {"description": str, "index": str|None}。is_meme=True 时跳过注册。"""
         if not cfg.VISION_MODEL:

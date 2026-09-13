@@ -233,7 +233,11 @@ async def build_chat_context(yuki, chat_id: str, combined_text: str, history_dic
             if msg["role"] == "user":
                 # 这里的 content 使用原有的内容，但在前面合入时间
                 new_content = f"【时间：{msg_time}】{msg['content']}"
-                processed_recent_msgs.append({"role": msg["role"], "content": new_content})
+                processed_recent_msgs.append({
+                    "role": msg["role"],
+                    "content": new_content,
+                    "image_attachments": msg.get("image_attachments", []),
+                })
             elif msg["role"] == "assistant":
                 new_content = f"{msg['content']}"
                 processed_recent_msgs.append({"role": msg["role"], "content": new_content})
@@ -242,13 +246,21 @@ async def build_chat_context(yuki, chat_id: str, combined_text: str, history_dic
         else:
             # 如果没有 time 字段，则保持原样（兼容旧数据）
             if msg["role"] in ("user", "assistant"):
-                processed_recent_msgs.append({"role": msg["role"], "content": msg["content"]})
+                processed_recent_msgs.append({
+                    "role": msg["role"],
+                    "content": msg["content"],
+                    "image_attachments": msg.get("image_attachments", []),
+                })
             else:
                 processed_recent_msgs.append({"role": "user", "content": f"【工具链上下文】{msg['content']}"})
 
     # 使用处理后的消息
     combined_API_message.extend(processed_recent_msgs)
-    combined_API_message.append(
-        {"role": "user", "content": f" (当前时间:{datetime.datetime.now().strftime('%Y-%m-%d %H:%M')}){combined_text}"})
+    current_message = history_dict[chat_id][-1] if history_dict[chat_id] else {}
+    combined_API_message.append({
+        "role": "user",
+        "content": f" (当前时间:{datetime.datetime.now().strftime('%Y-%m-%d %H:%M')}){combined_text}",
+        "image_attachments": current_message.get("image_attachments", []),
+    })
     return combined_API_message
 

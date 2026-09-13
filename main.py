@@ -55,6 +55,7 @@ def initialize_components():
     engine = YukiEngine(memory_rag, history_manager, yuki, sender)
     engine.sticker_manager = sticker_manager
     engine.image_store = image_store
+    engine.meme_processor = meme_processor
 
     end_time = time.time()
     logger.info(f"[System] 初始化完成，耗时 {end_time - start_time:.1f} 秒")

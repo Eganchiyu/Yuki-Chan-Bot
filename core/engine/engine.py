@@ -20,6 +20,8 @@ class YukiEngine:
         self.maid = None
         self.process_callback = None
         self.sticker_manager = None
+        self.image_store = None
+        self.meme_processor = None
         self.tool_registry = FunctionRegistry()
         self.tool_registry.scan_and_register(TOOL_SPECS)
         self.tool_registry_provider = ToolRegistryProvider(
@@ -38,6 +40,7 @@ class YukiEngine:
             self.tool_manager,
             get_process_callback=lambda: self.process_callback,
             get_image_store=lambda: getattr(self, "image_store", None),
+            get_meme_processor=lambda: getattr(self, "meme_processor", None),
         )
         self.decision_service = EngineDecisionService(self.yuki)
         self.monitor_service = EngineMonitorService(
@@ -75,9 +78,9 @@ class YukiEngine:
         """兼容旧私有入口。"""
         return EngineReplyService.clean_visible_reply(content)
 
-    def _merge_pending_messages(self, chat_id, tool_messages):
+    async def _merge_pending_messages(self, chat_id, tool_messages):
         """兼容旧私有入口。"""
-        return self.reply_service.merge_pending_messages(chat_id, tool_messages)
+        return await self.reply_service.merge_pending_messages(chat_id, tool_messages)
 
     async def _send_tool_thought(self, *args, **kwargs):
         """兼容旧私有入口。"""
