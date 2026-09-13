@@ -42,7 +42,8 @@ YukiV6/
 │   ├── stickers/              # 表情包管理
 │   │   └── manager.py         # 表情包学习与 RLHF
 │   └── vision/                # 视觉处理
-│       ├── processor.py       # 图像理解（VLM）
+│       ├── processor.py       # 图片下载/压缩/转写（VLM）
+│       ├── image_store.py     # 近期图片索引与原生视觉附件引用
 │       ├── cache.py           # 缓存管理
 │       └── utils.py           # 工具函数
 │
@@ -282,7 +283,31 @@ maid_task_queue: asyncio.Queue     # 小女仆任务队列
 
 ---
 
-### 3.12 utils/llm_client.py - LLM 客户端
+### 3.12 modules/vision/ - 图片理解与原生视觉
+
+**职责**：
+- 按 CQ 段 `sub_type` 区分普通图片与表情包
+- 普通图片：开关开启时只下载登记为附件，交给主模型原生理解；关闭时走 VLM 转写
+- 表情包：始终走外挂视觉模型转写（`[表情:描述]`），节省主模型视觉开销
+- `ImageStore` 维护近期图片的短索引与唯一附件 ID，供 `[img:XXX]` 工具引用和模型图块复用
+
+**关键配置**（`config.model`，默认全部关闭/保守）：
+- `llm_native_vision_enabled`：主模型是否原生接收普通图片
+- `backup_native_vision_enabled`：备用模型是否支持原生图片，否则降级为文本转写
+- `native_vision_max_images` / `native_vision_history_turns`：单次张数与保留轮数
+- `native_vision_max_size` / `native_vision_quality`：原生图片压缩参数
+
+**数据流**：
+```
+普通图片 → 下载登记（轻量附件引用）→ 请求前渲染 imageUrl 图块 → 主模型
+表情包   → VLM 转写 → [表情:描述] 纯文本 → 主模型
+```
+
+**边界**：聊天历史只持久化附件引用，不写入 Base64；索引过期或身份不匹配时按“图片已过期”处理，避免串图。
+
+---
+
+### 3.13 utils/llm_client.py - LLM 客户端
 
 **职责**：
 - 发送 OpenAI 兼容格式的对话补全请求
@@ -296,6 +321,8 @@ maid_task_queue: asyncio.Queue     # 小女仆任务队列
 - `vision_chat()`: 视觉模型对话接口
 - `close_global_session()`: 资源清理
 
+**原生视觉降级**：主线路失败且备用模型不支持视觉时，`llm_chat_raw()` 通过 `fallback_messages_factory` 按需把图片附件转写为文本，再发往备用线路。
+
 **支持的平台**：
 - DeepSeek (`https://api.deepseek.com/v1`)
 - DashScope (`https://dashscope.aliyuncs.com/compatible-mode/v1`)
@@ -305,7 +332,7 @@ maid_task_queue: asyncio.Queue     # 小女仆任务队列
 
 ---
 
-### 3.13 config.py - 配置管理
+### 3.14 config.py - 配置管理
 
 **职责**：
 - YAML 配置文件读写
@@ -362,7 +389,7 @@ cfg (全局单例)
 ┌─────────────────────────────────────────────────────────────────┐
 │  main_process()                                                 │
 │  ├── 消息合并                                                   │
-│  ├── 视觉处理（VLM）                                            │
+│  ├── 视觉处理（普通图片原生输入 / 表情包 VLM 转写）              │
 │  ├── CQ码解析                                                   │
 │  ├── 上下文加载                                                 │
 │  ├── 决策判断（是否回复）                                       │
@@ -490,7 +517,7 @@ from main import yuki, engine, sender, history_manager, logger, connector, group
 | 向量数据库 | ChromaDB |
 | 嵌入模型 | sentence-transformers |
 | 分词 | jieba |
-| 视觉模型 | Qwen-VL (DashScope) |
+| 视觉模型 | Qwen-VL (DashScope)，表情包转写；主模型可按开关原生理解普通图片 |
 | LLM | DeepSeek / OpenAI 兼容 |
 | 配置管理 | PyYAML |
 | WebUI | Gradio |

@@ -23,6 +23,9 @@
 - 新增 `get_yuki_setting_master_private()` 主人私聊专用 prompt，身份为专属小助手而非代管模式
 - 新增 `config.py` 中 `StructuredMemoryConfig` 配置组，支持通过 `config.yaml` 控制结构化记忆开关和召回数量参数（`enabled`、`max_profiles`、`max_facts`、`max_summaries`），默认关闭
 - 新增跨平台光标查询 `modules/LiveYukiL2D/liveyuki_l2d/cursor.py`：Windows 走 `GetCursorPos`，X11/XWayland 走 libX11 `XQueryPointer`，Wayland 走合成器（hyprctl / Hyprland IPC）
+- 新增普通图片原生视觉输入：`model.llm_native_vision_enabled` 开启后，收到的普通图片不再外挂转写，而是作为 imageUrl 图块直接交给主模型理解，提升截图、文字图等内容的还原度；表情包仍走转写以节省视觉开销
+- 新增 `model.backup_native_vision_enabled`：主线路失败切备用时，若备用模型不支持视觉，按需把图片附件转写为文本再发送，避免备用线路 400
+- 新增原生视觉限额配置：`native_vision_max_images`（单次张数）、`native_vision_history_turns`（保留轮数）、`native_vision_max_size` / `native_vision_quality`（压缩参数）与图片下载大小/超时限制
 
 ### 变更
 - NapCat 接入层合并为单一文件 `network/napcat.py`（`NapCatGateway` 同时承担原 `BotConnector` 与 `MessageSender`），删除 `ws_connection.py` / `ws_sender.py`
@@ -44,6 +47,9 @@
 - 移除 GPS-VPS 手机定位功能：删除 `modules/system_state/gps_receiver.py`，`get_master_status` 不再返回 GPS 定位结果
 - 真实运行代码暂时关闭浏览器模式工具注入，保留浏览器模块及注册代码供后续启用
 - LLM 回复生成保留 `finish_reason` 等安全过滤信号，被内容安全过滤时发送 `Filtered`，避免空回复静默吞掉
+- 聊天历史中的图片改为“纯文本 + 轻量附件引用”存储：`image_attachments` 只记录索引与唯一 ID，Base64 不落盘；请求前才组装多模态消息，历史、日记与日志仍按文本处理
+- `ImageStore` 登记改为磁盘文件名使用唯一 ID、短索引循环复用：`read_attachment` 校验索引与 ID 一致，避免 `[img:XXX]` 被复用后关联到错误图片；文件先写临时文件再 `os.replace` 原子落盘
+- 工具调用间隙合并的新消息也复用同一套图片处理逻辑，避免绕过原生视觉与转写分流
 - Live2D 桌宠改为**默认关闭**：开关优先级为环境变量 `YUKI_DESKTOP_PET`（1/0）> `modules/LiveYukiL2D/config.json` 的 `desktopPet.enabled`（默认 false），后者此前是没人读的死配置
 - `main.py` 的桌宠启动改为在线程里执行（`asyncio.to_thread`）：原来它同步阻塞事件循环，起 aiohttp 服务最长要等 3 秒，把 NapCat 监听整体推迟
 - `modules/LiveYukiL2D/desktop.py` 重写启动方式：直接用当前平台的 Electron 二进制，不再走 `npm run desktop`；启动前做平台自检（Linux 上发现 Windows 版 `electron.exe` 直接报错并给出重装命令）；子进程 stdout/stderr 接入项目日志，异常退出记录退出码，不再静默"已启动"

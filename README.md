@@ -42,6 +42,7 @@ Yuki 拥有真正的动态长效记忆：
 ### 🖼️ 多模态表情包管理 (Sticker System)
 
 - **视觉理解**：接入 VLM（视觉大模型）理解群聊表情包的含义与情感
+- **普通图片原生输入**：`model.llm_native_vision_enabled` 开启后，普通图片（非表情包）作为多模态图块直接交给主模型理解，表情包仍走 VLM 转写以节省开销
 - **向量检索 + 积热重排**：根据当前情绪和上下文，在表情包向量库中寻找最合适的一张
 - **正反馈捕捉**：记录已发送的表情包，支持后续捕捉群友的正反馈（RLHF）
 - **可视化打标工具**：Gradio 界面辅助表情包标注、描述生成与入库
@@ -326,7 +327,7 @@ YukiV6/
 │   ├── QQNapcatListen/              # QQ 入站适配（事件 → 会话管线）
 │   ├── memory/                      # RAG 记忆系统（ChromaDB + text2vec）
 │   ├── stickers/                    # 表情包管理
-│   ├── vision/                      # 视觉/表情包理解（VLM）
+│   ├── vision/                      # 视觉/表情包理解（VLM）与原生视觉附件
 │   ├── debug/                       # Debug WebUI 与快照工具
 │   ├── github_monitor/              # GitHub 仓库监控
 │   ├── browser_interaction/         # 浏览器交互聚焦模式
@@ -513,7 +514,8 @@ pytest tests/test_engine.py
 | **向量数据库** | ChromaDB |
 | **嵌入模型** | sentence-transformers (text2vec-base-chinese) |
 | **配置管理** | PyYAML (dataclass 类型安全) |
-| **视觉模型** | Qwen-VL (DashScope) |
+| **视觉模型** | Qwen-VL (DashScope)，表情包转写；主模型可选原生理解普通图片 |
+| **主对话模型** | DeepSeek / OpenAI 兼容（可开启原生视觉） |
 | **图像生成** | 通义万相 / OpenAI 兼容 |
 | **桌面交互** | Live2D + Electron |
 
