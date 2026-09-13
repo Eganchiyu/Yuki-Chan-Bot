@@ -22,6 +22,7 @@
 - 新增主人私聊双模系统（`master_private` 模式）：群聊运行时自动接受主人私聊消息，维护独立的私聊上下文，使用专属个人助手 prompt，必回、无防抖、带完整工具链
 - 新增 `get_yuki_setting_master_private()` 主人私聊专用 prompt，身份为专属小助手而非代管模式
 - 新增 `config.py` 中 `StructuredMemoryConfig` 配置组，支持通过 `config.yaml` 控制结构化记忆开关和召回数量参数（`enabled`、`max_profiles`、`max_facts`、`max_summaries`），默认关闭
+- 新增跨平台光标查询 `modules/LiveYukiL2D/liveyuki_l2d/cursor.py`：Windows 走 `GetCursorPos`，X11/XWayland 走 libX11 `XQueryPointer`，Wayland 走合成器（hyprctl / Hyprland IPC）
 
 ### 变更
 - NapCat 接入层合并为单一文件 `network/napcat.py`（`NapCatGateway` 同时承担原 `BotConnector` 与 `MessageSender`），删除 `ws_connection.py` / `ws_sender.py`
@@ -43,6 +44,16 @@
 - 移除 GPS-VPS 手机定位功能：删除 `modules/system_state/gps_receiver.py`，`get_master_status` 不再返回 GPS 定位结果
 - 真实运行代码暂时关闭浏览器模式工具注入，保留浏览器模块及注册代码供后续启用
 - LLM 回复生成保留 `finish_reason` 等安全过滤信号，被内容安全过滤时发送 `Filtered`，避免空回复静默吞掉
+- Live2D 桌宠改为**默认关闭**：开关优先级为环境变量 `YUKI_DESKTOP_PET`（1/0）> `modules/LiveYukiL2D/config.json` 的 `desktopPet.enabled`（默认 false），后者此前是没人读的死配置
+- `main.py` 的桌宠启动改为在线程里执行（`asyncio.to_thread`）：原来它同步阻塞事件循环，起 aiohttp 服务最长要等 3 秒，把 NapCat 监听整体推迟
+- `modules/LiveYukiL2D/desktop.py` 重写启动方式：直接用当前平台的 Electron 二进制，不再走 `npm run desktop`；启动前做平台自检（Linux 上发现 Windows 版 `electron.exe` 直接报错并给出重装命令）；子进程 stdout/stderr 接入项目日志，异常退出记录退出码，不再静默"已启动"
+- `desktop.py` 不再在模块级导入 `server`（aiohttp 依赖），开关判断与环境自检可在无 aiohttp 环境下单独跑
+- 桌宠 Electron 主进程补齐 Linux 适配：始终置顶层级按平台区分（`screen-saver` 仅 macOS 有效）；原生 Wayland 下追加 `GlobalShortcutsPortal` 特性并记录全局快捷键注册失败原因；主进程按帧轮询真实全局光标并推送给渲染进程
+- 修复 Linux 上鼠标穿透彻底失效：Electron 的 `setIgnoreMouseEvents(..., { forward: true })` 只在 Windows/macOS 生效，窗口一旦忽略鼠标就收不到 `pointermove`，永久卡在穿透状态。改为由主进程推送全局光标、渲染进程做命中判定，并对状态做去重避免 IPC 刷屏
+- 修复 Chromium 全局光标在 Hyprland/XWayland 下不更新的问题：`screen.getCursorScreenPoint()` 会停在窗口开始忽略鼠标时的坐标，改为优先读 Hyprland IPC（一次 unix socket 往返，不创建进程），`hyprctl` 与 Chromium 查询依次兜底
+- 修复桌宠模型命中判定：原 `isHitOnModel` 用 model 矩阵去反算 view 变换后的坐标，两者不是同一坐标空间；且 Yuki 模型没有配置 `HitAreas`，`anyhitTest` 依赖的 `isHit` 在本仓库根本未定义。改为记录每帧真实绘制的 MVP，把可见 drawable 顶点投到画布像素做包围盒判定，结果与画面一致
+- 修复桌宠表情/语音表情静默失效：`WebSDK/src/main.ts` 用 `require('./lappadapter')` 动态取 adapter，Rollup 无法静态分析导致整块被 tree-shake 掉，浏览器里 `require` 又是 undefined（控制台只剩一句 `require is not defined`）。改为静态 import，并移除 `lappadapter.ts` 中未使用的 Node `util` 导入
+- `GET /api/cursor` 去掉 `ctypes.windll.user32`（Windows 专有），改用跨平台实现，取不到时返回 `available: false` 而不是抛异常
 - 小女仆 terminal 默认允许常规写入、依赖安装和 git 操作，仅保留高风险命令拦截
 - 小女仆专属虚拟环境启动前会验证 Python 是否可用，检测到旧解释器丢失或环境损坏时自动重建
 - GitHub 仓库监控的单仓库推送目标改为 `chat_ids` 列表，支持一个仓库推送到多个群聊

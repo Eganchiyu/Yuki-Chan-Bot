@@ -1051,6 +1051,10 @@ export class LAppModel extends CubismUserModel {
     if (this._state == LoadStep.CompleteSetup) {
       matrix.multiplyByMatrix(this._modelMatrix);
 
+      // 记下本帧真正用于绘制的 MVP（模型空间 → NDC），
+      // 鼠标穿透命中判定靠它把顶点投到画布像素，不需要再猜矩阵链。
+      this._lastMvp = new Float32Array(matrix.getArray());
+
       this.getRenderer().setMvpMatrix(matrix);
 
       this.doDraw();
@@ -1177,6 +1181,131 @@ export class LAppModel extends CubismUserModel {
     
     // If a hit area was found, return true, otherwise fall back to general hit test
     return hitAreaName !== null || this.isHitOnModel(x, y);
+  }
+
+  /**
+   * 画布像素坐标下的模型命中判定（鼠标穿透用）。
+   *
+   * 与 isHitOnModel 的区别：后者用 model 矩阵去反算，但调用方传进来的是
+   * view 变换后的坐标，两者不是同一个空间，判定结果不可用；而且本模型
+   * （Yuki）没有配置 HitAreas，named hit test 那条路也是空的。
+   *
+   * 这里改用本帧真实绘制的 MVP（模型空间 → NDC）把每个可见 drawable 的
+   * 顶点包围盒投到画布像素，再和鼠标位置比较，结果与画面上看到的一致。
+   *
+   * @param deviceX 画布像素 X（= CSS 坐标 * devicePixelRatio）
+   * @param deviceY 画布像素 Y
+   */
+  public getModelScreenBounds(): { left: number; right: number; top: number; bottom: number } | null {
+    const bounds = this.collectDrawableBounds();
+    return bounds ? { left: bounds[0], right: bounds[1], top: bounds[2], bottom: bounds[3] } : null;
+  }
+
+  /**
+   * 把所有可见 drawable 的顶点投到画布像素后的总包围盒，返回
+   * [minX, maxX, minY, maxY]，数据不可用时返回 null。
+   */
+  private collectDrawableBounds(): [number, number, number, number] | null {
+    if (this._model == null || this._lastMvp == null || this._opacity < 1) {
+      return null;
+    }
+
+    const mvp = this._lastMvp;
+    const canvasW = canvas.width;
+    const canvasH = canvas.height;
+    if (canvasW <= 0 || canvasH <= 0) {
+      return null;
+    }
+
+    let minX = Infinity;
+    let maxX = -Infinity;
+    let minY = Infinity;
+    let maxY = -Infinity;
+    let any = false;
+    const drawableCount = this._model.getDrawableCount();
+
+    for (let i = 0; i < drawableCount; i++) {
+      if (!this._model.getDrawableDynamicFlagIsVisible(i)) {
+        continue;
+      }
+      const vertices = this._model.getDrawableVertices(i);
+      if (vertices == null || vertices.length < 2) {
+        continue;
+      }
+      for (let j = 0; j < vertices.length; j += 2) {
+        const mx = vertices[j];
+        const my = vertices[j + 1];
+        // MVP 是列主序：ndcX = m0*x + m4*y + m12
+        const ndcX = mvp[0] * mx + mvp[4] * my + mvp[12];
+        const ndcY = mvp[1] * mx + mvp[5] * my + mvp[13];
+        const px = ((ndcX + 1) * 0.5) * canvasW;
+        const py = ((1 - ndcY) * 0.5) * canvasH;
+        if (px < minX) minX = px;
+        if (px > maxX) maxX = px;
+        if (py < minY) minY = py;
+        if (py > maxY) maxY = py;
+        any = true;
+      }
+    }
+
+    return any ? [minX, maxX, minY, maxY] : null;
+  }
+
+  public isHitOnModelDevice(deviceX: number, deviceY: number): boolean {
+    if (this._model == null || this._lastMvp == null || this._opacity < 1) {
+      return false;
+    }
+
+    const mvp = this._lastMvp;
+    const canvasW = canvas.width;
+    const canvasH = canvas.height;
+    if (canvasW <= 0 || canvasH <= 0) {
+      return false;
+    }
+
+    const drawableCount = this._model.getDrawableCount();
+
+    for (let i = 0; i < drawableCount; i++) {
+      if (!this._model.getDrawableDynamicFlagIsVisible(i)) {
+        continue;
+      }
+
+      const vertices = this._model.getDrawableVertices(i);
+      if (vertices == null || vertices.length < 2) {
+        continue;
+      }
+
+      let minPx = Infinity;
+      let maxPx = -Infinity;
+      let minPy = Infinity;
+      let maxPy = -Infinity;
+
+      for (let j = 0; j < vertices.length; j += 2) {
+        const mx = vertices[j];
+        const my = vertices[j + 1];
+        // MVP 是列主序：ndcX = m0*x + m4*y + m12
+        const ndcX = mvp[0] * mx + mvp[4] * my + mvp[12];
+        const ndcY = mvp[1] * mx + mvp[5] * my + mvp[13];
+        const px = ((ndcX + 1) * 0.5) * canvasW;
+        const py = ((1 - ndcY) * 0.5) * canvasH;
+
+        if (px < minPx) minPx = px;
+        if (px > maxPx) maxPx = px;
+        if (py < minPy) minPy = py;
+        if (py > maxPy) maxPy = py;
+      }
+
+      if (
+        deviceX >= minPx &&
+        deviceX <= maxPx &&
+        deviceY >= minPy &&
+        deviceY <= maxPy
+      ) {
+        return true;
+      }
+    }
+
+    return false;
   }
 
   /**
@@ -1374,4 +1503,5 @@ export class LAppModel extends CubismUserModel {
   _allMotionCount: number; // モーション総数
   _wavFileHandler: LAppWavFileHandler; //wavファイルハンドラ
   _consistency: boolean; // MOC3一貫性チェック管理用
+  _lastMvp: Float32Array | null = null; // 直近フレームの MVP（模型空間→NDC）
 }

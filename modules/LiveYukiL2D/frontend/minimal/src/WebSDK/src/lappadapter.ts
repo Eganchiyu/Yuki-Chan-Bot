@@ -13,7 +13,6 @@ import {
   InvalidMotionQueueEntryHandleValue
 } from '@framework/motion/cubismmotionqueuemanager';
 import { CubismFramework } from '@framework/live2dcubismframework';
-import { deprecate } from "util";
 
 export let s_adapter_instance : LAppAdapter | null | undefined = null;
 

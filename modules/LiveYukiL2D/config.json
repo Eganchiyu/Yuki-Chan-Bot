@@ -1,6 +1,6 @@
 {
   "desktopPet": {
-    "enabled": true,
+    "enabled": false,
     "width": 420,
     "height": 640,
     "x": null,

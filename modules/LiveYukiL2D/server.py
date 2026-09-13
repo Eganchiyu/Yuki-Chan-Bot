@@ -2,8 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import base64
-import ctypes
-import ctypes.wintypes
 import json
 import mimetypes
 import socket
@@ -14,9 +12,11 @@ from typing import Any
 from urllib.parse import unquote
 from config import cfg
 try:
+    from .liveyuki_l2d.cursor import get_cursor_position
     from .liveyuki_l2d.events import error_event
     from .liveyuki_l2d.protocol import set_model_message
 except ImportError:
+    from liveyuki_l2d.cursor import get_cursor_position
     from liveyuki_l2d.events import error_event
     from liveyuki_l2d.protocol import set_model_message
 
@@ -299,9 +299,17 @@ async def api_say(request: web.Request) -> web.Response:
 
 
 async def api_cursor(_: web.Request) -> web.Response:
-    point = ctypes.wintypes.POINT()
-    ctypes.windll.user32.GetCursorPos(ctypes.byref(point))
-    return json_response({"x": point.x, "y": point.y})
+    """浏览器 / pywebview 回退路径下的全局光标查询。
+
+    Electron 客户端走主进程 IPC，不会用到这个接口。Windows 用 GetCursorPos，
+    Linux 走 X11 / Wayland 合成器；拿不到时返回 available=false 让前端降级，
+    不能因为平台差异直接抛异常。
+    """
+    position = get_cursor_position()
+    if position is None:
+        return json_response({"available": False, "x": 0, "y": 0})
+    x, y = position
+    return json_response({"available": True, "x": x, "y": y})
 
 
 async def api_audio(request: web.Request) -> web.Response:

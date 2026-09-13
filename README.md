@@ -97,7 +97,7 @@ Yuki 具备标准化的工具调用能力，通过 Function Call 机制扩展 LL
 - **浏览器交互模式**：聚焦模式下的浏览器控制能力
 - **系统状态监控**：系统空闲与窗口巡检
 - **Shot Memory**：实时记忆渲染，记录群聊截屏留念
-- **Live2D 桌宠**：Electron + Live2D 桌面宠物交互
+- **Live2D 桌宠**：Electron + Live2D 桌面宠物交互（默认关闭，见「快速开始」，已适配 Linux）
 - **Debug WebUI**：上下文调试与观测界面
 
 
@@ -421,7 +421,41 @@ python setup.py
 python main.py
 ```
 
-### 4. 表情包系统初始化（可选）
+### 4. Live2D 桌宠（可选，默认关闭）
+
+桌宠是一个独立的 Electron + Live2D 窗口，**默认不启动**，不影响主程序功能。开启方式二选一：
+
+```bash
+# 方式一：临时开启（优先级最高）
+YUKI_DESKTOP_PET=1 python main.py
+```
+
+方式二：把 `modules/LiveYukiL2D/config.json` 里的 `desktopPet.enabled` 改成 `true`。
+
+关闭：`YUKI_DESKTOP_PET=0`，或把 `desktopPet.enabled` 改回 `false`。
+
+首次开启前需要装一次前端依赖（会下载约 100MB 的 Electron 二进制）：
+
+```bash
+cd modules/LiveYukiL2D/frontend/minimal
+npm install
+npm run build
+```
+
+**Linux 说明**
+
+- Electron 二进制必须与当前系统匹配。如果 `node_modules/electron/dist/` 里是 Windows 的 `electron.exe`（从 Windows 迁移过来的仓库常见），它会被 wine 接管，性能与窗口行为都不正常。重装即可：
+  ```bash
+  cd modules/LiveYukiL2D/frontend/minimal
+  rm -rf node_modules/electron && npm install && npm run build
+  ```
+  启动时会做平台自检，发现架构不匹配会直接报错并给出命令，而不是静默用错版本。
+- 默认以 `--ozone-platform=x11`（XWayland）启动。桌宠依赖**全局光标坐标、绝对窗口定位、窗口拖动**，这三样原生 Wayland 客户端拿不到；强制原生 Wayland 用 `YUKI_L2D_OZONE_PLATFORM=wayland`。
+- 鼠标穿透：Electron 的 `setIgnoreMouseEvents(..., { forward: true })` 只在 Windows/macOS 生效，Linux 上改为由主进程推送真实光标位置给渲染进程做命中判定（Hyprland 走 compositor IPC，其它环境回退 Chromium 查询）。
+- 排障：`LIVEYUKI_DEBUG=1 python main.py` 会把窗口几何、光标来源、穿透判定打到 stdout。
+- 编辑模式快捷键 `Ctrl+Alt+Y`；原生 Wayland 下需要 xdg-desktop-portal 提供 GlobalShortcuts（Hyprland 自带）。
+
+### 5. 表情包系统初始化（可选）
 
 默认情况下表情包功能代码已就绪，但素材文件不随仓库分发。如需启用：
 
