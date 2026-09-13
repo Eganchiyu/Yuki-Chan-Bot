@@ -28,6 +28,7 @@
 - 新增原生视觉限额配置：`native_vision_max_images`（单次张数）、`native_vision_history_turns`（保留轮数）、`native_vision_max_size` / `native_vision_quality`（压缩参数）与图片下载大小/超时限制
 
 ### 变更
+- 修复日志格式化器窄屏布局遗漏元数据，并增强对应的宽度与行前缀回归测试
 - NapCat 接入层合并为单一文件 `network/napcat.py`（`NapCatGateway` 同时承担原 `BotConnector` 与 `MessageSender`），删除 `ws_connection.py` / `ws_sender.py`
 - NapCat 读端改为常驻 reader + 帧路由：`echo` 命中挂起请求则唤醒调用方，带 `post_type` 的帧进事件队列，其余丢弃。**出站不再依赖有人消费事件流**，API 响应也不再混进事件流（此前 `send_request()` 的 Future 只有在 `listen()` 被迭代时才会被 resolve）
 - `modules/message/` 三个文件（`CQProtocol` / `CQParser` / `GetMeta`）并入 `network/napcat.py`：CQ 码替换、群成员与消息查询、合并转发解析统一收口为网关方法
@@ -148,6 +149,7 @@
   - 破冰回复现在享受完整的工具链能力（表情包搜索、小女仆委托、RAG 记忆检索等）
 
 ### 修复
+- 修复控制台日志在中文、Emoji 和长 JSON 场景下因显示宽度误判导致的二次折行与错位
 - 屏蔽机器人自己发出的戳一戳事件，避免回灌消息管线导致重复触发对话
 - 合并同一人连续戳同一目标的戳一戳消息为一条并累计「x次数」，压缩上下文占用
 - 修复普通对话流程只将当前用户消息放入临时上下文、未写入 `chat_history.json`，导致后续 LLM 调用缺少用户历史记录的问题

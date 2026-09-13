@@ -9,6 +9,7 @@ import shutil
 import sys
 import textwrap
 import time
+import unicodedata
 
 from utils import BASE_DIR
 
@@ -31,6 +32,7 @@ CONSOLE_MAX_LINES = int(os.getenv("YUKI_LOG_CONSOLE_MAX_LINES", "8"))
 CONSOLE_MAX_TEXT = int(os.getenv("YUKI_LOG_CONSOLE_MAX_TEXT", "220"))
 CONSOLE_MAX_ITEMS = int(os.getenv("YUKI_LOG_CONSOLE_MAX_ITEMS", "6"))
 CONSOLE_WIDTH_REFRESH_INTERVAL = 0.5
+CONSOLE_MIN_INLINE_TEXT_WIDTH = 12
 
 
 # ---------- 启动时日志归档 ----------
@@ -105,6 +107,62 @@ def _format_time(record):
 
 def _strip_ansi(text: str) -> str:
     return ANSI_ESCAPE_RE.sub("", text)
+
+
+def _char_display_width(char: str) -> int:
+    """返回单个 Unicode 字符占用的终端显示列数。"""
+    codepoint = ord(char)
+    if (
+        unicodedata.combining(char)
+        or unicodedata.category(char).startswith("C")
+        or 0xFE00 <= codepoint <= 0xFE0F
+        or 0xE0100 <= codepoint <= 0xE01EF
+    ):
+        return 0
+    return 2 if unicodedata.east_asian_width(char) in {"W", "F"} else 1
+
+
+def _display_width(text: str) -> int:
+    """计算去除 ANSI 转义后文本的终端显示宽度。"""
+    return sum(_char_display_width(char) for char in _strip_ansi(text))
+
+
+def _wrap_display_line(line: str, max_width: int) -> list[str]:
+    """按终端显示列数硬折行，不依赖空格或 token 边界。"""
+    if not line:
+        return [""]
+
+    wrapped = []
+    current = []
+    current_width = 0
+    for char in line:
+        char_width = _char_display_width(char)
+        if current and current_width + char_width > max_width:
+            wrapped.append("".join(current))
+            current = []
+            current_width = 0
+        current.append(char)
+        current_width += char_width
+
+    if current:
+        wrapped.append("".join(current))
+    return wrapped
+
+
+def _wrap_display_lines(lines: list[str], max_width: int) -> list[str]:
+    wrapped = []
+    for line in lines:
+        wrapped.extend(_wrap_display_line(line, max_width))
+    return wrapped
+
+
+def _truncate_display(text: str, max_width: int) -> str:
+    """将文本截断到指定显示宽度，并尽量保留省略号。"""
+    if _display_width(text) <= max_width:
+        return text
+    if max_width <= 1:
+        return "…" if max_width == 1 else ""
+    return _wrap_display_line(text, max_width - 1)[0] + "…"
 
 
 def _truncate_text(text: str, limit: int = CONSOLE_MAX_TEXT) -> str:
@@ -350,7 +408,6 @@ class ColoredConsoleFormatter(logging.Formatter):
         asctime = self.formatTime(record)
         level = record.levelname.ljust(8)
         location = f"{record.filename}:{record.lineno}".ljust(22)
-        prefix_width = len(f"[{asctime}] {level} {location} │") + 1
 
         if self.use_color:
             c_time = self.C_TIME
@@ -365,27 +422,38 @@ class ColoredConsoleFormatter(logging.Formatter):
             f"{c_lvl}{level}{c_reset} "
             f"{c_loc}{location}{c_reset} │"
         )
-        continuation = " " * (prefix_width - 1) + "├"
-        message_width = max(self._get_terminal_width() - prefix_width - 1, 40)
-        lines = _wrap_lines(
-            record,
-            max_width=message_width,
-            strip_ansi=True,
-            compact=True,
-            break_long_words=True,
-        )
+        plain_prefix = f"[{asctime}] {level} {location} │"
+        terminal_width = max(self._get_terminal_width() - 1, 1)
+        prefix_width = _display_width(plain_prefix) + 1
+        body_width = terminal_width - prefix_width
+        compact_layout = body_width < CONSOLE_MIN_INLINE_TEXT_WIDTH
+        raw_lines = _record_lines(record, strip_ansi=True, compact=True)
+
+        if compact_layout:
+            # 窄屏下不让长前缀挤占正文宽度，元数据和正文分行展示。
+            metadata = f"[{asctime}] {record.levelname} {record.filename}:{record.lineno}"
+            first_prefix = "├ " if terminal_width >= 4 else ">"
+            marker = first_prefix
+            body_width = max(terminal_width - _display_width(first_prefix), 1)
+            lines = _wrap_display_lines(raw_lines, body_width)
+        else:
+            marker = " " * (prefix_width - 2) + "├ "
+            lines = _wrap_display_lines(raw_lines, body_width)
+            first_prefix = f"{prefix} "
 
         if len(lines) > CONSOLE_MAX_LINES:
-            hidden = len(lines) - CONSOLE_MAX_LINES
-            lines = lines[:CONSOLE_MAX_LINES]
-            lines.append(f"... truncated {hidden} lines")
+            hidden = len(lines) - CONSOLE_MAX_LINES + 1
+            lines = lines[:CONSOLE_MAX_LINES - 1]
+            lines.append(_truncate_display(f"... truncated {hidden} lines", body_width))
 
         rendered = []
+        if compact_layout:
+            rendered.append(_truncate_display(metadata, terminal_width))
+            rendered.extend(f"{marker}{line}" for line in lines)
+            return "\n".join(rendered)
+
         for i, line in enumerate(lines):
-            if i == 0:
-                rendered.append(f"{prefix} {line}")
-            else:
-                rendered.append(f"{continuation} {line}")
+            rendered.append(f"{first_prefix if i == 0 else marker}{line}")
         return "\n".join(rendered)
 
 
