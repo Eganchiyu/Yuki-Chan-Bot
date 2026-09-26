@@ -193,6 +193,11 @@ class ModelConfig:
         comment="默认关闭模型的 thinking/reasoning 输出",
         section="model"
     )
+    llm_max_retries: int = config_field(
+        3,
+        comment="LLM 请求失败或回复为空时的最大重试次数（不含首次请求）",
+        section="model"
+    )
 
 
 @dataclass
@@ -670,6 +675,11 @@ class Config:
     def BACKUP_MODEL(self) -> str:
         """备用对话模型"""
         return self.model.backup
+
+    @property
+    def LLM_MAX_RETRIES(self) -> int:
+        """LLM 请求失败或回复为空时的最大重试次数（不含首次请求）"""
+        return int(self.model.llm_max_retries)
 
     @property
     def LLM_NATIVE_VISION_ENABLED(self) -> bool:

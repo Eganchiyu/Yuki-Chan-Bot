@@ -160,21 +160,68 @@ async def chat_completion(
     return message.get("content") or ""
 
 
-def _get_fallback_message() -> str:
-    """获取故障转移降级提示消息。"""
+# 重试耗尽后的降级文案，按失败原因区分
+_FALLBACK_DETAILS = {
+    "empty": "输出了空字符",
+    "network": "暂时连接不上网络",
+}
+
+# 连续空回复时追加到末尾的提醒
+_EMPTY_REPLY_NUDGE = "请不要输出空字符"
+
+
+def _get_fallback_message(reason: str = "network") -> str:
+    """获取重试耗尽后的降级提示消息。"""
+    detail = _FALLBACK_DETAILS.get(reason, _FALLBACK_DETAILS["network"])
     return (
         f"（{cfg.ROBOT_NAME.title()} 好像有点不舒服，"
-        f"暂时连接不上大脑...{cfg.MASTER_NAME}等会再找我好吗？）"
+        f"{detail}...{cfg.MASTER_NAME}等会再找我好吗？）"
     )
 
 
-async def llm_chat_raw(
+def _message_is_empty(message: Dict[str, Any]) -> bool:
+    """判断模型返回是否为空：既没有工具调用，也没有有效文本。"""
+    if not isinstance(message, dict):
+        return True
+    if message.get("tool_calls"):
+        return False
+    content = message.get("content")
+    if content is None:
+        return True
+    if isinstance(content, str):
+        return not content.strip()
+    if isinstance(content, list):
+        # 多模态块：只要有一个非空文本块就算有内容
+        return not any(
+            isinstance(block, dict) and str(block.get("text") or "").strip()
+            for block in content
+        )
+    return False
+
+
+def _nudge_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """复制消息并追加一条「请不要输出空字符」，不改动调用方列表。"""
+    return list(messages) + [{"role": "user", "content": _EMPTY_REPLY_NUDGE}]
+
+
+def _nudge_factory(factory):
+    """把降级消息工厂也包一层，保证纯文本降级时同样带上空回复提醒。"""
+    if factory is None:
+        return None
+
+    async def wrapped():
+        return _nudge_messages(await factory())
+
+    return wrapped
+
+
+async def _request_with_failover(
     messages: List[Dict[str, Any]],
-    model: Optional[str] = None,
-    fallback_messages_factory=None,
+    model: Optional[str],
+    fallback_messages_factory,
     **kwargs,
-) -> Dict[str, Any]:
-    """默认 LLM 对话接口，返回原始 message，支持 tool_calls。"""
+) -> Optional[Dict[str, Any]]:
+    """执行一次主备故障转移请求，主备都失败返回 None。"""
     state = _fallback_state
 
     if state["is_degraded"] and (
@@ -214,7 +261,55 @@ async def llm_chat_raw(
         )
     except Exception as e:
         logger.error(f"[LLM] 备用线路也失效: {e}")
-        return {"role": "assistant", "content": _get_fallback_message()}
+        return None
+
+
+async def llm_chat_raw(
+    messages: List[Dict[str, Any]],
+    model: Optional[str] = None,
+    fallback_messages_factory=None,
+    **kwargs,
+) -> Dict[str, Any]:
+    """默认 LLM 对话接口，返回原始 message，支持 tool_calls。
+
+    在主备故障转移之外，对「请求失败」与「空回复」增加立即重试：一旦出现过空
+    回复，后续重试都会在末尾追加「请不要输出空字符」再试。重试次数用尽后返回
+    降级文案，按失败原因区分「输出了空字符」与「暂时连接不上网络」。
+    """
+    max_retries = max(0, cfg.LLM_MAX_RETRIES)
+    last_reason = "network"
+    saw_empty = False
+
+    for attempt in range(max_retries + 1):
+        attempt_messages = messages
+        attempt_factory = fallback_messages_factory
+        if saw_empty:
+            attempt_messages = _nudge_messages(messages)
+            attempt_factory = _nudge_factory(fallback_messages_factory)
+
+        message = await _request_with_failover(
+            attempt_messages, model, attempt_factory, **kwargs
+        )
+
+        if message is None:
+            last_reason = "network"
+        elif message.get("_finish_reason") == "content_filter":
+            # 内容安全过滤重试也没用，原样返回给上游处理
+            return message
+        elif _message_is_empty(message):
+            last_reason = "empty"
+            saw_empty = True
+        else:
+            return message
+
+        if attempt < max_retries:
+            logger.warning(
+                f"[LLM] 第 {attempt + 1}/{max_retries + 1} 次响应无效"
+                f"（{'空回复' if last_reason == 'empty' else '请求失败'}），立即重试"
+            )
+
+    logger.error(f"[LLM] 重试 {max_retries} 次后仍未获得有效回复（{last_reason}）")
+    return {"role": "assistant", "content": _get_fallback_message(last_reason)}
 
 
 async def llm_chat(

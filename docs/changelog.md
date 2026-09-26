@@ -14,6 +14,7 @@
 - 发送前清洗兼容错格式标记：布局块一律剥离不发送（混用括号、未闭合开标签都在内），表情包标记归一化后仍能正常切分检索，避免错格式被当成正文发出
 - 历史写入归一化：`HistoryManager` 落盘前对 `assistant` 消息调用 `normalize_reply_markup()`，保留规范 `<layout>`、统一 `[MEME:x]`（用户原文不改写）
 - 历史启动修复：`HistoryManager.preload()` 预载时批量修复 `chat_history.json` 里既有的错格式标记并原子回写，断开「模型看到自己的错误示例→继续写错」的循环
+- LLM 空回复/请求失败立即重试：`llm_chat_raw()` 在主备故障转移之外最多重试 `model.llm_max_retries` 次（默认 3，不含首次请求）；出现过空回复后，后续重试在末尾追加「请不要输出空字符」；重试耗尽按原因返回「输出了空字符」或「暂时连接不上网络」
 - 日志控制台与文件分级：控制台默认只输出 INFO 及以上，`debug: true` 不再把控制台刷成 DEBUG 瀑布；文件始终记录 DEBUG 明细。控制台级别可用 `YUKI_LOG_CONSOLE_LEVEL`（`DEBUG`/`20` 等）单独覆盖，`YUKI_LOG_CONSOLE_VERBOSE=1` 可放行项目内高频 DEBUG
 - 控制台长信息结构化短输出：多行长消息折叠为单行「摘要 + 规模标注」（如 `… (+39 行, 2.7KB)`），前缀 + 内嵌 `dict`/`list` 字面量压缩为键值摘要，明细只留在日志文件
 - 新增多模式基础框架 `core.modes`，将默认 QQ 群聊包装为 `QQChatMode`，并提供全局唯一聚焦模式状态管理

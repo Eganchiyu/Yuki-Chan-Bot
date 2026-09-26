@@ -342,6 +342,7 @@ maid_task_queue: asyncio.Queue     # 小女仆任务队列
 **职责**：
 - 发送 OpenAI 兼容格式的对话补全请求
 - 主备故障转移（熔断 → 切换备用 → 120 秒自动恢复）
+- 空回复 / 请求失败的立即重试与降级文案
 - 全局 aiohttp Session TCP 连接复用
 - 平台 URL 解析与参数适配
 
@@ -352,6 +353,12 @@ maid_task_queue: asyncio.Queue     # 小女仆任务队列
 - `close_global_session()`: 资源清理
 
 **原生视觉降级**：主线路失败且备用模型不支持视觉时，`llm_chat_raw()` 通过 `fallback_messages_factory` 按需把图片附件转写为文本，再发往备用线路。
+
+**空回复/失败重试**：`llm_chat_raw()` 在主备故障转移之外增加立即重试，次数由 `model.llm_max_retries`（默认 3，不含首次请求）控制。
+- 判定为空：无 `tool_calls` 且文本内容为空（含纯空白；多模态块需至少一个非空文本）；带工具调用的空文本视为有效响应
+- 出现过空回复后，后续重试在消息末尾追加一条 `role=user` 的「请不要输出空字符」（只加在临时副本上，不改动调用方 messages）
+- `finish_reason=content_filter` 不做无意义重试，原样返回
+- 重试耗尽后按原因返回降级文案：空回复 → 「输出了空字符」，请求失败 → 「暂时连接不上网络」
 
 **支持的平台**：
 - DeepSeek (`https://api.deepseek.com/v1`)

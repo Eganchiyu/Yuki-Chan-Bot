@@ -367,4 +367,4 @@ class EngineReplyService:
             return yuki_answer_raw, yuki_answer, ""
         except Exception as e:
             logger.error(f"[Engine] LLM 调用失败: {e}")
-            return "API 接口调用失败", "API 接口调用失败", ""
+            return "暂时连接不上网络", "暂时连接不上网络", ""

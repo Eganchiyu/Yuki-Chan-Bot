@@ -155,15 +155,23 @@ def test_sanitize_payload_gemini_penalties():
 
 
 def test_get_fallback_message():
-    """测试降级提示消息格式"""
+    """测试降级提示消息格式：按失败原因区分文案"""
     print("\n[测试 5] 降级提示消息格式")
 
-    msg = _get_fallback_message()
-    assert isinstance(msg, str)
-    assert "好像有点不舒服" in msg
-    assert cfg.MASTER_NAME in msg
+    network_msg = _get_fallback_message("network")
+    assert isinstance(network_msg, str)
+    assert "好像有点不舒服" in network_msg
+    assert "暂时连接不上网络" in network_msg
+    assert cfg.MASTER_NAME in network_msg
 
-    print(f"  [PASS] 降级消息: {msg}")
+    empty_msg = _get_fallback_message("empty")
+    assert "输出了空字符" in empty_msg
+
+    # 未知原因回退到网络文案
+    assert "暂时连接不上网络" in _get_fallback_message("unknown")
+
+    print(f"  [PASS] 网络降级: {network_msg}")
+    print(f"  [PASS] 空回复降级: {empty_msg}")
 
 
 def test_config_urls():
