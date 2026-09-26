@@ -193,3 +193,15 @@ def test_normal_reply_no_extra_requests():
     message, recorder = _run_with([{"role": "assistant", "content": "普通回复"}])
     assert message["content"] == "普通回复"
     assert len(recorder.calls) == 1
+
+
+def test_markup_only_reply_counts_as_non_empty():
+    """只含标记的回复在 LLM 层不算空，不触发重试。
+
+    清洗（剥离 layout/MEME）发生在 engine 层，llm_client 只看模型原始 content。
+    因此「回复被清洗干净」不会在这里被误判为空而空转重试。
+    """
+    raw = {"role": "assistant", "content": "[layout]盘算[/layout]【MEME:坏笑】"}
+    message, recorder = _run_with([raw])
+    assert message == raw
+    assert len(recorder.calls) == 1, "标记内容非空，不应重试"

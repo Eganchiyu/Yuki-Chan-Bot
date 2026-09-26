@@ -214,3 +214,141 @@ def test_engine_normalizes_raw_answer_for_history():
 
     assert raw == "<layout>盘算</layout>正文[MEME:坏笑]"
     assert visible == "正文[MEME:坏笑]"
+
+
+# ==================== 清洗致空时的占位文案 ====================
+
+def test_finalize_answer_keeps_layout_when_no_tools():
+    """未执行工具且清洗后为空：history 保留 layout，可见文本为空交给发送阶段兜底。"""
+    from core.engine.engine_reply import EngineReplyService
+
+    raw, visible = EngineReplyService.finalize_answer("[layout]只有盘算[/layout]", False)
+    assert raw == "<layout>只有盘算</layout>"
+    assert visible == ""
+
+
+def test_finalize_answer_uses_working_notice_after_tools():
+    """执行过工具但回复被清洗干净：用「工作中......」占位，而非空字符提示。"""
+    from core.engine.engine_reply import EngineReplyService, WORKING_NOTICE
+
+    raw, visible = EngineReplyService.finalize_answer("[layout]只有盘算[/layout]", True)
+    assert raw == "<layout>只有盘算</layout>", "history 仍保留盘算"
+    assert visible == WORKING_NOTICE
+
+
+def test_finalize_answer_empty_and_no_tools_stays_empty():
+    from core.engine.engine_reply import EngineReplyService
+
+    raw, visible = EngineReplyService.finalize_answer("", False)
+    assert visible == ""
+
+
+def test_finalize_answer_normal_content_unaffected_by_tools():
+    """有可见内容时，是否执行过工具都不影响发送文本。"""
+    from core.engine.engine_reply import EngineReplyService
+
+    for tools_executed in (False, True):
+        raw, visible = EngineReplyService.finalize_answer(
+            "[layout]盘算[/layout]正文【MEME:坏笑】", tools_executed
+        )
+        assert raw == "<layout>盘算</layout>正文[MEME:坏笑]"
+        assert visible == "正文[MEME:坏笑]"
+
+
+def test_chat_with_tools_returns_working_notice_when_cleaned_empty():
+    """端到端：工具执行后回复只剩 layout，返回工作中占位而不是空。"""
+    from unittest.mock import patch
+
+    from core.engine.engine_reply import EngineReplyService, WORKING_NOTICE
+
+    class _ToolManager:
+        max_rounds = 3
+
+        def start_session(self, *args, **kwargs):
+            return None
+
+        def finish_session(self, *args, **kwargs):
+            return None
+
+    class _CallManager:
+        def __init__(self, *args, **kwargs):
+            self.max_rounds = 3
+
+        async def execute_tool_calls(self, tool_calls, context):
+            return [{"role": "tool", "tool_call_id": "c1", "name": "poke", "content": "ok"}]
+
+        def finish_session(self, *args, **kwargs):
+            return None
+
+    class _Sender:
+        def __init__(self):
+            self.sent = []
+
+        async def send(self, chat_id, message, mode="private"):
+            self.sent.append(message)
+
+    service = EngineReplyService(
+        yuki=type("Y", (), {"message_buffer": {}})(),
+        history=type("H", (), {"append_session_message": staticmethod(lambda *a, **k: None)})(),
+        sender=_Sender(),
+        tool_registry=type("R", (), {"get_tools": lambda self: []})(),
+        tool_manager=_ToolManager(),
+        get_process_callback=lambda: None,
+        get_image_store=lambda: None,
+    )
+
+    responses = [
+        {"role": "assistant", "content": "我先戳一下", "tool_calls": [
+            {"id": "c1", "function": {"name": "poke", "arguments": "{}"}}
+        ]},
+        {"role": "assistant", "content": "[layout]后续盘算[/layout]"},
+    ]
+
+    async def fake_raw(**kwargs):
+        return responses.pop(0)
+
+    with patch("core.engine.engine_reply.llm_chat_raw", fake_raw), \
+            patch("core.engine.engine_reply.ToolCallManager", _CallManager):
+        raw, visible = asyncio.run(
+            service.chat_with_tools("10001", "hi", [], "group", [])
+        )
+
+    assert visible == WORKING_NOTICE
+    assert raw == "<layout>后续盘算</layout>", "history 保留盘算原文"
+
+
+def test_chat_with_tools_empty_without_tools_stays_empty():
+    """未执行工具且回复为空：返回空交由发送阶段报空字符，不误报工作中。"""
+    from unittest.mock import patch
+
+    from core.engine.engine_reply import EngineReplyService, WORKING_NOTICE
+
+    class _ToolManager:
+        max_rounds = 1
+
+        def start_session(self, *args, **kwargs):
+            return None
+
+        def finish_session(self, *args, **kwargs):
+            return None
+
+    service = EngineReplyService(
+        yuki=None,
+        history=None,
+        sender=None,
+        tool_registry=type("R", (), {"get_tools": lambda self: []})(),
+        tool_manager=_ToolManager(),
+        get_process_callback=lambda: None,
+        get_image_store=lambda: None,
+    )
+
+    async def fake_raw(**kwargs):
+        return {"role": "assistant", "content": ""}
+
+    with patch("core.engine.engine_reply.llm_chat_raw", fake_raw):
+        raw, visible = asyncio.run(
+            service.chat_with_tools("10001", "hi", [], "group", [])
+        )
+
+    assert visible != WORKING_NOTICE
+    assert visible.strip() == ""

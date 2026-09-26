@@ -17,6 +17,9 @@ from utils.logger import get_logger
 
 logger = get_logger("engine")
 
+# 已开始执行工具、但最终回复被清洗干净时的占位文案
+WORKING_NOTICE = "工作中......"
+
 
 class EngineReplyService:
     """负责 LLM 回复生成与工具链对话。"""
@@ -46,6 +49,21 @@ class EngineReplyService:
     def clean_visible_reply(content):
         """清理工具链期间可对外发送的回复文本（含括号写错的标记变体）。"""
         return clean_visible_reply(content)
+
+    @staticmethod
+    def finalize_answer(raw_content, tools_executed=False):
+        """收敛最终回复，返回 (写回历史的文本, 实际发送的文本)。
+
+        清洗只作用于可见文本；写回历史保留归一化后的原始标记（含 `<layout>` 盘算），
+        避免丢掉模型的内心戏。若清洗后已无可见内容，但本轮确实执行过工具，说明
+        「操作已经开始、只是回复被清洗干净」，此时用「工作中......」占位而不是让
+        发送阶段误报空字符。
+        """
+        visible = clean_visible_reply(raw_content)
+        if not visible.strip() and tools_executed:
+            logger.info("[ToolChain] 回复被清洗为空但本轮已执行工具，发送工作中占位")
+            visible = WORKING_NOTICE
+        return normalize_reply_markup(raw_content), visible
 
     async def _resolve_pending_image(self, meme_processor, img):
         """工具调用期间新增图片，按与主管线一致的开关处理。"""
@@ -234,6 +252,7 @@ class EngineReplyService:
         if native_vision_enabled and not cfg.BACKUP_NATIVE_VISION_ENABLED:
             fallback_factory = build_backup_messages
         sent_thoughts = set()
+        tools_executed = False
 
         try:
             for _ in range(active_tool_manager.max_rounds):
@@ -251,6 +270,7 @@ class EngineReplyService:
                 )
                 tool_calls = response_message.get("tool_calls") or []
                 if tool_calls:
+                    tools_executed = True
                     tool_names = [
                         call.get("function", {}).get("name", "")
                         for call in tool_calls
@@ -278,10 +298,10 @@ class EngineReplyService:
                     if response_message.get("_finish_reason") == "content_filter":
                         logger.warning(f"[ToolChain] {chat_id} 回复被内容安全过滤")
                         return "Filtered", "Filtered"
-                    raw_answer = response_message.get("content")
-                    answer = self.clean_visible_reply(raw_answer)
-                    # 写回历史的原始回复先归一化标记，避免错误格式被模型学走
-                    return normalize_reply_markup(raw_answer), answer
+                    # 写回历史保留归一化标记；可见文本为空且已执行过工具时用工作中占位
+                    return self.finalize_answer(
+                        response_message.get("content"), tools_executed
+                    )
 
                 tool_messages.append(response_message)
                 tool_result_messages = await active_tool_manager.execute_tool_calls(tool_calls, context)
@@ -314,7 +334,7 @@ class EngineReplyService:
                 max_tokens=1024,
                 fallback_messages_factory=fallback_factory,
             )
-            return normalize_reply_markup(fallback_raw), self.clean_visible_reply(fallback_raw)
+            return self.finalize_answer(fallback_raw, tools_executed)
         finally:
             active_tool_manager.finish_session(str(chat_id))
             self.tool_manager.finish_session(str(chat_id))
