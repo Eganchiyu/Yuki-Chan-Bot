@@ -27,7 +27,7 @@ class EngineMonitorService:
             if not self.get_napcat_online():
                 continue
             now = time.time()
-            logger.debug(f"[Engine] 后台检查中... {now}")
+            logger.debug("[Engine] 后台空闲检查开始")
             history_dict = self.history.load()
             for cid, last_msg in list(self.yuki.last_message_time.items()):
                 if cid in self.yuki.writing_diary:
@@ -58,7 +58,7 @@ class EngineMonitorService:
             if not self.get_napcat_online():
                 continue
             target_list = [str(gid) for gid in cfg.TARGET_GROUPS]
-            logger.info(f"[Engine] 已加载 {len(target_list)} 个目标群组")
+            logger.debug(f"[Engine] 已加载 {len(target_list)} 个目标群组")
             pending_ice_break = []
 
             async with self.yuki.lock:
@@ -68,10 +68,10 @@ class EngineMonitorService:
                     activity = self.yuki.group_activity.get(cid, 0.0)
                     desire = self.yuki.desire_to_start_topic.get(cid, 0)
 
-                    logger.info(f"[Engine] 群 {cid} 活跃度={activity:.2f} 欲望={desire:.1f}%")
+                    logger.debug(f"[Engine] 群 {cid} 活跃度={activity:.2f} 欲望={desire:.1f}%")
 
                     fail_count = self.yuki.ice_break_fail_count.get(cid, 0)
-                    logger.info(f"[Engine] {cid} 破冰失败次数: {fail_count}")
+                    logger.debug(f"[Engine] {cid} 破冰失败次数: {fail_count}")
 
                     if activity < 0.5 and desire > 75 and fail_count < 2:
                         if random.random() < 0.8:

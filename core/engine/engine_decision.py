@@ -90,7 +90,11 @@ class EngineDecisionService:
         will_reply = reply_score >= threshold
 
         logger.info(
-            f"[Decision] 模糊地带判定 | 精力:{current_e:.1f} 激素:{new_hormone:.1f} 欲:{desire:.1f} "
+            f"[Decision] 模糊地带 {reply_score:.1f}/{threshold:.0f} -> 发言:{will_reply}"
+            f" (精力{current_e:.1f} 激素{new_hormone:.1f} 欲{desire:.1f} 主人:{is_master})"
+        )
+        logger.debug(
+            f"[Decision] 模糊地带明细 | 精力:{current_e:.1f} 激素:{new_hormone:.1f} 欲:{desire:.1f} "
             f"主人:{is_master} | 总分:{reply_score:.1f}/{threshold} -> 发言:{will_reply}"
         )
         return will_reply

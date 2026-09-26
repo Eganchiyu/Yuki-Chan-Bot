@@ -57,7 +57,7 @@ class ImageStore:
                 "url": url,
             }
 
-        logger.info(f"[ImageStore] 注册 [{idx}] -> {save_path}")
+        logger.debug(f"[ImageStore] 注册 [{idx}] -> {save_path}")
         return idx
 
     def resolve(self, idx: str) -> str | None:
@@ -101,10 +101,10 @@ class ImageStore:
             entry = self._index.pop(k)
             try:
                 os.remove(entry["path"])
-                logger.info(f"[ImageStore] 清理过期图片 [{k}] {entry['path']}")
+                logger.debug(f"[ImageStore] 清理过期图片 [{k}] {entry['path']}")
             except FileNotFoundError:
                 pass
             except Exception as e:
                 logger.warning(f"[ImageStore] 删除文件失败 [{k}]: {e}")
         if expired:
-            logger.info(f"[ImageStore] 本轮清理 {len(expired)} 张过期图片，剩余 {len(self._index)} 张")
+            logger.debug(f"[ImageStore] 本轮清理 {len(expired)} 张过期图片，剩余 {len(self._index)} 张")

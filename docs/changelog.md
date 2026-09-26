@@ -10,6 +10,8 @@
 ## [未发布]
 
 ### 新增
+- 日志控制台与文件分级：控制台默认只输出 INFO 及以上，`debug: true` 不再把控制台刷成 DEBUG 瀑布；文件始终记录 DEBUG 明细。控制台级别可用 `YUKI_LOG_CONSOLE_LEVEL`（`DEBUG`/`20` 等）单独覆盖，`YUKI_LOG_CONSOLE_VERBOSE=1` 可放行项目内高频 DEBUG
+- 控制台长信息结构化短输出：多行长消息折叠为单行「摘要 + 规模标注」（如 `… (+39 行, 2.7KB)`），前缀 + 内嵌 `dict`/`list` 字面量压缩为键值摘要，明细只留在日志文件
 - 新增多模式基础框架 `core.modes`，将默认 QQ 群聊包装为 `QQChatMode`，并提供全局唯一聚焦模式状态管理
 - 新增浏览器交互占位模块 `modules/browser_interaction`，支持进入浏览器模式、记录步骤、占位扫描和完成后返回来源会话
 - 新增模式级工具注册 `ToolRegistryProvider`，支持普通 QQChatMode 与浏览器模式暴露不同工具组
@@ -26,8 +28,15 @@
 - 新增普通图片原生视觉输入：`model.llm_native_vision_enabled` 开启后，收到的普通图片不再外挂转写，而是作为 imageUrl 图块直接交给主模型理解，提升截图、文字图等内容的还原度；表情包仍走转写以节省视觉开销
 - 新增 `model.backup_native_vision_enabled`：主线路失败切备用时，若备用模型不支持视觉，按需把图片附件转写为文本再发送，避免备用线路 400
 - 新增原生视觉限额配置：`native_vision_max_images`（单次张数）、`native_vision_history_turns`（保留轮数）、`native_vision_max_size` / `native_vision_quality`（压缩参数）与图片下载大小/超时限制
+- 新增 `docs/android-bridge-plan.md`：评估 Yuki 远程访问主人手机 adb（无 root）的可行性，明确 shell 级权限边界、端口漂移补偿方案，选型 Termux 自连 + SSH 中继 + Tailscale 架构，并给出分阶段路线与安全体系
 
 ### 变更
+- 日志降噪：`websockets` 纳入 `NOISY_NAMESPACES`（逐帧收发与 keepalive ping/pong 压到 WARNING，实测占单日日志一半以上）；`VERBOSE_NAMESPACES` 修正为实际 logger 名（原 `protocol`/`listener`/`modules.napcat` 与真实命名不符，等于空转）
+- 控制台降噪过滤器 `ConsoleNoiseFilter` 挂到 console handler：项目内高频 namespace 的 DEBUG 只进文件不进控制台
+- 高频 INFO 降级为 DEBUG：`[Pipeline]` 阶段流水、`[Activity]` 活跃度波动与降温、`[Brain]` 欲望计算、`[Engine]` 破冰巡检明细、`[ToolCall]` 执行前后、`[MemeCache]`/`[ImageStore]` 例行读写；保留收消息、发送完成、决策结论、日记触发与全部 WARNING/ERROR
+- 日志折行优先停在分隔符（`, `、` | `、`，`）处，不再从 ASCII token 中间切开；`_truncate_display` 改为按显示宽度纯裁剪，避免在第一个空格处草率收尾
+- 窄屏元数据不再从中间截断：放不下时按「时间+级别+位置 → 级别+位置 → 位置」逐级降级
+- `PrettyFormatter` 增加单条记录行数上限（`YUKI_LOG_FILE_MAX_LINES`，默认 60），异常堆栈不受限制
 - 修复日志格式化器窄屏布局遗漏元数据，并增强对应的宽度与行前缀回归测试
 - NapCat 接入层合并为单一文件 `network/napcat.py`（`NapCatGateway` 同时承担原 `BotConnector` 与 `MessageSender`），删除 `ws_connection.py` / `ws_sender.py`
 - NapCat 读端改为常驻 reader + 帧路由：`echo` 命中挂起请求则唤醒调用方，带 `post_type` 的帧进事件队列，其余丢弃。**出站不再依赖有人消费事件流**，API 响应也不再混进事件流（此前 `send_request()` 的 Future 只有在 `listen()` 被迭代时才会被 resolve）

@@ -82,7 +82,7 @@ Yuki 具备标准化的工具调用能力，通过 Function Call 机制扩展 LL
 
 - **Context Debug WebUI**：本地只读 Web 界面，实时观察 Yuki 状态、完整 LLM 构建上下文、RAG 召回结果，支持上下文复制导出与敏感字段脱敏
 - **轻量 Debug Snapshot**：`SessionPipeline` 自动记录输入合并、回复决策、RAG 召回、完整 LLM messages 与各阶段耗时
-- **执行日志观测**：结构化日志系统，带颜色控制台输出 + 文件归档
+- **执行日志观测**：控制台与文件分级——控制台默认只出 INFO 业务事件（收消息、决策、发送、日记、报错），文件始终记录 DEBUG 明细并归档
 
 ### ⚡ 稳健的异步架构
 

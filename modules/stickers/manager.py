@@ -410,7 +410,7 @@ class StickerManager:
         if not yuki_message.strip():
             return None
 
-        logger.info(f"[Sticker] 开始为消息检索表情包: {yuki_message[:60]}...")
+        logger.debug(f"[Sticker] 开始为消息检索表情包: {yuki_message[:60]}...")
 
         emotion_tag = await self._judge_emotion(yuki_message)
         query_text = f"{yuki_message} | 情绪：{emotion_tag}"
@@ -430,7 +430,7 @@ class StickerManager:
         self._update_meme_status(best["id"], best.get("current_heat", 0.0))
 
         logger.info(
-            f"[Sticker] 选中表情 → 情绪:{best['emotion']} | 描述:{best['description'][:40]} | 偏好度:{best.get('preference', 0)}")
+            f"[Sticker] 选中 → {best['emotion']} | {best['description'][:40]} | 偏好:{best.get('preference', 0)}")
         return best
 
     async def _dual_pool_retrieve(self, query_text: str, chat_id: str, top_k: int = 20) -> List[Dict]:

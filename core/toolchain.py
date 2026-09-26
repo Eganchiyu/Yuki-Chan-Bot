@@ -186,10 +186,10 @@ class ToolCallManager:
         call_id = tool_call.get("id", f"call_{int(time.time() * 1000)}")
         handler = self.registry.get_handler(name)
 
-        logger.info(f"[ToolCall] 准备执行 chat_id={context.chat_id} name={name} args={arguments_text}")
+        logger.debug(f"[ToolCall] 准备执行 chat_id={context.chat_id} name={name} args={arguments_text}")
         delay_seconds = self._delay_seconds()
         if delay_seconds > 0:
-            logger.info(f"[ToolCall] {name} 等待 {delay_seconds:.1f}s 后执行")
+            logger.debug(f"[ToolCall] {name} 等待 {delay_seconds:.1f}s 后执行")
             await asyncio.sleep(delay_seconds)
 
         started_at = time.time()
@@ -221,10 +221,7 @@ class ToolCallManager:
                 result = ToolResult.failure("工具执行异常", "tool_execution_failed", name=name)
 
         elapsed = time.time() - started_at
-        logger.info(
-            f"[ToolCall] 执行完成 chat_id={context.chat_id} name={name} "
-            f"success={result.success} elapsed={elapsed:.2f}s"
-        )
+        logger.info(f"[ToolCall] {name} chat={context.chat_id} success={result.success} elapsed={elapsed:.2f}s")
         return {
             "role": "tool",
             "tool_call_id": call_id,

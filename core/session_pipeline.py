@@ -370,7 +370,7 @@ class SessionPipeline:
 
     async def prepare_chat_context(self, context):
         """加载上下文，确保系统提示词存在，并追加当前用户消息。"""
-        logger.info("[Pipeline] 加载上下文信息")
+        logger.debug("[Pipeline] 加载上下文信息")
         chat_id = str(context["chat_id"])
         mode = context["mode"]
         system_prompt = self.yuki.get_setting(mode)
@@ -394,7 +394,7 @@ class SessionPipeline:
             current_time_str=current_time_str,
             message_count=len(session),
         )
-        logger.info("[Pipeline] 上下文加载完成")
+        logger.debug("[Pipeline] 上下文加载完成")
         return context
 
     async def decide_reply_action(self, context):
@@ -436,11 +436,11 @@ class SessionPipeline:
     async def retrieve_memories(self, context):
         """根据输入长度动态检索相关日记。"""
         if not cfg.RAG_ENABLED:
-            logger.info(f"[Pipeline] RAG 已关闭，跳过日记检索，直接使用上下文")
+            logger.debug(f"[Pipeline] RAG 已关闭，跳过日记检索，直接使用上下文")
             context["relevant_diaries"] = []
             return context
 
-        logger.info(f"[Pipeline] {cfg.ROBOT_NAME.title()} 正在回忆")
+        logger.debug(f"[Pipeline] {cfg.ROBOT_NAME.title()} 正在回忆")
         chat_id = context["chat_id"]
         combined_text = context["combined_text"]
         speaker_names = [
@@ -457,8 +457,11 @@ class SessionPipeline:
             top_k_keywords=dynamic_top_k,
             n_results=8
         )
-        logger.info(f"[Pipeline] 检索到 {len(relevant_diaries)} 条相关日记")
-        logger.info(f"[Pipeline] 检索完成，耗时 {(time.time() - context['first_time']):.2f}s")
+        logger.debug(f"[Pipeline] 检索到 {len(relevant_diaries)} 条相关日记")
+        logger.info(
+            f"[Pipeline] [{chat_id}] 回忆 {len(relevant_diaries)} 条"
+            f" | 耗时 {(time.time() - context['first_time']):.2f}s"
+        )
 
         context["relevant_diaries"] = relevant_diaries
         self._update_snapshot(context, relevant_diaries=relevant_diaries)
@@ -477,7 +480,7 @@ class SessionPipeline:
             debug_snapshot_id=context.get("debug_snapshot_id"),
             message_objs=context.get("message_objs", []),
         )
-        logger.info(f"[Pipeline] {cfg.ROBOT_NAME.title()} 回复生成完成")
+        logger.debug(f"[Pipeline] {cfg.ROBOT_NAME.title()} 回复生成完成")
 
         context["answer_raw"] = answer_raw
         context["answer_text"] = answer_text
@@ -497,7 +500,7 @@ class SessionPipeline:
         if mode == "group":
             self.yuki.consume_energy(chat_id)
 
-        logger.info(f"[Pipeline] {cfg.ROBOT_NAME.title()} 正在发送消息 (精力: {self.yuki.energy.get(chat_id, 0):.1f})")
+        logger.debug(f"[Pipeline] {cfg.ROBOT_NAME.title()} 正在发送消息 (精力: {self.yuki.energy.get(chat_id, 0):.1f})")
 
         if mode in {"desktop_pet", "browser_interaction"}:
             try:
@@ -623,13 +626,13 @@ class SessionPipeline:
         chat_id = context["chat_id"]
         answer_text = context["answer_text"]
 
-        logger.info(f"[Pipeline] {cfg.ROBOT_NAME.title()} 正在保存上下文")
+        logger.debug(f"[Pipeline] {cfg.ROBOT_NAME.title()} 正在保存上下文")
         self.history_manager.append_to_log(chat_id, cfg.ROBOT_NAME.title(), answer_text)
         session = self.history_manager.append_session_message(
             chat_id, "assistant", context["answer_raw"], time=context["current_time_str"]
         )
         self._update_snapshot(context, answer_text=answer_text, message_count=len(session))
-        logger.info("[Pipeline] 上下文保存完成")
+        logger.debug("[Pipeline] 上下文保存完成")
 
         # 记录本次处理完成时间，用于冷启动判断
         self.last_process_end_time[chat_id] = time.time()

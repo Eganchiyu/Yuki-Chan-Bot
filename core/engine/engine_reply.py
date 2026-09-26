@@ -238,11 +238,11 @@ class EngineReplyService:
                 response_message = await llm_chat_raw(
                     messages=tool_messages,
                     model=cfg.LLM_MODEL,
-                    temperature=1.1,
-                    top_p=0.9,
-                    frequency_penalty=0.5,
-                    presence_penalty=0.4,
-                    max_tokens=520,
+                    temperature=0.9,
+                    top_p=0.8,
+                    frequency_penalty=0.3,
+                    presence_penalty=0.2,
+                    max_tokens=1024,
                     tools=active_registry.get_tools(),
                     tool_choice="auto",
                     fallback_messages_factory=fallback_factory,
@@ -307,7 +307,7 @@ class EngineReplyService:
                 model=cfg.LLM_MODEL,
                 temperature=0.8,
                 top_p=0.8,
-                max_tokens=220,
+                max_tokens=1024,
                 fallback_messages_factory=fallback_factory,
             )
             fallback = self.clean_visible_reply(fallback)

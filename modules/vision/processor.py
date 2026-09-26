@@ -208,11 +208,11 @@ class MemeProcessor:
 
         cached = self.cache.get(cache_key)
         if cached:
-            logger.info(f"[MemeCache] 命中URL缓存: {cached}")
+            logger.debug(f"[MemeCache] 命中URL缓存: {cached}")
             return {"description": cached, "index": None}
 
         try:
-            logger.info("[Meme Understanding] 开始下载图片")
+            logger.debug("[Meme Understanding] 开始下载图片")
             async with aiohttp.ClientSession(connector=create_tcp_connector()) as session:
                 async with session.get(img_url, timeout=aiohttp.ClientTimeout(total=15)) as resp:
                     if resp.status != 200:
@@ -231,26 +231,26 @@ class MemeProcessor:
             # 检查哈希缓存
             cached = self.cache.get(img_hash)
             if cached:
-                logger.info(f"[MemeCache] 命中哈希缓存: {cached}")
+                logger.debug(f"[MemeCache] 命中哈希缓存: {cached}")
                 return {"description": cached, "index": img_index}
 
-            logger.info("[MemeCache] 开始压缩...")
+            logger.debug("[MemeCache] 开始压缩...")
             b64_data = self.compress_image(content)
             if not b64_data:
                 return {"description": "未知图片/表情", "index": img_index}
 
-            logger.info("[Meme Understanding] 发送AI请求...")
+            logger.debug("[Meme Understanding] 发送AI请求...")
             async with self.semaphore:
                 analysis = await self.call_api(b64_data)
 
-            logger.info(f"[Meme Understanding] 识别结果: {analysis}")
+            logger.debug(f"[Meme Understanding] 识别结果: {analysis}")
             clean_analysis = analysis.strip().replace('\n', ' ').replace('\r', '')
 
             # 保存到缓存
             self.cache.set(img_hash, clean_analysis)
             self.cache.set(cache_key, clean_analysis)
             self.cache.save()
-            logger.info(f"[MemeCache] 已保存新结果: {clean_analysis}")
+            logger.debug(f"[MemeCache] 已保存新结果: {clean_analysis}")
 
             return {"description": clean_analysis, "index": img_index}
 

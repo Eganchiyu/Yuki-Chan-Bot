@@ -127,7 +127,7 @@ class YukiState:
             increment = (10.0 - current) * sensitivity
 
             self.group_activity[cid] = current + increment
-            logger.info(f"[Activity] {cid} 活跃度波动: {current:.2f} -> {self.group_activity[cid]:.2f}")
+            logger.debug(f"[Activity] {cid} 活跃度波动: {current:.2f} -> {self.group_activity[cid]:.2f}")
         return
 
     async def decay_heartbeat(self, decay_level = cfg.DECAY_LEVEL) -> None:
@@ -138,7 +138,7 @@ class YukiState:
                 if not self.group_activity:
                     continue
 
-                logger.info("[Activity] 执行周期性半衰降温...")
+                logger.debug("[Activity] 执行周期性半衰降温...")
                 for cid in list(self.group_activity.keys()):
                     # 半衰计算：每次心跳热度减半
                     self.group_activity[cid] *= decay_level
@@ -146,7 +146,7 @@ class YukiState:
                     # 清理机制：如果热度已经低到忽略不计，直接从内存移除
                     if self.group_activity[cid] < 0.1:
                         del self.group_activity[cid]
-                        logger.info(f"[Activity] {cid} 已完全冷却，从监控中移除")
+                        logger.debug(f"[Activity] {cid} 已完全冷却，从监控中移除")
         return
 
 
@@ -206,7 +206,7 @@ class YukiState:
 
         # [Debug]
         mode = "跟风" if follow_desire > ice_break_desire else "破冰"
-        logger.info(f"[Brain] 群组:{cid} | 模式:{mode} | 最终欲望:{self.desire_to_start_topic[cid]}%")
+        logger.debug(f"[Brain] 群组:{cid} | 模式:{mode} | 最终欲望:{self.desire_to_start_topic[cid]}%")
 
     def pop_buffer(self, chat_id):
         """原子化取出并清空缓冲区"""
