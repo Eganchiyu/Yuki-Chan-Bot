@@ -1,0 +1,92 @@
+% !TEX program = xelatex
+% 中文 Beamer 示例 —— 使用 ctexbeamer + Madrid 主题 + beaver 配色
+% 编译：xelatex beamer_demo.tex （运行两次以生成目录）
+\documentclass[aspectratio=169]{ctexbeamer}
+\usetheme{Madrid}
+\usecolortheme{beaver}
+
+\title{Beamer 快速上手}
+\subtitle{一个简短的中文演示示例}
+\author{Yuki}
+\institute{小女仆工作室}
+\date{\today}
+
+\begin{document}
+
+% ---------- 1. 标题页 ----------
+\begin{frame}
+  \titlepage
+\end{frame}
+
+% ---------- 2. 带 itemize 的大纲页 ----------
+\begin{frame}{大纲}
+  \tableofcontents
+  \vspace{0.5em}
+  \begin{itemize}
+    \item 数学公式展示
+    \item 分块（block）的使用
+    \item 两栏（columns）排版
+  \end{itemize}
+\end{frame}
+
+\section{数学公式}
+
+% ---------- 3. 带公式的 frame ----------
+\begin{frame}{经典数学公式}
+  \begin{itemize}
+    \item 质能方程：
+      \begin{equation}
+        E = mc^2
+      \end{equation}
+    \item 勾股定理：
+      \begin{equation}
+        a^2 + b^2 = c^2
+      \end{equation}
+  \end{itemize}
+\end{frame}
+
+\section{分块与两栏}
+
+% ---------- 4. 带 block 的 frame ----------
+\begin{frame}{分块（Block）示例}
+  \begin{block}{定义}
+    若 $a^2 + b^2 = c^2$，则以 $a$、$b$ 为直角边、$c$ 为斜边的三角形是直角三角形。
+  \end{block}
+  \begin{alertblock}{注意}
+    公式必须放在数学模式中，例如 $E = mc^2$。
+  \end{alertblock}
+  \begin{exampleblock}{例子}
+    取 $a = 3$、$b = 4$，则 $c = \sqrt{3^2 + 4^2} = 5$。
+  \end{exampleblock}
+\end{frame}
+
+% ---------- 5. 带 columns 的 frame ----------
+\begin{frame}{两栏（Columns）排版}
+  \begin{columns}[T]
+    \begin{column}{0.48\textwidth}
+      \begin{block}{左栏：文字}
+        Beamer 可以轻松实现左右分栏。
+        \begin{itemize}
+          \item 左栏适合放要点
+          \item 结构清晰、重点突出
+        \end{itemize}
+      \end{block}
+    \end{column}
+    \begin{column}{0.48\textwidth}
+      \begin{block}{右栏：公式}
+        质能方程：\[ E = mc^2 \]
+        勾股定理：\[ a^2 + b^2 = c^2 \]
+      \end{block}
+    \end{column}
+  \end{columns}
+\end{frame}
+
+% ---------- 6. 结束页 ----------
+\begin{frame}
+  \centering
+  {\Huge 谢谢观看！}
+  \vspace{1em}
+  {\Large Questions?}
+\end{frame}
+
+\end{document}

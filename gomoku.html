@@ -1,0 +1,528 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>🌸 可爱五子棋 🌸</title>
+<style>
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { width: 100%; }
+  body {
+    margin: 0;
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 14px;
+    font-family: "Comic Sans MS", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+    color: #7a5c6e;
+    background: linear-gradient(135deg, #ffe6f2 0%, #e8f0ff 48%, #e6fff7 100%);
+    overflow-x: hidden;
+    overscroll-behavior: none;
+  }
+  .deco { position: fixed; font-size: 30px; opacity: .55; user-select: none; pointer-events: none; animation: float 4s ease-in-out infinite; }
+  .d1 { top: 6%; left: 6%; }
+  .d2 { top: 12%; right: 8%; animation-delay: .8s; }
+  .d3 { bottom: 8%; left: 10%; animation-delay: 1.6s; }
+  .d4 { bottom: 12%; right: 7%; animation-delay: .4s; }
+  @keyframes float { 0%,100% { transform: translateY(0) rotate(-4deg); } 50% { transform: translateY(-14px) rotate(6deg); } }
+
+  .game-card {
+    position: relative;
+    background: rgba(255,255,255,0.72);
+    backdrop-filter: blur(6px);
+    border: 3px solid #ffd0e4;
+    border-radius: 28px;
+    padding: 16px 16px 20px;
+    box-shadow: 0 18px 40px rgba(240,150,190,0.30), inset 0 0 0 6px rgba(255,255,255,0.5);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 12px;
+    width: 100%;
+    max-width: min(94vw, 600px);
+  }
+  h1 {
+    margin: 0;
+    font-size: clamp(20px, 4.6vw, 28px);
+    letter-spacing: 2px;
+    background: linear-gradient(90deg, #ff8fbe, #b09bff, #6fd6c6);
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+    text-shadow: 0 2px 0 rgba(255,255,255,0.6);
+  }
+  .infobar {
+    width: 100%;
+    max-width: min(88vw, 540px);
+    text-align: center;
+    font-size: clamp(12px, 2.8vw, 15px);
+    font-weight: bold;
+    letter-spacing: 1px;
+    padding: 8px 12px;
+    border-radius: 12px;
+    background: linear-gradient(135deg, #eef6ff, #fff0f7);
+    border: 2px solid #cfe3ff;
+    color: #4a6fa5;
+  }
+  .status {
+    width: 100%;
+    max-width: min(88vw, 540px);
+    text-align: center;
+    font-size: clamp(13px, 2.9vw, 16px);
+    font-weight: bold;
+    padding: 9px 16px;
+    border-radius: 999px;
+    background: linear-gradient(135deg, #fff0f7, #eef6ff);
+    border: 2px dashed #ffc2dd;
+    color: #b3558a;
+    transition: all .25s ease;
+  }
+  .status.win { background: linear-gradient(135deg,#fff6d6,#ffe6f2); border-color:#ffcf6b; color:#d98a00; }
+  .status.lose { background: linear-gradient(135deg,#eef0ff,#f3e8ff); border-color:#b9a8ff; color:#6b5bd6; }
+  .status.think { background: linear-gradient(135deg,#e8f7ff,#f0fff8); border-color:#8fd8ff; color:#3a8fbf; }
+
+  .board-wrap { position: relative; line-height: 0; width: 100%; max-width: min(88vw, 540px); }
+  #board {
+    width: 100%;
+    max-width: 100%;
+    height: auto;
+    display: block;
+    border-radius: 18px;
+    box-shadow: 0 10px 26px rgba(230,160,190,0.35);
+    cursor: pointer;
+    touch-action: manipulation;
+  }
+
+  .legend {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    font-size: 13px;
+    color: #8a6b7c;
+  }
+  .legend span.item { display: inline-flex; align-items: center; gap: 6px; }
+  .dot { width: 15px; height: 15px; border-radius: 50%; display: inline-block; }
+  .dot.white { background: radial-gradient(circle at 35% 32%, #fff, #ffe0ee); border: 1px solid #f0b8d3; }
+  .dot.black { background: radial-gradient(circle at 35% 32%, #6b6b7b, #1a1a24); border: 1px solid #000; }
+
+  #restart {
+    font-family: inherit;
+    font-size: 15px;
+    font-weight: bold;
+    color: #fff;
+    border: none;
+    padding: 11px 30px;
+    border-radius: 999px;
+    cursor: pointer;
+    background: linear-gradient(135deg, #ff9ec7, #b09bff);
+    box-shadow: 0 6px 14px rgba(200,140,220,0.45);
+    transition: transform .12s ease, box-shadow .12s ease;
+  }
+  #restart:hover { transform: translateY(-2px) scale(1.03); box-shadow: 0 9px 18px rgba(200,140,220,0.55); }
+  #restart:active { transform: translateY(0) scale(.97); }
+</style>
+</head>
+<body>
+  <div class="deco d1">🌸</div>
+  <div class="deco d2">💗</div>
+  <div class="deco d3">🧸</div>
+  <div class="deco d4">✨</div>
+
+  <div class="game-card">
+    <h1>🌸 可爱五子棋 🌸</h1>
+    <div id="info" class="infobar">轮到白棋（你） ｜ 尚未落子</div>
+    <div id="status" class="status">轮到你啦～ 🌸 请下白棋</div>
+    <div class="board-wrap">
+      <canvas id="board"></canvas>
+    </div>
+    <div class="legend">
+      <span class="item"><span class="dot white"></span> 你（白棋）</span>
+      <span class="item"><span class="dot black"></span> 电脑（黑棋）</span>
+    </div>
+    <button id="restart">🔄 重新开始</button>
+  </div>
+
+<script>
+(function () {
+  'use strict';
+
+  var SIZE = 15;
+  var CELL = 36;
+  var PAD = 28;
+  var EMPTY = 0, BLACK = 1, WHITE = 2;
+  var BOARD_PX = PAD * 2 + CELL * (SIZE - 1);
+  var DIRS = [[1, 0], [0, 1], [1, 1], [1, -1]];
+  var HIT_RATIO = 0.5; // 最近交叉点在半个格子内即可落子
+
+  var canvas = document.getElementById('board');
+  var ctx = canvas.getContext('2d');
+  var statusEl = document.getElementById('status');
+  var infoEl = document.getElementById('info');
+
+  var DPR = 1;
+
+  function setupCanvas() {
+    DPR = Math.max(1, window.devicePixelRatio || 1);
+    canvas.width = Math.round(BOARD_PX * DPR);
+    canvas.height = Math.round(BOARD_PX * DPR);
+    ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  }
+
+  setupCanvas();
+
+  var board, gameOver, playerTurn, lastMove, aiThinking, hoverPos;
+
+  function initBoard() {
+    board = [];
+    for (var i = 0; i < SIZE; i++) {
+      var row = [];
+      for (var j = 0; j < SIZE; j++) row.push(EMPTY);
+      board.push(row);
+    }
+    gameOver = false;
+    playerTurn = true;
+    lastMove = null;
+    aiThinking = false;
+    hoverPos = null;
+    setStatus('轮到你啦～ 🌸 请下白棋', '');
+    updateInfo();
+    draw();
+  }
+
+  function setStatus(text, cls) {
+    statusEl.textContent = text;
+    statusEl.className = 'status' + (cls ? ' ' + cls : '');
+  }
+
+  function updateInfo() {
+    var turnText = gameOver ? '游戏结束' : (playerTurn ? '轮到白棋（你）' : '轮到黑棋（电脑）');
+    var lastText = lastMove ? ('已落子 (' + lastMove.x + ',' + lastMove.y + ')') : '尚未落子';
+    infoEl.textContent = turnText + ' ｜ ' + lastText;
+  }
+
+  function roundRect(x, y, w, h, r) {
+    ctx.beginPath();
+    ctx.moveTo(x + r, y);
+    ctx.arcTo(x + w, y, x + w, y + h, r);
+    ctx.arcTo(x + w, y + h, x, y + h, r);
+    ctx.arcTo(x, y + h, x, y, r);
+    ctx.arcTo(x, y, x + w, y, r);
+    ctx.closePath();
+  }
+
+  function drawStone(cx, cy, r, isBlack) {
+    ctx.beginPath();
+    ctx.arc(cx, cy + 2, r, 0, Math.PI * 2);
+    ctx.fillStyle = 'rgba(180,150,170,0.22)';
+    ctx.fill();
+
+    var g = ctx.createRadialGradient(cx - r * 0.35, cy - r * 0.38, r * 0.15, cx, cy, r);
+    if (isBlack) {
+      g.addColorStop(0, '#7a7a8c');
+      g.addColorStop(0.5, '#3a3a4a');
+      g.addColorStop(1, '#16161f');
+    } else {
+      g.addColorStop(0, '#ffffff');
+      g.addColorStop(0.55, '#fff7fb');
+      g.addColorStop(1, '#ffd6e8');
+    }
+    ctx.beginPath();
+    ctx.arc(cx, cy, r, 0, Math.PI * 2);
+    ctx.fillStyle = g;
+    ctx.fill();
+    ctx.lineWidth = 1;
+    ctx.strokeStyle = isBlack ? 'rgba(0,0,0,0.35)' : 'rgba(240,180,210,0.95)';
+    ctx.stroke();
+
+    ctx.beginPath();
+    ctx.arc(cx - r * 0.32, cy - r * 0.36, r * 0.24, 0, Math.PI * 2);
+    ctx.fillStyle = isBlack ? 'rgba(255,255,255,0.38)' : 'rgba(255,255,255,0.95)';
+    ctx.fill();
+  }
+
+  function draw() {
+    ctx.clearRect(0, 0, BOARD_PX, BOARD_PX);
+    roundRect(0, 0, BOARD_PX, BOARD_PX, 18);
+    var bg = ctx.createLinearGradient(0, 0, BOARD_PX, BOARD_PX);
+    bg.addColorStop(0, '#fff8ea');
+    bg.addColorStop(1, '#ffedf6');
+    ctx.fillStyle = bg;
+    ctx.fill();
+
+    var last = PAD + (SIZE - 1) * CELL;
+    ctx.strokeStyle = '#e9c6a4';
+    ctx.lineWidth = 1.3;
+    for (var i = 0; i < SIZE; i++) {
+      var p = PAD + i * CELL;
+      ctx.beginPath(); ctx.moveTo(PAD, p); ctx.lineTo(last, p); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(p, PAD); ctx.lineTo(p, last); ctx.stroke();
+    }
+
+    ctx.strokeStyle = '#d9a878';
+    ctx.lineWidth = 2.4;
+    ctx.strokeRect(PAD, PAD, (SIZE - 1) * CELL, (SIZE - 1) * CELL);
+
+    var stars = [[3, 3], [11, 3], [3, 11], [11, 11], [7, 7]];
+    ctx.fillStyle = '#d9a878';
+    for (var s = 0; s < stars.length; s++) {
+      ctx.beginPath();
+      ctx.arc(PAD + stars[s][0] * CELL, PAD + stars[s][1] * CELL, 3.5, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    for (var x = 0; x < SIZE; x++) {
+      for (var y = 0; y < SIZE; y++) {
+        if (board[x][y] === EMPTY) continue;
+        drawStone(PAD + x * CELL, PAD + y * CELL, CELL * 0.42, board[x][y] === BLACK);
+      }
+    }
+
+    if (lastMove) {
+      ctx.beginPath();
+      ctx.arc(PAD + lastMove.x * CELL, PAD + lastMove.y * CELL, CELL * 0.15, 0, Math.PI * 2);
+      ctx.fillStyle = board[lastMove.x][lastMove.y] === BLACK ? '#ffb3d1' : '#ff6aa8';
+      ctx.fill();
+    }
+
+    if (hoverPos && !gameOver && playerTurn && board[hoverPos.x][hoverPos.y] === EMPTY) {
+      ctx.globalAlpha = 0.42;
+      drawStone(PAD + hoverPos.x * CELL, PAD + hoverPos.y * CELL, CELL * 0.42, false);
+      ctx.globalAlpha = 1;
+    }
+  }
+
+  function checkWin(x, y, p) {
+    for (var d = 0; d < DIRS.length; d++) {
+      var dx = DIRS[d][0], dy = DIRS[d][1];
+      var c = 1;
+      for (var s = 1; s < 5; s++) {
+        var nx = x + dx * s, ny = y + dy * s;
+        if (nx < 0 || nx >= SIZE || ny < 0 || ny >= SIZE || board[nx][ny] !== p) break;
+        c++;
+      }
+      for (var s2 = 1; s2 < 5; s2++) {
+        var nx2 = x - dx * s2, ny2 = y - dy * s2;
+        if (nx2 < 0 || nx2 >= SIZE || ny2 < 0 || ny2 >= SIZE || board[nx2][ny2] !== p) break;
+        c++;
+      }
+      if (c >= 5) return true;
+    }
+    return false;
+  }
+
+  function isFull() {
+    for (var i = 0; i < SIZE; i++) {
+      for (var j = 0; j < SIZE; j++) {
+        if (board[i][j] === EMPTY) return false;
+      }
+    }
+    return true;
+  }
+
+  function placeStone(x, y, p) {
+    board[x][y] = p;
+    lastMove = { x: x, y: y };
+    draw();
+    updateInfo();
+    if (checkWin(x, y, p)) {
+      gameOver = true;
+      if (p === WHITE) setStatus('🎉 你赢啦！好厉害～', 'win');
+      else setStatus('💻 电脑赢了…再来一局吧！', 'lose');
+      updateInfo();
+      return true;
+    }
+    if (isFull()) {
+      gameOver = true;
+      setStatus('🤝 平局啦～棋盘满咯', 'win');
+      updateInfo();
+      return true;
+    }
+    return false;
+  }
+
+  function isWinningMove(x, y, p) {
+    board[x][y] = p;
+    var w = checkWin(x, y, p);
+    board[x][y] = EMPTY;
+    return w;
+  }
+
+  function lineScore(x, y, dx, dy, p) {
+    var count = 1, blocks = 0, i, nx, ny, v;
+    for (i = 1; i < 5; i++) {
+      nx = x + dx * i; ny = y + dy * i;
+      if (nx < 0 || nx >= SIZE || ny < 0 || ny >= SIZE) { blocks++; break; }
+      v = board[nx][ny];
+      if (v === p) { count++; }
+      else if (v === EMPTY) { break; }
+      else { blocks++; break; }
+    }
+    for (i = 1; i < 5; i++) {
+      nx = x - dx * i; ny = y - dy * i;
+      if (nx < 0 || nx >= SIZE || ny < 0 || ny >= SIZE) { blocks++; break; }
+      v = board[nx][ny];
+      if (v === p) { count++; }
+      else if (v === EMPTY) { break; }
+      else { blocks++; break; }
+    }
+    if (count >= 5) return 1000000;
+    if (blocks >= 2) return 0;
+    if (count === 4) return blocks === 0 ? 50000 : 8000;
+    if (count === 3) return blocks === 0 ? 6000 : 600;
+    if (count === 2) return blocks === 0 ? 600 : 60;
+    if (count === 1) return blocks === 0 ? 60 : 6;
+    return 0;
+  }
+
+  function evaluateCell(x, y, p) {
+    var total = 0;
+    for (var d = 0; d < DIRS.length; d++) {
+      total += lineScore(x, y, DIRS[d][0], DIRS[d][1], p);
+    }
+    return total;
+  }
+
+  function isCandidate(x, y) {
+    var x0 = Math.max(0, x - 2), x1 = Math.min(SIZE - 1, x + 2);
+    var y0 = Math.max(0, y - 2), y1 = Math.min(SIZE - 1, y + 2);
+    for (var i = x0; i <= x1; i++) {
+      for (var j = y0; j <= y1; j++) {
+        if (board[i][j] !== EMPTY) return true;
+      }
+    }
+    return false;
+  }
+
+  function findBestMove() {
+    var i, j, empty = true;
+    for (i = 0; i < SIZE && empty; i++) {
+      for (j = 0; j < SIZE; j++) { if (board[i][j] !== EMPTY) { empty = false; break; } }
+    }
+    if (empty) return { x: 7, y: 7 };
+
+    for (i = 0; i < SIZE; i++) for (j = 0; j < SIZE; j++) {
+      if (board[i][j] === EMPTY && isWinningMove(i, j, BLACK)) return { x: i, y: j };
+    }
+    for (i = 0; i < SIZE; i++) for (j = 0; j < SIZE; j++) {
+      if (board[i][j] === EMPTY && isWinningMove(i, j, WHITE)) return { x: i, y: j };
+    }
+    var best = null, bestScore = -Infinity;
+    for (i = 0; i < SIZE; i++) for (j = 0; j < SIZE; j++) {
+      if (board[i][j] !== EMPTY) continue;
+      if (!isCandidate(i, j)) continue;
+      var sAI = evaluateCell(i, j, BLACK);
+      var sPlayer = evaluateCell(i, j, WHITE);
+      var score = sAI * 1.15 + sPlayer;
+      score += (7 - Math.abs(i - 7) - Math.abs(j - 7)) * 0.6;
+      score += Math.random() * 4;
+      if (score > bestScore) { bestScore = score; best = { x: i, y: j }; }
+    }
+    return best || { x: 7, y: 7 };
+  }
+
+  function aiTurn() {
+    if (gameOver) return;
+    var move = findBestMove();
+    if (!move) return;
+    if (placeStone(move.x, move.y, BLACK)) { aiThinking = false; return; }
+    playerTurn = true;
+    aiThinking = false;
+    setStatus('轮到你啦～ 🌸 请下白棋', '');
+    updateInfo();
+  }
+
+  // 实时用 getBoundingClientRect + 传入的 clientX/clientY 计算，兼容缩放/DPR/响应式
+  function getPos(clientX, clientY) {
+    var rect = canvas.getBoundingClientRect();
+    if (!rect.width || !rect.height) return null;
+    var mx = (clientX - rect.left) / rect.width * BOARD_PX;
+    var my = (clientY - rect.top) / rect.height * BOARD_PX;
+    var gx = Math.round((mx - PAD) / CELL);
+    var gy = Math.round((my - PAD) / CELL);
+    if (gx < 0 || gx >= SIZE || gy < 0 || gy >= SIZE) return null;
+    if (Math.abs(mx - (PAD + gx * CELL)) > CELL * HIT_RATIO) return null;
+    if (Math.abs(my - (PAD + gy * CELL)) > CELL * HIT_RATIO) return null;
+    return { x: gx, y: gy };
+  }
+
+  function tryPlace(clientX, clientY) {
+    if (gameOver || !playerTurn || aiThinking) return;
+    var pos = getPos(clientX, clientY);
+    if (!pos) return;
+    if (board[pos.x][pos.y] !== EMPTY) return;
+    hoverPos = null;
+    if (placeStone(pos.x, pos.y, WHITE)) return;
+    playerTurn = false;
+    aiThinking = true;
+    setStatus('电脑思考中… 🤔', 'think');
+    updateInfo();
+    setTimeout(function () { aiTurn(); }, 320);
+  }
+
+  // ---- 事件层：touchstart / pointerdown / click 三通道 + 去重抑制 ----
+  var suppressUntil = 0;
+  function isSuppressed() { return Date.now() < suppressUntil; }
+  function markHandled() { suppressUntil = Date.now() + 400; }
+
+  function evtPoint(e) {
+    if (e.touches && e.touches.length) return { x: e.touches[0].clientX, y: e.touches[0].clientY };
+    if (e.changedTouches && e.changedTouches.length) return { x: e.changedTouches[0].clientX, y: e.changedTouches[0].clientY };
+    return { x: e.clientX, y: e.clientY };
+  }
+
+  function onTouchLike(e) {
+    if (e.cancelable) e.preventDefault(); // 防双击缩放 / 延迟点击
+    if (isSuppressed()) return;            // 一次触摸只落一子
+    markHandled();
+    var pt = evtPoint(e);
+    tryPlace(pt.x, pt.y);
+  }
+
+  canvas.addEventListener('touchstart', onTouchLike, { passive: false });
+  canvas.addEventListener('pointerdown', function (e) {
+    if (e.pointerType === 'mouse' || e.pointerType === 'pen' && false) { /* 鼠标交给 click */ }
+    if (e.pointerType === 'mouse') return;
+    onTouchLike(e);
+  }, { passive: false });
+
+  canvas.addEventListener('click', function (e) {
+    if (isSuppressed()) return; // 触屏产生的合成 click 去重
+    markHandled();
+    tryPlace(e.clientX, e.clientY);
+  });
+
+  canvas.addEventListener('mousemove', function (e) {
+    if (gameOver || !playerTurn || aiThinking) { if (hoverPos) { hoverPos = null; draw(); } return; }
+    var pos = getPos(e.clientX, e.clientY);
+    var changed = (pos && (!hoverPos || hoverPos.x !== pos.x || hoverPos.y !== pos.y)) || (!pos && hoverPos);
+    if (changed) { hoverPos = pos; draw(); }
+  });
+
+  canvas.addEventListener('mouseleave', function () {
+    if (hoverPos) { hoverPos = null; draw(); }
+  });
+
+  document.getElementById('restart').addEventListener('click', function () {
+    initBoard();
+  });
+
+  var resizeTimer = null;
+  function onResize() {
+    clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(function () {
+      setupCanvas();
+      if (board) draw();
+    }, 120);
+  }
+  window.addEventListener('resize', onResize);
+  window.addEventListener('orientationchange', onResize);
+  if (window.visualViewport) {
+    window.visualViewport.addEventListener('resize', onResize);
+  }
+
+  initBoard();
+})();
+</script>
+</body>
+</html>

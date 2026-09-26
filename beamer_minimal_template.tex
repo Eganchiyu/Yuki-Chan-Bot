@@ -1,0 +1,103 @@
+% !TEX program = xelatex
+% ============================================================
+%  用 LaTeX beamer 做 PPT —— 最小可运行模板
+%  编译方式：必须使用 XeLaTeX
+%      xelatex beamer_minimal_template.tex
+%  或在 VS Code (LaTeX Workshop) / TeXstudio 中选择 XeLaTeX
+% ============================================================
+\documentclass[aspectratio=169, 11pt]{beamer}   % 16:9 比例；4:3 用 aspectratio=43
+
+% ---------- 中文支持：必须加 ctex（底层用 xeCJK） ----------
+\usepackage{ctex}
+
+% ---------- 插图 ----------
+\usepackage{graphicx}
+
+% ---------- 主题与配色 ----------
+\usetheme{Madrid}          % 换成 metropolis / Warsaw / Berlin 等
+\usecolortheme{default}    % 换成 whale / dolphin / seahorse / beetle 等
+
+% ---------- 标题信息 ----------
+\title{用 Beamer 做 PPT 最简入门}
+\subtitle{一个可直接编译的最小示例}
+\author{Your Name}
+\institute{Your Institute}
+\date{\today}
+
+\begin{document}
+
+% ========== 标题页 ==========
+\begin{frame}
+    \titlepage
+\end{frame}
+
+% ========== 目录页：\section 会自动生成目录条目 ==========
+\begin{frame}{目录}
+    \tableofcontents
+\end{frame}
+
+% ========== 第 1 节 ==========
+\section{基础用法}
+
+\begin{frame}{列表与 \texttt{\textbackslash pause} 动画}
+    \begin{itemize}
+        \item 第一点：itemize 生成无序列表
+        \item 第二点：enumerate 可生成有序列表
+        \item 第三点：用 \texttt{\textbackslash item} 逐条书写
+    \end{itemize}
+
+    \pause   % 到这里暂停，下一页内容按需分步出现
+
+    按过 \texttt{\textbackslash pause} 之后，这一句才会出现。
+\end{frame}
+
+\begin{frame}{居中与换行}
+    \centering
+    这一行居中显示。\\
+    这里换行用双反斜杠 \texttt{\textbackslash\textbackslash}。
+\end{frame}
+
+% ========== 第 2 节 ==========
+\section{进阶布局}
+
+\begin{frame}{分栏 columns 与高亮块 block}
+    \begin{columns}[T]           % [T] 顶端对齐
+        \begin{column}{0.48\textwidth}
+            \begin{block}{左栏：普通高亮块}
+                \begin{itemize}
+                    \item 要点一
+                    \item 要点二
+                \end{itemize}
+            \end{block}
+        \end{column}
+        \begin{column}{0.48\textwidth}
+            \begin{alertblock}{右栏：警告高亮块}
+                alertblock / exampleblock / block 三种样式可选。
+            \end{alertblock}
+        \end{column}
+    \end{columns}
+\end{frame}
+
+\begin{frame}{插入图片}
+    \begin{figure}
+        \centering
+        % 把下面的 example.png 换成你自己的文件名，并取消注释即可使用：
+        % \includegraphics[width=0.6\textwidth]{example.png}
+        \fbox{\parbox[c][3cm][c]{0.6\textwidth}{\centering 这里放图片\\（取消注释上面的 include graphics 行）}}
+        \caption{图片标题示例}
+    \end{figure}
+\end{frame}
+
+% ========== 第 3 节 ==========
+\section{常见踩坑}
+
+\begin{frame}{四句话总结}
+    \begin{itemize}
+        \item 必须用 \textbf{XeLaTeX} 编译；
+        \item 中文要加 \texttt{\textbackslash usepackage\{ctex\}}；
+        \item 标题里的特殊字符要转义；
+        \item 换行用 \texttt{\textbackslash\textbackslash}。
+    \end{itemize}
+\end{frame}
+
+\end{document}
