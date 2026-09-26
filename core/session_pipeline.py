@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from config import cfg
+from core.reply_format import clean_visible_reply
 from modules.debug.context_snapshot import PIPELINE_STAGES, context_snapshot_store
 from utils.logger import get_logger
 from utils.paths import normalize_stored_path
@@ -491,7 +492,9 @@ class SessionPipeline:
         """发送文本、表情包分段或语音回复。"""
         chat_id = context["chat_id"]
         mode = context["mode"]
-        answer_text = context["answer_text"]
+        # 发送前再做一次标记归一化：兼容模型把 <layout>/[MEME] 括号写错的情况，
+        # 否则错格式会被当作正文发出去（布局外泄）或漏掉表情包检索。
+        answer_text = clean_visible_reply(context["answer_text"])
         voice = context.get("voice")
 
         # master_private 使用私聊 API 发送

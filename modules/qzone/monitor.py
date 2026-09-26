@@ -16,6 +16,7 @@ from typing import Optional, List
 
 from utils.http_client import urlopen
 from utils.logger import get_logger
+from core.reply_format import clean_visible_reply
 
 logger = get_logger("qzone_monitor")
 
@@ -678,8 +679,8 @@ class QZoneSocialMonitor:
             reply = await llm_chat(messages, temperature=0.7, max_tokens=100)
             if reply:
                 reply = reply.strip().strip('"').strip("'")
-                # 清理可能的格式
-                reply = re.sub(r'<layout>.*?</layout>', '', reply, flags=re.DOTALL).strip()
+                # 清理可能的格式（含括号写错的 layout 变体）
+                reply = clean_visible_reply(reply)
                 return reply[:100]  # 限制长度
         except Exception as e:
             logger.error(f"[QZoneMonitor] LLM 生成回复失败: {e}")

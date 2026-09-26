@@ -6,6 +6,7 @@ import threading
 from typing import Any
 
 from config import cfg
+from core.reply_format import normalize_reply_markup
 from utils.logger import get_logger
 
 logger = get_logger("history")
@@ -20,9 +21,50 @@ class HistoryManager:
         self._lock = threading.Lock()
 
     def preload(self) -> None:
-        """只预载历史到内存，不返回全量深拷贝。"""
+        """只预载历史到内存，不返回全量深拷贝；顺带修复历史里的错格式标记。"""
         with self._lock:
-            self._get_data_locked()
+            data = self._get_data_locked()
+            self._repair_reply_markup_locked(data)
+
+    @staticmethod
+    def _normalize_message_markup(message: dict) -> bool:
+        """归一化单条 assistant 消息里的回复标记，返回是否发生修改。
+
+        只处理 assistant：用户消息里的 `【MEME:...】` 是对方原文，不能改写。
+        """
+        if message.get("role") != "assistant":
+            return False
+        content = message.get("content")
+        if not isinstance(content, str) or not content:
+            return False
+        normalized = normalize_reply_markup(content)
+        if normalized == content:
+            return False
+        message["content"] = normalized
+        return True
+
+    def _repair_reply_markup_locked(self, data: dict) -> int:
+        """把内存中所有 assistant 消息的错格式标记改写为规范格式。
+
+        历史上模型写错括号（`[layout]...[/layout]`、`【MEME:...】` 等）会原样喂回
+        上下文，诱导它继续沿用错误格式。这里一次性修复并落盘，断开这个循环。
+        """
+        fixed = 0
+        for session in data.values():
+            if not isinstance(session, list):
+                continue
+            for message in session:
+                if isinstance(message, dict) and self._normalize_message_markup(message):
+                    fixed += 1
+        if fixed:
+            logger.info(f"[History] 已修复 {fixed} 条回复的错格式标记")
+            self._save_locked(data)
+        return fixed
+
+    def repair_reply_markup(self) -> int:
+        """对外暴露的历史标记修复入口，返回修复条数。"""
+        with self._lock:
+            return self._repair_reply_markup_locked(self._get_data_locked())
 
     def load(self, *, copy_result: bool = True) -> dict:
         """获取全部历史；默认返回独立快照以兼容旧调用。"""
@@ -93,6 +135,7 @@ class HistoryManager:
                 "time": datetime.datetime.now().strftime("%Y年%m月%d日%H:%M"),
             }
             item.update(extra)
+            self._normalize_message_markup(item)
             session.append(item)
             self._mark_dirty_locked(data)
             if save_immediately:

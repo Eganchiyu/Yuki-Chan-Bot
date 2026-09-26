@@ -30,6 +30,7 @@ YukiV6/
 │   ├── toolchain.py           # Function Call 注册、状态、延迟执行和结果封装
 │   ├── tools/                 # 标准工具集合：按职责拆分的子服务与 TOOL_SPECS 装配
 │   ├── history_manager.py     # 历史记录管理
+│   ├── reply_format.py        # 回复标记格式容错（layout/MEME 归一化）
 │   ├── maid.py                # 小女仆子代理系统
 │   └── prompts.py             # 提示词模板管理
 │
@@ -168,6 +169,7 @@ maid_task_queue: asyncio.Queue     # 小女仆任务队列
 - 对话历史的持久化存储
 - 按群聊隔离的历史记录
 - 日志文件写入
+- 落盘前归一化回复标记（见 `core/reply_format.py`）
 
 **存储格式**：
 ```json
@@ -179,6 +181,34 @@ maid_task_queue: asyncio.Queue     # 小女仆任务队列
   ]
 }
 ```
+
+**回复标记修复**：
+- `append_session_message()` 写入前调用 `normalize_reply_markup()`，只对 `assistant` 生效（用户原文不动），把 `[layout]...[/layout]`、`【MEME:...】` 等错格式统一成规范形式
+- `preload()` 加载历史时批量修复既有错格式并原子落盘（`repair_reply_markup()` 为显式入口），断开「模型看到自己的错误示例 → 继续写错」的循环
+
+---
+
+### 3.5.1 core/reply_format.py - 回复标记格式容错
+
+**职责**：统一处理模型偶发把内部标记括号写错的情况，避免思考内容外泄与表情包失效。
+
+**标记规范**：
+| 标记 | 规范形式 | 作用 |
+|------|----------|------|
+| 布局 | `<layout>盘算</layout>` | 内心思考，发送时剥离、写入历史时保留 |
+| 表情包 | `[MEME:情绪]` | 发送阶段切分并检索表情包 |
+
+**容错能力**：
+- 括号变体：`[layout]`、`【layout】`、`［LAYOUT］`、`｛layout｝`、`<layout>` 等中英日全半角组合统一为 `<layout>` / `</layout>`，`[MEME]` 同理
+- 混用括号：`[layout]...[/layout]`、`[layout]...</layout>`、`<layout>...[/layout]` 均按同一布局块剥离
+- 未闭合开标签：从 `<layout>` 起整段视为内部思考丢弃，宁可少发一句也不外泄
+- 空 MEME 标记（`[MEME]`、`【MEME:】`）直接丢弃
+
+**对外入口**：
+- `clean_visible_reply()`：发送前清洗，剥离布局、归一化 MEME（保留 `[MEME:x]` 供后续检索）
+- `strip_meme_tags()`：只要纯文本时使用
+- `normalize_reply_markup()`：写回历史前归一化，保留规范 layout
+- `strip_layout_markup()` / `normalize_layout_tags()` / `normalize_meme_tags()`：细粒度操作
 
 ---
 

@@ -4,6 +4,12 @@ from typing import Any, Callable, Optional
 
 from config import cfg
 from core.prompts import build_chat_context
+from core.reply_format import (
+    clean_visible_reply,
+    normalize_reply_markup,
+    strip_layout_markup,
+    strip_meme_tags,
+)
 from core.toolchain import ToolCallManager, ToolContext, ToolRuntime
 from modules.debug.context_snapshot import context_snapshot_store
 from utils.llm_client import llm_chat, llm_chat_raw
@@ -38,12 +44,8 @@ class EngineReplyService:
 
     @staticmethod
     def clean_visible_reply(content):
-        """清理工具链期间可对外发送的回复文本。"""
-        if not content:
-            return ""
-        clean_content = re.sub(r'\s*FINISHED\s*$', '', content, flags=re.IGNORECASE).strip()
-        clean_content = re.sub(r'<layout>.*?</layout>', '', clean_content, flags=re.DOTALL).strip()
-        return clean_content
+        """清理工具链期间可对外发送的回复文本（含括号写错的标记变体）。"""
+        return clean_visible_reply(content)
 
     async def _resolve_pending_image(self, meme_processor, img):
         """工具调用期间新增图片，按与主管线一致的开关处理。"""
@@ -112,7 +114,7 @@ class EngineReplyService:
         if not clean_content or clean_content in sent_thoughts:
             return ""
 
-        display_content = re.sub(r'\[MEME:.+?\]', '', clean_content, flags=re.DOTALL).strip()
+        display_content = strip_meme_tags(clean_content).strip()
         if tool_names and "delegate_to_maid" in tool_names:
             display_content = clean_content + " | (๑•̀ㅂ•́)و💻"
         if display_content:
@@ -276,8 +278,10 @@ class EngineReplyService:
                     if response_message.get("_finish_reason") == "content_filter":
                         logger.warning(f"[ToolChain] {chat_id} 回复被内容安全过滤")
                         return "Filtered", "Filtered"
-                    answer = self.clean_visible_reply(response_message.get("content"))
-                    return answer, answer
+                    raw_answer = response_message.get("content")
+                    answer = self.clean_visible_reply(raw_answer)
+                    # 写回历史的原始回复先归一化标记，避免错误格式被模型学走
+                    return normalize_reply_markup(raw_answer), answer
 
                 tool_messages.append(response_message)
                 tool_result_messages = await active_tool_manager.execute_tool_calls(tool_calls, context)
@@ -302,7 +306,7 @@ class EngineReplyService:
                 )
                 await self.merge_pending_messages(chat_id, tool_messages, image_budget=remaining_budget)
 
-            fallback = await llm_chat(
+            fallback_raw = await llm_chat(
                 messages=tool_messages,
                 model=cfg.LLM_MODEL,
                 temperature=0.8,
@@ -310,8 +314,7 @@ class EngineReplyService:
                 max_tokens=1024,
                 fallback_messages_factory=fallback_factory,
             )
-            fallback = self.clean_visible_reply(fallback)
-            return fallback, fallback
+            return normalize_reply_markup(fallback_raw), self.clean_visible_reply(fallback_raw)
         finally:
             active_tool_manager.finish_session(str(chat_id))
             self.tool_manager.finish_session(str(chat_id))
@@ -359,7 +362,7 @@ class EngineReplyService:
                 combined_api_message,
                 message_objs=message_objs,
             )
-            yuki_answer = re.sub(r'<layout>.*?</layout>', '', yuki_answer, flags=re.DOTALL).strip()
+            yuki_answer = strip_layout_markup(yuki_answer).strip()
             yuki_answer = re.sub(r'\n+', ' ', yuki_answer).strip()
             return yuki_answer_raw, yuki_answer, ""
         except Exception as e:
