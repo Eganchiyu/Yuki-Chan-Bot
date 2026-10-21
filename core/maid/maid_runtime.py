@@ -27,6 +27,34 @@ def _get_maid_python_exec() -> str:
     return os.path.join(MAID_VENV_DIR, "bin", "python")
 
 
+def _get_maid_pip_cmd(python_exec: str) -> list:
+    """统一用 `python -m pip` 调用 pip。
+
+    虚拟环境被搬迁/重建后 bin/pip 脚本里的 shebang 常指向已不存在的解释器，
+    直接执行会报 `[Errno 2] No such file or directory`，走模块方式可绕开。
+    """
+    return [python_exec, "-m", "pip"]
+
+
+def _check_venv_home(venv_dir: str) -> str:
+    """检查 pyvenv.cfg 里记录的 base 解释器目录是否还存在（环境被搬迁时会失效）。"""
+    cfg_path = os.path.join(venv_dir, "pyvenv.cfg")
+    if not os.path.exists(cfg_path):
+        return "缺少 pyvenv.cfg"
+    try:
+        with open(cfg_path, "r", encoding="utf-8", errors="replace") as f:
+            for line in f:
+                key, sep, value = line.partition("=")
+                if sep and key.strip().lower() == "home":
+                    home = value.strip()
+                    if home and not os.path.isdir(home):
+                        return f"pyvenv.cfg 中的 home 目录不存在：{home}"
+                    return ""
+    except Exception as e:
+        return f"读取 pyvenv.cfg 失败：{e}"
+    return ""
+
+
 def _new_session_kwargs() -> dict:
     """POSIX 下让子进程独立成进程组，便于超时时整组终止；Windows 不接受该参数。"""
     return {"start_new_session": True} if os.name != "nt" else {}
@@ -42,24 +70,54 @@ def _handle_rmtree_error(func, path, exc_info) -> None:
 
 
 async def _is_maid_env_usable(python_exec: str) -> tuple[bool, str]:
-    """确认虚拟环境解释器真实可启动，避免保留已失效的旧环境。"""
+    """确认虚拟环境解释器真实可用。
+
+    不能用 `python --version` 判断：标准库缺失（如 encodings 找不到）时它照样返回 0，
+    必须实际导入模块触发解释器完整初始化。
+    """
     if not os.path.exists(python_exec):
         return False, "未找到 Python 执行文件"
 
+    home_problem = _check_venv_home(MAID_VENV_DIR)
+    if home_problem:
+        return False, home_problem
+
     try:
         process = await asyncio.create_subprocess_exec(
-            python_exec, "--version",
+            python_exec, "-c", "import encodings, sys; sys.stdout.write(sys.prefix)",
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            **(_new_session_kwargs()),
         )
-        stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=10)
+        stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=15)
     except Exception as e:
         return False, str(e)
 
-    output = _decode_process_output(stdout or stderr).strip()
     if process.returncode != 0:
-        return False, output or f"python --version 返回 {process.returncode}"
-    return True, output
+        output = _decode_process_output(stderr or stdout).strip()
+        detail = output.splitlines()[0] if output else f"返回码 {process.returncode}"
+        return False, f"解释器无法启动：{detail}"
+
+    stdout, _ = await _run_pip(python_exec, ["--version"])
+    if "pip" not in stdout.lower():
+        return False, "环境中缺少可用 pip"
+    return True, stdout.strip().splitlines()[0] if stdout.strip() else "ok"
+
+
+async def _run_pip(python_exec: str, args: list) -> tuple[str, str]:
+    """用 `python -m pip` 执行 pip 命令，避免依赖可能已失效的 bin/pip 脚本。"""
+    if isinstance(args, str):
+        args = [args]
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *_get_maid_pip_cmd(python_exec), *args,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await proc.communicate()
+        return _decode_process_output(stdout), _decode_process_output(stderr)
+    except Exception as e:
+        return "", str(e)
 
 
 async def _create_maid_env() -> None:
@@ -68,11 +126,75 @@ async def _create_maid_env() -> None:
     logger.info("[Maid] 专属虚拟环境创建完毕。")
 
 
+async def _repair_maid_pip(python_exec: str) -> bool:
+    """install_package 前的兜底：环境能跑但缺 pip 时用 ensurepip 补一下。"""
+    stdout, _ = await _run_pip(python_exec, ["--version"])
+    if "pip" in stdout.lower():
+        return True
+    logger.warning("[Maid] 环境中缺少 pip，尝试 ensurepip 修复...")
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            python_exec, "-m", "ensurepip", "--upgrade",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        await proc.communicate()
+    except Exception as e:
+        logger.error(f"[Maid] ensurepip 失败: {e}")
+    stdout, _ = await _run_pip(python_exec, ["--version"])
+    return "pip" in stdout.lower()
+
+
 async def _rebuild_maid_env(reason: str) -> None:
     logger.warning(f"[Maid] 检测到虚拟环境不可用，将重建：{reason}")
     if os.path.exists(MAID_VENV_DIR):
         await asyncio.to_thread(shutil.rmtree, MAID_VENV_DIR, onerror=_handle_rmtree_error)
     await _create_maid_env()
+
+
+def _read_venv_version(venv_dir: str) -> str:
+    """读取 pyvenv.cfg 记录的 Python 版本，用于判断能否原地升级修复。"""
+    cfg_path = os.path.join(venv_dir, "pyvenv.cfg")
+    if not os.path.exists(cfg_path):
+        return ""
+    try:
+        with open(cfg_path, "r", encoding="utf-8", errors="replace") as f:
+            for line in f:
+                key, sep, value = line.partition("=")
+                if sep and key.strip().lower() == "version":
+                    return value.strip()
+    except Exception:
+        return ""
+    return ""
+
+
+async def _upgrade_maid_env(reason: str) -> bool:
+    """原地修复：重新生成 bin/ 与 pyvenv.cfg，保留已安装的 site-packages。
+
+    典型场景是环境从别的机器/路径拷来，pyvenv.cfg 里的 home 失效、bin/pip 的 shebang
+    指向不存在的解释器。只有 Python 版本一致时才能复用旧包，否则直接重建。
+    """
+    current = f"{sys.version_info.major}.{sys.version_info.minor}"
+    venv_version = _read_venv_version(MAID_VENV_DIR)
+    if not venv_version.startswith(current):
+        return False
+
+    logger.warning(f"[Maid] 尝试原地修复虚拟环境（保留已装依赖）：{reason}")
+    try:
+        await asyncio.to_thread(
+            venv.EnvBuilder(with_pip=True, upgrade=True, clear=False).create,
+            MAID_VENV_DIR,
+        )
+    except Exception as e:
+        logger.warning(f"[Maid] 原地修复失败: {e}")
+        return False
+
+    usable, why = await _is_maid_env_usable(_get_maid_python_exec())
+    if not usable:
+        logger.warning(f"[Maid] 原地修复后环境仍不可用: {why}")
+        return False
+    logger.info("[Maid] 虚拟环境原地修复完成，已安装依赖保持不变。")
+    return True
 
 
 async def _ensure_maid_env() -> str:
@@ -85,7 +207,10 @@ async def _ensure_maid_env() -> str:
     else:
         usable, reason = await _is_maid_env_usable(python_exec)
         if not usable:
-            await _rebuild_maid_env(reason)
+            if not await _upgrade_maid_env(reason):
+                await _rebuild_maid_env(reason)
+        elif not await _repair_maid_pip(python_exec):
+            await _rebuild_maid_env("环境中没有可用的 pip")
 
     return python_exec
 
@@ -118,21 +243,13 @@ async def _ensure_skill_deps(script_path: str, python_exec: str):
     if not third_party:
         return
 
-    pip_exec = os.path.join(os.path.dirname(python_exec), "pip.exe" if os.name == 'nt' else "pip")
-
+    pip_list_out, pip_list_err = await _run_pip(python_exec, ["list", "--format=json"])
     try:
-        proc = await asyncio.create_subprocess_exec(
-            pip_exec, "list", "--format=json",
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE
-        )
-        stdout, _ = await proc.communicate()
-        if proc.returncode == 0:
-            installed_pkgs = {item["name"].lower() for item in json.loads(stdout.decode('utf-8'))}
-        else:
-            installed_pkgs = set()
+        installed_pkgs = {item["name"].lower() for item in json.loads(pip_list_out or "[]")}
     except Exception:
         installed_pkgs = set()
+        if pip_list_err.strip():
+            logger.warning(f"[Maid] 无法读取环境已安装包列表: {pip_list_err.strip().splitlines()[-1]}")
 
     aliases = {"cv2": "opencv-python", "bs4": "beautifulsoup4", "pil": "pillow", "yaml": "pyyaml"}
 
@@ -146,12 +263,9 @@ async def _ensure_skill_deps(script_path: str, python_exec: str):
     if to_install:
         logger.info(f"[Maid] 自动为脚本补充安装环境依赖: {to_install}")
         try:
-            install_proc = await asyncio.create_subprocess_exec(
-                pip_exec, "install", *to_install,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE
-            )
-            await install_proc.communicate()
+            _, install_err = await _run_pip(python_exec, ["install", *to_install])
+            if "error" in install_err.lower():
+                logger.warning(f"[Maid] 依赖安装可能失败: {install_err.strip().splitlines()[-1]}")
         except Exception as e:
             logger.error(f"[Maid] 自动安装依赖异常: {e}")
 
@@ -351,28 +465,17 @@ async def run_skill(name):
 async def install_package(pkg):
     try:
         python_exec = await _ensure_maid_env()
-        pip_exec = os.path.join(os.path.dirname(python_exec), "pip.exe" if os.name == 'nt' else "pip")
+        if not await _repair_maid_pip(python_exec):
+            return "安装异常: 专属虚拟环境中没有可用的 pip（自动修复失败）"
 
-        check_proc = await asyncio.create_subprocess_exec(
-            pip_exec, "show", pkg,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE
-        )
-        await check_proc.communicate()
-        if check_proc.returncode == 0:
+        check_stdout, _ = await _run_pip(python_exec, ["show", pkg])
+        if check_stdout.strip():
             return f"成功：依赖包 {pkg} 已经安装过，无需重复安装。"
 
-        install_proc = await asyncio.create_subprocess_exec(
-            pip_exec, "install", pkg,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE
-        )
-        stdout, stderr = await install_proc.communicate()
-
-        if install_proc.returncode == 0:
+        stdout, stderr = await _run_pip(python_exec, ["install", pkg])
+        if "error" not in stderr.lower() and stdout.strip():
             return f"成功安装依赖包: {pkg}"
-        else:
-            return f"安装失败: {_decode_process_output(stderr)}"
+        return f"安装失败: {stderr or stdout}"
     except Exception as e:
         return f"安装异常: {str(e)}"
 
