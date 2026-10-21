@@ -183,6 +183,15 @@ class ModelConfig:
     vision_download_timeout: float = config_field(
         15.0, comment="入站图片下载超时秒数", section="model"
     )
+    image_prefetch_enabled: bool = config_field(
+        True, comment="收到消息即后台预取图片（下载+理解），缩短回复延迟", section="model"
+    )
+    image_prefetch_ttl: float = config_field(
+        60.0, comment="图片预取结果缓存秒数（超过则丢弃重取）", section="model"
+    )
+    image_prefetch_max_entries: int = config_field(
+        64, comment="图片预取缓存条目上限", section="model"
+    )
     image_gen: str = config_field(
         "wan2.7-image",
         comment="图像生成模型",
@@ -690,6 +699,21 @@ class Config:
     def BACKUP_NATIVE_VISION_ENABLED(self) -> bool:
         """备用模型是否原生接收普通图片。"""
         return self.model.backup_native_vision_enabled
+
+    @property
+    def IMAGE_PREFETCH_ENABLED(self) -> bool:
+        """收到消息即后台预取图片（下载+理解）"""
+        return self.model.image_prefetch_enabled
+
+    @property
+    def IMAGE_PREFETCH_TTL(self) -> float:
+        """图片预取结果缓存秒数"""
+        return self.model.image_prefetch_ttl
+
+    @property
+    def IMAGE_PREFETCH_MAX_ENTRIES(self) -> int:
+        """图片预取缓存条目上限"""
+        return self.model.image_prefetch_max_entries
 
     @property
     def VISION_MODEL(self) -> str:

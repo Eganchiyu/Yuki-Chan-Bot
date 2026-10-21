@@ -44,6 +44,7 @@ YukiV6/
 │   │   └── manager.py         # 表情包学习与 RLHF
 │   └── vision/                # 视觉处理
 │       ├── processor.py       # 图片下载/压缩/转写（VLM）
+│       ├── prefetch.py        # 入站图片预取（入队即后台下载理解）
 │       ├── image_store.py     # 近期图片索引与原生视觉附件引用
 │       ├── cache.py           # 缓存管理
 │       └── utils.py           # 工具函数
@@ -333,12 +334,19 @@ maid_task_queue: asyncio.Queue     # 小女仆任务队列
 - `backup_native_vision_enabled`：备用模型是否支持原生图片，否则降级为文本转写
 - `native_vision_max_images` / `native_vision_history_turns`：单次张数与保留轮数
 - `native_vision_max_size` / `native_vision_quality`：原生图片压缩参数
+- `image_prefetch_enabled` / `image_prefetch_ttl` / `image_prefetch_max_entries`：入站图片预取开关、结果缓存秒数与条目上限
 
 **数据流**：
 ```
 普通图片 → 下载登记（轻量附件引用）→ 请求前渲染 imageUrl 图块 → 主模型
 表情包   → VLM 转写 → [表情:描述] 纯文本 → 主模型
 ```
+
+**入站预取**（`prefetch.py`）：消息入队（`SessionPipeline.enqueue_message`）时即为
+每张图片起后台任务，提前完成下载与视觉处理；管线 normalize 阶段与工具链待合并消息
+通过 `resolve_image()` 复用同一结果，不再重复下载。按 URL + 是否表情包去重，
+结果带 TTL（`model.image_prefetch_ttl`）；`model.image_prefetch_enabled=false` 时
+退回原有同步处理。预取缓存挂在共享的 `MemeProcessor._prefetch` 上。
 
 **边界**：聊天历史只持久化附件引用，不写入 Base64；索引过期或身份不匹配时按“图片已过期”处理，避免串图。
 

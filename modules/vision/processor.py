@@ -17,6 +17,18 @@ from utils.logger import get_logger
 logger = get_logger("vision_processor")
 
 
+def _clean_description(analysis) -> str:
+    """规范化模型返回的描述文本；非字符串或空白一律视为空。"""
+    if not isinstance(analysis, str):
+        return ""
+    return analysis.strip().replace("\n", " ").replace("\r", "").strip()
+
+
+def _valid_description(cached) -> bool:
+    """缓存里的描述必须是非空字符串才算命中，空串是历史脏数据。"""
+    return isinstance(cached, str) and bool(cached.strip())
+
+
 class MemeProcessor:
     def __init__(self, image_store=None):
         from utils.llm_client import vision_chat as _vision_chat
@@ -24,6 +36,9 @@ class MemeProcessor:
         self.semaphore = asyncio.Semaphore(cfg.MAX_CONCURRENT_MEME)
         self._vision_chat = _vision_chat
         self.image_store = image_store
+        # 入站图片预取缓存：{key: {"task": asyncio.Task, "created": float}}，
+        # 由 modules/vision/prefetch.py 维护，供管线主路径与工具链复用。
+        self._prefetch = {}
 
     @staticmethod
     def get_image_hash(image_data):
@@ -84,6 +99,21 @@ class MemeProcessor:
             return True
         return False
 
+    @staticmethod
+    def _no_thinking_kwargs() -> dict:
+        """DeepSeek 系推理模型的关思考参数。
+
+        描述任务只需十几个字，推理模型不关思考时 max_tokens 会被
+        reasoning_content 吃光、content 返回空串（finish_reason=length），
+        表现为「识别结果: 」为空。只在 DeepSeek 端点上加，避免其它
+        视觉端点因未知参数报 400。
+        """
+        if not getattr(cfg, "DISABLE_THINKING", False):
+            return {}
+        if "deepseek" not in (cfg.IMAGE_PROCESS_API_URL or "").lower():
+            return {}
+        return {"reasoning_effort": "none"}
+
     @retry(
         stop=stop_after_attempt(3),
         wait=wait_exponential(multiplier=2, min=4, max=60),
@@ -107,7 +137,8 @@ class MemeProcessor:
                 messages=messages,
                 model=cfg.VISION_MODEL,
                 max_tokens=50,
-                temperature=0.75
+                temperature=0.75,
+                **self._no_thinking_kwargs(),
             )
 
         # 兼容降级：直接走原始 HTTP 请求
@@ -128,7 +159,8 @@ class MemeProcessor:
                 }
             ],
             "max_tokens": 50,
-            "temperature": 0.75
+            "temperature": 0.75,
+            **self._no_thinking_kwargs(),
         }
         async with aiohttp.ClientSession(
             connector=create_tcp_connector(),
@@ -138,7 +170,7 @@ class MemeProcessor:
                 logger.debug(f"[DEBUG] 响应状态码: {resp.status}")
                 if resp.status == 200:
                     result = await resp.json()
-                    return result["choices"][0]["message"]["content"]
+                    return result["choices"][0]["message"].get("content") or ""
                 else:
                     text = await resp.text()
                     logger.debug(f"[DEBUG] 错误响应: {text}")  # 看看具体错误
@@ -185,14 +217,17 @@ class MemeProcessor:
         """转写已下载的图片，供不支持视觉的备用模型按需降级。"""
         img_hash = self.get_image_hash(content)
         cached = self.cache.get(img_hash)
-        if cached:
+        if _valid_description(cached):
             return cached
         b64_data = self.compress_image(content)
         if not b64_data:
             return "未知图片"
         async with self.semaphore:
             analysis = await self.call_api(b64_data)
-        clean_analysis = analysis.strip().replace("\n", " ").replace("\r", "")
+        clean_analysis = _clean_description(analysis)
+        if not clean_analysis:
+            logger.warning("[MemeCache] 视觉模型返回空描述（按未知图片处理，不写缓存）")
+            return "未知图片"
         self.cache.set(img_hash, clean_analysis)
         self.cache.save()
         return clean_analysis
@@ -207,7 +242,7 @@ class MemeProcessor:
         cache_key = f"url:{img_url}"
 
         cached = self.cache.get(cache_key)
-        if cached:
+        if _valid_description(cached):
             logger.debug(f"[MemeCache] 命中URL缓存: {cached}")
             return {"description": cached, "index": None}
 
@@ -230,7 +265,7 @@ class MemeProcessor:
 
             # 检查哈希缓存
             cached = self.cache.get(img_hash)
-            if cached:
+            if _valid_description(cached):
                 logger.debug(f"[MemeCache] 命中哈希缓存: {cached}")
                 return {"description": cached, "index": img_index}
 
@@ -244,7 +279,12 @@ class MemeProcessor:
                 analysis = await self.call_api(b64_data)
 
             logger.debug(f"[Meme Understanding] 识别结果: {analysis}")
-            clean_analysis = analysis.strip().replace('\n', ' ').replace('\r', '')
+            clean_analysis = _clean_description(analysis)
+
+            # 空描述绝不写缓存：否则同一张图在缓存有效期内永远识别为空
+            if not clean_analysis:
+                logger.warning("[MemeCache] 视觉模型返回空描述（按未知图片处理，不写缓存）")
+                return {"description": "未知图片/表情", "index": img_index}
 
             # 保存到缓存
             self.cache.set(img_hash, clean_analysis)

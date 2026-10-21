@@ -35,6 +35,8 @@
 - 新增 `model.backup_native_vision_enabled`：主线路失败切备用时，若备用模型不支持视觉，按需把图片附件转写为文本再发送，避免备用线路 400
 - 新增原生视觉限额配置：`native_vision_max_images`（单次张数）、`native_vision_history_turns`（保留轮数）、`native_vision_max_size` / `native_vision_quality`（压缩参数）与图片下载大小/超时限制
 - 新增 `docs/android-bridge-plan.md`：评估 Yuki 远程访问主人手机 adb（无 root）的可行性，明确 shell 级权限边界、端口漂移补偿方案，选型 Termux 自连 + SSH 中继 + Tailscale 架构，并给出分阶段路线与安全体系
+- 新增入站图片预取 `modules/vision/prefetch.py`：`SessionPipeline.enqueue_message()` 收到带图消息时立即后台下载并做视觉处理，把下载与图像理解的耗时从「开始回复」的关键路径前置到防抖等待期间；管线 normalize 阶段与工具链待合并消息经 `resolve_image()` 复用同一结果，同一 URL（区分表情包/普通图片）只下载理解一次，结果按 `model.image_prefetch_ttl` 过期、按 `model.image_prefetch_max_entries` 限量
+- 新增图片预取配置：`model.image_prefetch_enabled`（默认开启，关闭后退回原有同步处理）、`image_prefetch_ttl`（默认 60 秒）、`image_prefetch_max_entries`（默认 64）
 
 ### 变更
 - 日志降噪：`websockets` 纳入 `NOISY_NAMESPACES`（逐帧收发与 keepalive ping/pong 压到 WARNING，实测占单日日志一半以上）；`VERBOSE_NAMESPACES` 修正为实际 logger 名（原 `protocol`/`listener`/`modules.napcat` 与真实命名不符，等于空转）

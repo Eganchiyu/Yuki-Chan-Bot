@@ -11,6 +11,7 @@ from typing import Any
 from config import cfg
 from core.reply_format import clean_visible_reply
 from modules.debug.context_snapshot import PIPELINE_STAGES, context_snapshot_store
+from modules.vision.prefetch import prefetch_images, resolve_image
 from utils.logger import get_logger
 from utils.paths import normalize_stored_path
 
@@ -104,6 +105,17 @@ class SessionPipeline:
             self._chat_locks[chat_id] = asyncio.Lock()
         return self._chat_locks[chat_id]
 
+    def _schedule_image_prefetch(self, content: str):
+        """入队阶段就为消息中的图片起后台预取任务，不阻塞消息缓冲。"""
+        if not cfg.IMAGE_PREFETCH_ENABLED or not self.meme_processor or not content:
+            return
+        try:
+            _, images_info = self.meme_processor.extract_urls_from_text(content)
+        except Exception as exc:
+            logger.debug(f"[ImagePrefetch] 提取图片失败，跳过预取: {exc}")
+            return
+        prefetch_images(self.meme_processor, images_info)
+
     # (保留原本的 _mark_stage 和 _update_snapshot 不变)
     def _mark_stage(self, context, stage_name, status="done", error=None):
         snapshot_id = context.get("debug_snapshot_id")
@@ -163,6 +175,8 @@ class SessionPipeline:
             if not merged:
                 buffer.append(incoming_message.to_dict())
             self.last_msg_time[chat_id_str] = time.time()
+            # 消息一到就后台预取图片，把下载与图像理解挪出回复关键路径
+            self._schedule_image_prefetch(incoming_message.content)
 
         # 2. 本轮是否需要跳过防抖：被直接叫到（名字/被 @）时上游会带
         #    debounce_flag=False + force_reply=True，这里把状态锁住供定时器读取
@@ -321,15 +335,9 @@ class SessionPipeline:
         modified_text, images_info = self.meme_processor.extract_urls_from_text(combined_text)
         native_images = []
         if images_info:
-            # 并发执行所有图片理解
+            # 优先复用入队时已启动的预取任务，未命中才同步下载/理解
             async def understand_image(img):
-                url = img["url"]
-                is_meme = img["is_meme"]
-                if cfg.LLM_NATIVE_VISION_ENABLED and not is_meme and self.image_store:
-                    result = await self.meme_processor.register_from_url(url)
-                    if result.get("attachment"):
-                        return img, {**result, "native": True}
-                result = await self.meme_processor.understand_from_url(url, is_meme=is_meme)
+                result = await resolve_image(self.meme_processor, img["url"], img["is_meme"])
                 return img, result
 
             tasks = [understand_image(img) for img in images_info]
@@ -339,23 +347,32 @@ class SessionPipeline:
             for img, result in results:
                 is_meme = img["is_meme"]
                 desc = result.get("description", "未知图片/表情") if isinstance(result, dict) else result
+                desc = str(desc or "").strip()
                 idx = result.get("index") if isinstance(result, dict) else None
                 idx_tag = f"[img:{idx}]" if idx else ""
+                kind = "表情" if is_meme else "图片"
 
                 if result.get("native"):
                     attachment = result.get("attachment")
                     if attachment:
                         native_images.append(attachment)
                     understood_contents.append(f"[图片]{idx_tag}")
-                elif is_meme and desc:
-                    understood_contents.append(f"[表情:{desc}]{idx_tag}")
-                elif not is_meme and desc:
-                    understood_contents.append(f"[图片:{desc}]{idx_tag}")
-                    logger.debug(f"[Pipeline_meme]收到[图片:{desc}]{idx_tag}")
+                elif desc:
+                    understood_contents.append(f"[{kind}:{desc}]{idx_tag}")
+                    if not is_meme:
+                        logger.debug(f"[Pipeline_meme]收到[{kind}:{desc}]{idx_tag}")
+                else:
+                    # 识别为空/失败时也必须占掉一个占位符，否则占位符会原样漏进模型上下文
+                    understood_contents.append(f"[{kind}:未知图片/表情]{idx_tag}")
 
             combined_text = modified_text
             for content in understood_contents:
                 combined_text = combined_text.replace("[图片占位符]", content, 1)
+
+        # 兜底清扫：无论上游有没有解析出图片，都不允许占位符漏给模型
+        if "[图片占位符]" in combined_text:
+            logger.warning("[Pipeline] 检测到未替换的图片占位符，已降级为 [图片]")
+            combined_text = combined_text.replace("[图片占位符]", "[图片]")
 
         combined_text = await self.sender.parse_cq_codes(combined_text, chat_id)
         combined_text = combined_text.replace("\n", " | ").strip()

@@ -1,4 +1,5 @@
 # core/engine_reply.py
+import asyncio
 import re
 from typing import Any, Callable, Optional
 
@@ -12,6 +13,7 @@ from core.reply_format import (
 )
 from core.toolchain import ToolCallManager, ToolContext, ToolRuntime
 from modules.debug.context_snapshot import context_snapshot_store
+from modules.vision.prefetch import resolve_image
 from utils.llm_client import llm_chat, llm_chat_raw
 from utils.logger import get_logger
 
@@ -66,16 +68,15 @@ class EngineReplyService:
         return normalize_reply_markup(raw_content), visible
 
     async def _resolve_pending_image(self, meme_processor, img):
-        """工具调用期间新增图片，按与主管线一致的开关处理。"""
+        """工具调用期间新增图片，按与主管线一致的开关处理，并复用预取结果。"""
         url, is_meme = img["url"], img["is_meme"]
-        if cfg.LLM_NATIVE_VISION_ENABLED and not is_meme and self.get_image_store():
-            result = await meme_processor.register_from_url(url)
-            if result.get("attachment"):
-                return f"[图片]{self._idx_tag(result.get('index'))}", result["attachment"]
-        result = await meme_processor.understand_from_url(url, is_meme=is_meme)
+        result = await resolve_image(meme_processor, url, is_meme)
+        idx_tag = self._idx_tag(result.get("index"))
+        if result.get("native"):
+            return f"[图片]{idx_tag}", result.get("attachment")
         desc = result.get("description") or "未知图片/表情"
         kind = "表情" if is_meme else "图片"
-        return f"[{kind}:{desc}]{self._idx_tag(result.get('index'))}", None
+        return f"[{kind}:{desc}]{idx_tag}", None
 
     @staticmethod
     def _idx_tag(index):
