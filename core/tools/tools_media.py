@@ -154,8 +154,8 @@ async def generate_image_tool(context, prompt, size="1024*1024"):
 
     base_url = cfg.IMAGE_GEN_URL
     model = cfg.IMAGE_GEN_MODEL
-    # 兼容 "1024x1024" → "1024*1024"
-    size = size.replace("x", "*").replace("X", "*")
+    # OpenAI 兼容接口要求 WIDTHxHEIGHT 格式，非 gpt-image 的旧模型可能用 "1024*1024"
+    size = size.replace("*", "x").replace("X", "x")
 
     # wan 系列走 DashScope 原生 API，其他走 OpenAI 兼容接口
     use_native = model.startswith("wan")
