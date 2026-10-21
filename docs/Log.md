@@ -75,3 +75,14 @@
 - `maid_venv/bin/python` → 3.11.15，`python -m pip --version` → pip 24.0，197 个旧依赖保留。
 - 端到端：`_ensure_skill_deps` 对 `import paramiko` 的脚本自动装了 paramiko 5.1.0，脚本执行返回 0。
 - 需重启 `main.py` 让新代码生效。
+
+## 2026-10-21 仓库接回 GitHub（本地补齐 .git）
+
+- 本地目录原本没有 `.git`，代码与 `origin/main` 内容差异仅 7 个代码文件；
+  其余 220+ 差异是权限位 644→755（已设 `core.fileMode=false`）。
+- 已 `git init -b main`、`git remote add origin`、`git reset --mixed origin/main`，
+  并补回本地缺失的 18 个上游文件（`.gitignore`/`.python-version`/`.github`/`.trae`/docs/demo）。
+- 本地改动分为 4 个提交：vision 预取与占位符、maid 环境自愈、path/生图尺寸、docs。
+- 测试基线：`origin/main` 与本地各有 23 项环境性失败（缺依赖、真实 LLM 调用、终端宽度），
+  无新增回归。
+- 推送待机主提供凭据：`git push -u origin HEAD:fix/maid-env-vision-prefetch`。
