@@ -94,3 +94,5 @@ def _extract_json_from_mixed(text: str):
     return None
 
 # self-evolve 测试标记
+
+# e2e2闭环

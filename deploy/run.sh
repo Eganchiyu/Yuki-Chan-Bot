@@ -19,10 +19,16 @@ RW_DIRS=(
 
 docker rm -f "$NAME" >/dev/null 2>&1 || true
 
+# 以宿主 uid 运行：容器内写出的 staging/、logs/ 属主就是 asumi，
+# 宿主 supervisor 才能回写 result.json 并管理这些文件。
+mkdir -p "$ROOT/data/home"
+
 args=(
   run -d --name "$NAME"
   --restart unless-stopped
   --network host
+  --user "$(id -u):$(id -g)"
+  -e HOME=/app/data/home
   --label yuki.role=production
   -v "$ROOT:/app:ro"
   -v "$ROOT/models:/app/models:ro"

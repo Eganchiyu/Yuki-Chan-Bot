@@ -294,26 +294,33 @@ def handle_request(request_dir):
     summary = str(req.get("summary") or "未命名自改")[:120]
     needs_restart = any(classify_path(f["path"]) == "restricted" for f in files)
 
+    # 回滚基线 = 本次改动前的 HEAD（比 last_good 更准确：即使 last_good 未初始化也不会回错）
+    rc, base = sh(["git", "rev-parse", "HEAD"], cwd=ROOT)
+    if rc != 0:
+        return finish("apply_failed", f"无法读取当前 HEAD: {base}")
+    base = base.strip()
+    state["base_commit"] = base
+
     # 1) 先保命：改代码前快照记忆
     snap = snapshot_memory()
-    log(f"[{task_id}] 记忆快照: {snap or '(跳过)'}")
+    log(f"[{task_id}] 记忆快照: {snap or '(跳过)'} 基线: {base[:10]}")
 
     # 2) 应用 + 提交（先提交，失败才能 reset 回滚）
     ok, msg = apply_patch(request_dir, files)
     if not ok:
-        git_reset(state.get("last_good") or "HEAD")
+        git_reset(base)
         return finish("apply_failed", msg)
 
     ok, sha = git_commit(summary, task_id)
     if not ok:
-        git_reset(state.get("last_good") or "HEAD")
+        git_reset(base)
         return finish("apply_failed", f"git commit 失败: {sha}")
 
     # 3) 受限区改动必须过校验门
     if needs_restart:
         rc, out = sh(["bash", os.path.join(ROOT, "deploy", "verify.sh")], cwd=ROOT, timeout=1800)
         if rc != 0:
-            git_reset(state.get("last_good") or "HEAD")
+            git_reset(base)
             return finish("verify_failed", out[-2000:])
 
     # 4) 切换并探活
@@ -321,13 +328,11 @@ def handle_request(request_dir):
         ok, health = restart_container()
         if not ok:
             log(f"[{task_id}] 健康检查失败，开始回滚: {health}")
-            good = state.get("last_good")
-            if good:
-                git_reset(good)
-                ok2, health2 = restart_container()
-                if not ok2:
-                    return finish("health_failed", f"回滚后仍不健康，需人工介入: {health2}")
-            return finish("health_failed", f"新版本不健康已回滚: {health}")
+            git_reset(base)
+            ok2, health2 = restart_container()
+            if not ok2:
+                return finish("health_failed", f"回滚后仍不健康，需人工介入: {health2}；新版本错误: {health}")
+            return finish("health_failed", f"新版本不健康，已回滚到 {base[:10]}: {health}")
 
     # 5) 成功
     state["last_good"] = sha
