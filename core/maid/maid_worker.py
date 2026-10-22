@@ -1,5 +1,6 @@
 import asyncio
 
+from core.maid.maid_approval import build_approver
 from core.maid.maid_boundary import build_maid_report
 from core.maid.maid_common import logger
 from core.maid.maid_loop import maid_evolution_loop
@@ -14,7 +15,15 @@ async def maid_worker(engine, yuki_state, sender, history_manager):
         mode = task.get("mode", "group")
         yuki_state.maid_current_tasks[chat_id] = goal
         try:
-            result_dict = await maid_evolution_loop(user_goal=goal, chat_id=chat_id)
+            approver = build_approver(
+                yuki_state=yuki_state,
+                history_manager=history_manager,
+                chat_id=chat_id,
+                mode=mode,
+                goal=goal,
+                gateway=getattr(engine, "sender", None) or sender,
+            )
+            result_dict = await maid_evolution_loop(user_goal=goal, chat_id=chat_id, approver=approver)
             report = build_maid_report(goal, result_dict)
             history_manager.append_session_message(chat_id, "user", report, is_maid_report=True)
             while not getattr(engine, "napcat_online", True):

@@ -57,7 +57,7 @@ async def call_cloud_maid_robust(messages):
     return clean_json_output(result)
 
 
-async def maid_evolution_loop(user_goal: str, chat_id: str = None):
+async def maid_evolution_loop(user_goal: str, chat_id: str = None, approver=None):
     task_id = datetime.now().strftime("%Y%m%d_%H%M%S")
     today_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     log_file = f"{LOGS_DIR}/trace_{task_id}.md"
@@ -175,7 +175,14 @@ async def maid_evolution_loop(user_goal: str, chat_id: str = None):
                 timeout = args.get("timeout", TERMINAL_DEFAULT_TIMEOUT)
                 allow_write = bool(args.get("allow_write", True))
                 logger.info(f"[Maid] 终端执行: {command} (cwd={cwd or os.getcwd()}, allow_write={allow_write})")
-                res = await terminal_command_maid(command=command, cwd=cwd, timeout=timeout, allow_write=allow_write)
+                res = await terminal_command_maid(
+                    command=command,
+                    cwd=cwd,
+                    timeout=timeout,
+                    allow_write=allow_write,
+                    approver=approver,
+                    thought=thought,
+                )
             elif tool == "read_skill":
                 skill_name = args.get('name')
                 logger.info(f"[Maid] 正在查阅技能源码: {skill_name}")

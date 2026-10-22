@@ -8,6 +8,7 @@ import subprocess
 import sys
 import venv
 
+from core.maid.maid_approval import classify_command
 from core.maid.maid_common import (
     MAID_VENV_DIR,
     SKILLS_DIR,
@@ -298,45 +299,30 @@ async def _kill_process_tree(process) -> None:
         pass
 
 
-def _is_terminal_command_allowed(command: str, allow_write: bool = False) -> tuple[bool, str]:
-    """小女仆终端的轻量安全网。外层还有 LLM 把关，这里只拦明显危险命令。"""
-    cmd = (command or "").strip()
-    if not cmd:
-        return False, "命令为空"
-    lowered = cmd.lower()
-
-    blocked_keywords = [
-        "format ", "format.com", "shutdown", "restart-computer", "stop-computer",
-        "bcdedit", "diskpart", "reg delete", "reg add", "takeown", "icacls",
-        "cipher /w", "taskkill /f", "del /f /s /q c:", "rmdir /s /q c:",
-        "rm -rf /", "rm -rf /*", ":(){:|:&};:",
-    ]
-    for keyword in blocked_keywords:
-        if keyword in lowered:
-            return False, f"命令包含高风险片段：{keyword}"
-
-    if not allow_write:
-        write_patterns = [
-            ">", ">>", " del ", " erase ", " rmdir ", " rd ", "rm ", "mv ", "move ",
-            "copy ", "xcopy ", "robocopy ", "mkdir ", "md ", "ren ", "rename ",
-            "pip install", "npm install", "pnpm install", "yarn add", "cargo install",
-            "git commit", "git push", "git reset", "git clean",
-        ]
-        padded = f" {lowered} "
-        for pattern in write_patterns:
-            if pattern in padded or pattern in lowered:
-                return False, f"该命令疑似会修改系统/文件/依赖：{pattern.strip()}。如任务确实需要，请用 allow_write=true。"
-
+def _is_terminal_command_allowed(command: str, allow_write: bool = True) -> tuple[bool, str]:
+    """兼容旧接口的判定：只返回硬拦截结果；可疑命令交由 approver 静默判定。"""
+    verdict, reason = classify_command(command)
+    if verdict == "block":
+        return False, f"命令被硬拦截：{reason}"
     return True, ""
 
 
-async def terminal_command_maid(command: str, cwd: str = None, timeout: int = TERMINAL_DEFAULT_TIMEOUT, allow_write: bool = True) -> str:
+async def terminal_command_maid(
+    command: str,
+    cwd: str = None,
+    timeout: int = TERMINAL_DEFAULT_TIMEOUT,
+    allow_write: bool = True,
+    approver=None,
+    thought: str = "",
+) -> str:
     """
-    受限终端工具：用于查看环境、运行短命令、执行项目脚本。
-    默认允许常规文件写入、依赖安装和 git 操作；仍会拦截明显危险命令。
+    终端工具：用于查看环境、运行短命令、执行项目脚本。
+
+    硬拦截只针对不可逆命令；命中启发式可疑规则时先交给 approver（Yuki）静默判定，
+    没有 approver 的调用路径直接放行，避免 CLI 调试被卡住。
     """
-    allowed, reason = _is_terminal_command_allowed(command, allow_write=allow_write)
-    if not allowed:
+    verdict, reason = classify_command(command)
+    if verdict == "block":
         return json.dumps({"ok": False, "error": f"终端命令被安全网拦截：{reason}", "command": command}, ensure_ascii=False)
 
     try:
@@ -348,6 +334,24 @@ async def terminal_command_maid(command: str, cwd: str = None, timeout: int = TE
     workdir = os.path.abspath(cwd or os.getcwd())
     if not os.path.exists(workdir) or not os.path.isdir(workdir):
         return json.dumps({"ok": False, "error": f"cwd 不存在或不是目录：{workdir}"}, ensure_ascii=False)
+
+    if verdict == "ask":
+        if approver is None:
+            logger.info(f"[Maid] 可疑命令无 approver，直接放行：{command}")
+        else:
+            try:
+                approved, why = await approver(command, workdir, thought)
+            except Exception as e:
+                approved, why = False, f"授权判定异常：{e}"
+            if not approved:
+                logger.warning(f"[Maid] 命令未获授权：{command}（{why}）")
+                return json.dumps({
+                    "ok": False,
+                    "error": f"命令未获授权，未执行：{why}",
+                    "command": command,
+                    "approval": "denied",
+                }, ensure_ascii=False)
+            logger.info(f"[Maid] 命令获授权：{command}（{why}）")
 
     try:
         process = await asyncio.create_subprocess_shell(
