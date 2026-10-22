@@ -181,13 +181,22 @@ async def maid_evolution_loop(user_goal: str, chat_id: str = None, approver=None
                 res = write_temp_skill(skill_name, clean_code_block(args.get('code', '')))
             elif tool == "write_and_run_temp_skill":
                 skill_name = args.get('name')
-                res = await write_and_run_temp_skill(skill_name, clean_code_block(args.get('code', '')))
+                res = await write_and_run_temp_skill(
+                    skill_name,
+                    clean_code_block(args.get('code', '')),
+                    timeout=args.get('timeout'),
+                    interpreter=args.get('interpreter'),
+                )
             elif tool == "write_skill":
                 # 兼容旧提示词/旧模型输出：现在统一写入临时技能，避免任务中随手污染固化 skills。
                 skill_name = args.get('name')
                 res = write_temp_skill(skill_name, clean_code_block(args.get('code', '')))
             elif tool == "run_skill":
-                res = await run_skill(args.get('name'))
+                res = await run_skill(
+                    args.get('name'),
+                    timeout=args.get('timeout'),
+                    interpreter=args.get('interpreter'),
+                )
             elif tool == "install_package":
                 pkg_name = args.get('pkg') or args.get('pkg_name')
                 logger.info(f"[Maid] 正在安装依赖: {pkg_name}")

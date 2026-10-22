@@ -21,6 +21,25 @@ from core.maid.maid_common import (
 )
 
 
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+SKILL_DEFAULT_TIMEOUT = 120
+SKILL_MAX_TIMEOUT = 600
+
+
+def _normalize_skill_timeout(timeout) -> int:
+    try:
+        timeout = int(timeout or SKILL_DEFAULT_TIMEOUT)
+    except Exception:
+        timeout = SKILL_DEFAULT_TIMEOUT
+    return max(5, min(timeout, SKILL_MAX_TIMEOUT))
+
+
+def _normalize_interpreter(interpreter) -> str:
+    """yuki：用主进程解释器（项目依赖齐全）；maid：用隔离的 maid_venv。"""
+    return "yuki" if str(interpreter or "").strip().lower() in {"yuki", "main", "system"} else "maid"
+
+
 def _get_maid_python_exec() -> str:
     """获取小女仆专属虚拟环境的 Python 执行路径。"""
     if os.name == 'nt':
@@ -198,9 +217,17 @@ async def _upgrade_maid_env(reason: str) -> bool:
     return True
 
 
+_maid_env_ready = False
+
+
 async def _ensure_maid_env() -> str:
     """获取小女仆专属虚拟环境的 Python 执行路径。如果不存在或损坏则自动创建。"""
+    global _maid_env_ready
     python_exec = _get_maid_python_exec()
+
+    # 本次进程内已确认可用就不再重复起子进程自检（每次约 1s）
+    if _maid_env_ready and os.path.exists(python_exec):
+        return python_exec
 
     if not os.path.exists(python_exec):
         logger.info("[Maid] 检测到无虚拟环境。")
@@ -213,7 +240,28 @@ async def _ensure_maid_env() -> str:
         elif not await _repair_maid_pip(python_exec):
             await _rebuild_maid_env("环境中没有可用的 pip")
 
+    _maid_env_ready = True
     return python_exec
+
+
+_pip_list_cache = {}
+
+
+async def _get_installed_packages(python_exec: str) -> set:
+    """缓存已安装包列表，避免每次跑脚本都花 0.7s 调 pip list。"""
+    cached = _pip_list_cache.get(python_exec)
+    if cached is not None:
+        return cached
+
+    pip_list_out, pip_list_err = await _run_pip(python_exec, ["list", "--format=json"])
+    try:
+        installed = {item["name"].lower() for item in json.loads(pip_list_out or "[]")}
+    except Exception:
+        installed = set()
+        if pip_list_err.strip():
+            logger.warning(f"[Maid] 无法读取环境已安装包列表: {pip_list_err.strip().splitlines()[-1]}")
+    _pip_list_cache[python_exec] = installed
+    return installed
 
 
 async def _ensure_skill_deps(script_path: str, python_exec: str):
@@ -244,13 +292,7 @@ async def _ensure_skill_deps(script_path: str, python_exec: str):
     if not third_party:
         return
 
-    pip_list_out, pip_list_err = await _run_pip(python_exec, ["list", "--format=json"])
-    try:
-        installed_pkgs = {item["name"].lower() for item in json.loads(pip_list_out or "[]")}
-    except Exception:
-        installed_pkgs = set()
-        if pip_list_err.strip():
-            logger.warning(f"[Maid] 无法读取环境已安装包列表: {pip_list_err.strip().splitlines()[-1]}")
+    installed_pkgs = set(await _get_installed_packages(python_exec))
 
     aliases = {"cv2": "opencv-python", "bs4": "beautifulsoup4", "pil": "pillow", "yaml": "pyyaml"}
 
@@ -264,9 +306,16 @@ async def _ensure_skill_deps(script_path: str, python_exec: str):
     if to_install:
         logger.info(f"[Maid] 自动为脚本补充安装环境依赖: {to_install}")
         try:
-            _, install_err = await _run_pip(python_exec, ["install", *to_install])
+            _, install_err = await asyncio.wait_for(
+                _run_pip(python_exec, ["install", *to_install]), timeout=180
+            )
             if "error" in install_err.lower():
                 logger.warning(f"[Maid] 依赖安装可能失败: {install_err.strip().splitlines()[-1]}")
+            else:
+                installed_pkgs.update(name.lower() for name in to_install)
+                _pip_list_cache[python_exec] = installed_pkgs
+        except asyncio.TimeoutError:
+            logger.warning("[Maid] 自动安装依赖超时（180s），跳过")
         except Exception as e:
             logger.error(f"[Maid] 自动安装依赖异常: {e}")
 
@@ -482,16 +531,16 @@ def write_temp_skill(name, code):
     return f"草稿 {name} 已保存至临时工作区。若要立即验证，优先使用 write_and_run_temp_skill 一步完成。"
 
 
-async def write_and_run_temp_skill(name, code):
+async def write_and_run_temp_skill(name, code, timeout=SKILL_DEFAULT_TIMEOUT, interpreter="maid"):
     """写入临时技能并立即执行，减少 write_temp_skill -> run_skill 两轮决策浪费。"""
     write_res = write_temp_skill(name, code)
     if write_res.startswith("错误"):
         return write_res
-    run_res = await run_skill(name)
+    run_res = await run_skill(name, timeout=timeout, interpreter=interpreter)
     return f"{write_res}\n\n=== 立即执行结果 ===\n{run_res}"
 
 
-async def run_skill(name):
+async def run_skill(name, timeout=SKILL_DEFAULT_TIMEOUT, interpreter="maid"):
     # (修改一处逻辑) 优先去工作区找草稿，找不到再去技能区找固化技能
     temp_path = os.path.join(WORKSPACE_DIR, f"{name}.py")
     perm_path = os.path.join(SKILLS_DIR, f"{name}.py")
@@ -500,36 +549,59 @@ async def run_skill(name):
     if not os.path.exists(path):
         return f"找不到技能 '{name}'。"
 
+    timeout = _normalize_skill_timeout(timeout)
+    interpreter = _normalize_interpreter(interpreter)
+
     try:
-        import sys
-        python_exec = await _ensure_maid_env()
-        await _ensure_skill_deps(path, python_exec)
+        if interpreter == "yuki":
+            python_exec = sys.executable or "python"
+        else:
+            python_exec = await _ensure_maid_env()
+            await _ensure_skill_deps(path, python_exec)
 
         # 2. 使用异步子进程创建，避免阻塞整个事件循环
+        # 草稿脚本位于 workspace/，sys.path[0] 是它自己所在目录；把项目根塞进
+        # PYTHONPATH，模型才能直接 import config / utils / core 这些项目模块。
+        child_env = os.environ.copy()
+        existing = child_env.get("PYTHONPATH", "")
+        child_env["PYTHONPATH"] = PROJECT_ROOT + (os.pathsep + existing if existing else "")
+
         process = await asyncio.create_subprocess_exec(
             python_exec, path,
+            cwd=PROJECT_ROOT,
+            env=child_env,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             **(_new_session_kwargs()),
         )
 
         try:
-            stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=60)
+            stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=timeout)
         except (asyncio.TimeoutError, asyncio.exceptions.TimeoutError):
             # 超时则物理抹除整个进程树
             await _kill_process_tree(process)
-            return "错误：执行超时（60s）。物理进程已被强制终止。请检查代码是否出现阻塞等问题"
+            return (
+                f"错误：执行超时（{timeout}s）。物理进程已被强制终止。"
+                f"若任务本身更慢，请在 args 里提高 'timeout'（上限 {SKILL_MAX_TIMEOUT}s）。"
+            )
 
         stdout_res = _decode_process_output(stdout).strip()
         stderr_res = _decode_process_output(stderr).strip()
 
         if process.returncode == 0:
-            if not stdout_res:
+            if not stdout_res and not stderr_res:
                 return "执行成功，但没有任何输出（请确保代码内有 print 语句输出结果），且包含运行代码的主程序，如果没有请重写代码"
-            return f"执行成功！输出：\n{stdout_res}"
+            parts = [f"执行成功！输出：\n{stdout_res or '(无 stdout)'}"]
+            if stderr_res:
+                parts.append(f"[stderr]\n{stderr_res}")
+            return "\n\n".join(parts)
         else:
             error_msg = stderr_res if stderr_res else stdout_res
-            return f"代码执行失败 (ReturnCode: {process.returncode})\n报错详情：\n{error_msg}"
+            tail_lines = error_msg.splitlines()[-40:]
+            return (
+                f"代码执行失败 (ReturnCode: {process.returncode})\n"
+                f"报错详情（末 {len(tail_lines)} 行）：\n" + "\n".join(tail_lines)
+            )
 
     except Exception as e:
         # 这里会捕获到类似 'NoneType' 的报错并返回给 AI
