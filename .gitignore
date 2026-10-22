@@ -62,7 +62,9 @@ data/
 # 6. 项目运行时目录和日志
 # ============================================
 /yuki_memory/
-skills/
+# 技能是自进化的产物，必须进 git 才能追溯（准则第 10 条）。
+# 只忽略缓存，不忽略 .py/.md。
+skills/__pycache__/
 core/skills
 logs/
 core/tasks

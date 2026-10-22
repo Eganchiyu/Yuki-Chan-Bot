@@ -92,3 +92,5 @@ def _extract_json_from_mixed(text: str):
         except json.JSONDecodeError:
             continue
     return None
+
+# self-evolve 测试标记

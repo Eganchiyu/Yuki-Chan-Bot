@@ -1,0 +1,27 @@
+# 构建上下文裁剪：镜像只装依赖，代码与数据一律不进镜像。
+maid_venv/
+node_modules/
+models/
+data/
+logs/
+memory/
+yuki_memory/
+workspace/
+temp/
+temp_images/
+output/
+backups/
+staging/
+tasks/
+.git/
+__pycache__/
+**/__pycache__/
+*.pyc
+.github/
+modules/LiveYukiL2D/reference/
+modules/LiveYukiL2D/frontend/
+screenshots/
+gif_images/
+*.png
+*.jpg
+*.log

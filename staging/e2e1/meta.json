@@ -1,0 +1,11 @@
+{
+  "task_id": "e2e1",
+  "summary": "e2e 加注释测试",
+  "files": [
+    {
+      "path": "core/maid/maid_common.py"
+    }
+  ],
+  "sensitive": false,
+  "proposed_at": "2026-10-22T13:34:47"
+}

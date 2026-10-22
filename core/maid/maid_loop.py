@@ -19,6 +19,12 @@ from core.maid.maid_common import (
     _truncate_text,
 )
 from core.maid.maid_prompt import MAID_SYSTEM_PROMPT
+from core.maid.maid_selfevolve import (
+    propose_patch,
+    read_last_result,
+    request_self_reload,
+    verify_patch,
+)
 from core.maid.maid_runtime import (
     _clean_workspace,
     prepare_image_message,
@@ -299,6 +305,25 @@ async def maid_evolution_loop(user_goal: str, chat_id: str = None, approver=None
                 body = args.get("body", "")
                 logger.info(f"[Maid] 发送邮件: to={to}, subject={subject}")
                 res = await agently_send_email(to=to, subject=subject, body=body)
+            elif tool == "propose_patch":
+                logger.info("[Maid] 自改：写入候选补丁")
+                res = propose_patch(
+                    task_id,
+                    args.get("files"),
+                    summary=args.get("summary", ""),
+                )
+            elif tool == "verify_patch":
+                logger.info("[Maid] 自改：快速自检")
+                res = verify_patch(task_id)
+            elif tool == "request_self_reload":
+                logger.info("[Maid] 自改：请求生效")
+                res = request_self_reload(
+                    task_id,
+                    summary=args.get("summary", ""),
+                    reason=args.get("reason", ""),
+                )
+            elif tool == "read_evolution_result":
+                res = read_last_result(args.get("task_id"))
             elif tool == "finish":
                 reason = args.get('reason', '任务完成')
                 logger.info(f"[Maid] 任务达成: {reason}")

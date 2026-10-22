@@ -47,6 +47,7 @@ SENSITIVE_HINTS = ("yuki_memory", "chromadb", "embedding", "collection", "vector
 # ---------------------------------------------------------------- 限额
 MAX_PATCH_FILES = 3          # 单次 patch 文件数上限
 MAX_PATCH_ADDED_LINES = 200  # 单次 patch 净增行数上限
+MAX_PATCH_REMOVED_RATIO = 0.5  # 单个文件删掉超过原行数这个比例就拒绝（防误删整模块）
 MAX_EVOLVE_PER_HOUR = 3      # 每小时自改上限
 MAX_EVOLVE_PER_DAY = 10      # 每日自改上限
 COOLDOWN_AFTER_FAILURES = 2  # 连续失败几次进入冷却

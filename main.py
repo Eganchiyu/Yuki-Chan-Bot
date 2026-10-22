@@ -88,6 +88,38 @@ def warmup_groups(yuki, history_manager):
     logger.debug(f"已预载 {len(yuki.last_message_time)} 个群组到巡检名单")
 
 
+def is_dry_run() -> bool:
+    """试启动模式：只做初始化自检，不接管 NapCat，由 supervisor 看退出码判定。"""
+    return os.getenv("YUKI_DRY_RUN", "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def start_health_probe(components):
+    """启动 /health 探针并置就绪，供宿主 supervisor 判定「新代码真的活了」。"""
+    from utils.health_server import set_probe, set_ready, start_health_server
+
+    engine = components["engine"]
+    yuki = components["yuki"]
+
+    def _probe():
+        queue = getattr(yuki, "maid_task_queue", None)
+        try:
+            queued = queue.qsize() if queue is not None else 0
+        except Exception:
+            queued = 0
+        return {
+            "napcat_online": bool(getattr(engine, "napcat_online", False)),
+            "maid_queued": queued,
+            "maid_running": len(getattr(yuki, "maid_current_tasks", {}) or {}),
+        }
+
+    set_probe(_probe)
+    if not start_health_server():
+        logger.warning("[Health] 探针启动失败，supervisor 只能退回看日志判定存活")
+        return
+    set_ready(True, mode="dry_run" if is_dry_run() else "serve")
+    logger.info(f"[Health] 探针就绪: /health (port={os.getenv('YUKI_HEALTH_PORT', '8778')})")
+
+
 def start_context_debug_webui_if_enabled():
     """按环境变量在主进程内启动 Context Debug WebUI。"""
     import os
@@ -196,6 +228,10 @@ def _do_cleanup():
         stop_monitor_service()
     except Exception as e:
         logger.error(f"[Main] 停止监控服务时出错: {e}")
+    if is_dry_run():
+        # 试启动只读自检：不回写配置、不落历史，避免污染生产数据
+        logger.info("[Main] DRY_RUN 清理：跳过配置回写与历史落盘")
+        return
     try:
         save_config(cfg)
         logger.info("[Main] 配置已自动对齐保存")
@@ -251,7 +287,9 @@ if __name__ == "__main__":
     os.environ.setdefault("NO_PROXY", "127.0.0.1,localhost")
     atexit.register(_do_cleanup)
 
-    if not acquire_single_instance_lock():
+    if is_dry_run():
+        logger.info("[Main] DRY_RUN 模式：跳过单实例锁，使用独立数据目录做初始化自检")
+    elif not acquire_single_instance_lock():
         logger.critical(
             "[Main] 已有 Yuki 实例在运行（data/yuki.lock 被占用），本次启动中止。"
             "如需并行调试请设置 YUKI_ALLOW_MULTI_INSTANCE=1"
@@ -262,11 +300,19 @@ if __name__ == "__main__":
         components = initialize_components()
         session_pipeline = SessionPipeline(components, group_active_state)
         components["engine"].process_callback = main_process
-        start_context_debug_webui_if_enabled()
+        start_health_probe(components)
+        if not is_dry_run():
+            start_context_debug_webui_if_enabled()
 
         warmup_groups(components["yuki"], components["history_manager"])
 
         start_monitor_service()
+
+        if is_dry_run():
+            # 试启动门：初始化全部通过即算成功，不接管 NapCat、不消费消息
+            logger.info("[System] DRY_RUN 通过：初始化成功，跳过 NapCat 接管，退出码 0")
+            sys.exit(0)
+
         asyncio.run(run_runtime())
 
     except KeyboardInterrupt:
