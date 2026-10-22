@@ -54,6 +54,14 @@ MAX_RESTART_PER_HOUR = int(os.environ.get("YUKI_MAX_RESTART_PER_HOUR", 5))
 classify_path = _charter.classify_path
 is_sensitive = _charter.is_sensitive
 
+# 审查器同目录加载：宿主侧实现，容器内改不到
+_rspec = _iutil.spec_from_file_location(
+    "reviewer", os.path.join(os.path.dirname(os.path.abspath(__file__)), "reviewer.py")
+)
+_reviewer = _iutil.module_from_spec(_rspec)
+_rspec.loader.exec_module(_reviewer)
+review_patch = _reviewer.review_patch
+
 STAGING = os.path.join(ROOT, "staging")
 STATE_FILE = os.path.join(ROOT, "deploy", "state.json")
 EVOLVE_LOG = os.path.join(ROOT, "logs", "self_evolve.jsonl")
@@ -274,9 +282,10 @@ def handle_request(request_dir):
     state = load_state()
     started = time.time()
 
-    def finish(result, detail):
+    def finish(result, detail, summary=""):
         entry = {
             "ts": started, "task_id": task_id, "result": result,
+            "summary": str(summary)[:120],
             "detail": str(detail)[-1500:],
             "commit": state.get("last_good", ""),
         }
@@ -316,7 +325,7 @@ def handle_request(request_dir):
         log(f"[{task_id}] 重启请求，记忆快照: {snap or '(跳过)'}")
         ok, health = restart_container()
         if ok:
-            return finish("restarted", f"容器已重建并健康；快照={os.path.basename(snap) if snap else '-'}")
+            return finish("restarted", f"容器已重建并健康；快照={os.path.basename(snap) if snap else '-'}", "重启容器")
         return finish("restart_failed", f"重建后健康检查失败，需人工介入: {health}")
 
     summary = str(req.get("summary") or "未命名自改")[:120]
@@ -333,7 +342,18 @@ def handle_request(request_dir):
     snap = snapshot_memory()
     log(f"[{task_id}] 记忆快照: {snap or '(跳过)'} 基线: {base[:10]}")
 
-    # 2) 应用 + 提交（先提交，失败才能 reset 回滚）
+    # 2) 独立模型审查（宿主侧）：驳回则不写盘、不重启，直接把意见回传
+    t_review = time.time()
+    try:
+        approved, review_detail, risk = review_patch(request_dir, req, files)
+    except Exception as e:
+        approved, review_detail, risk = False, f"审查不可用：审查器异常 {e}", "unknown"
+    review_ms = int((time.time() - t_review) * 1000)
+    log(f"[{task_id}] 审查 {'通过' if approved else '驳回'}（{risk}, {review_ms}ms）")
+    if not approved:
+        return finish("review_rejected", review_detail, summary)
+
+    # 3) 应用 + 提交（先提交，失败才能 reset 回滚）
     ok, msg = apply_patch(request_dir, files)
     if not ok:
         git_reset(base)
@@ -344,14 +364,14 @@ def handle_request(request_dir):
         git_reset(base)
         return finish("apply_failed", f"git commit 失败: {sha}")
 
-    # 3) 受限区改动必须过校验门
+    # 4) 受限区改动必须过校验门
     if needs_restart:
         rc, out = sh(["bash", os.path.join(ROOT, "deploy", "verify.sh")], cwd=ROOT, timeout=1800)
         if rc != 0:
             git_reset(base)
             return finish("verify_failed", out[-2000:])
 
-    # 4) 切换并探活
+    # 5) 切换并探活
     if needs_restart:
         ok, health = restart_container()
         if not ok:
@@ -362,12 +382,12 @@ def handle_request(request_dir):
                 return finish("health_failed", f"回滚后仍不健康，需人工介入: {health2}；新版本错误: {health}")
             return finish("health_failed", f"新版本不健康，已回滚到 {base[:10]}: {health}")
 
-    # 5) 成功
+    # 6) 成功
     state["last_good"] = sha
     tag = f"good-{datetime.now():%Y%m%d_%H%M%S}"
     sh(["git", "tag", tag, sha], cwd=ROOT)
     sensitive = is_sensitive("\n".join(str(f.get("content") or "") for f in files))
-    return finish("ok", f"commit={sha[:10]} tag={tag} 重启={needs_restart} 敏感={sensitive} 快照={os.path.basename(snap) if snap else '-'}")
+    return finish("ok", f"commit={sha[:10]} tag={tag} 重启={needs_restart} 敏感={sensitive} 快照={os.path.basename(snap) if snap else '-'}", summary)
 
 
 def scan_once():

@@ -26,3 +26,11 @@
 - 修法：容器挂载改成与宿主同路径 `-v $ROOT:$ROOT:ro`（数据卷同样同路径），`WORKDIR` 与 `-w` 改为 `$ROOT`；`verify.sh` 的 tmpfs 与 `-w` 同步；`test_gate.py` 的 ROOT 默认改用 `$YUKI_ROOT` 或 cwd。
 - 验证：容器内 `os.path.abspath('data/stickers')` == 宿主路径；真实发送测试 `send_private_msg` 返回 `retcode: 0`（message_id 85613626）。
 - 顺带确认：`screenshots/` 在只读区但不被代码写；`temp_images/ output/ staging/` 等已 rw 挂载。
+
+## 2026-10-22 小女仆新增 restart_yuki 工具
+
+- 需求：小女仆需要能重启 Yuki（重载配置/重连 NapCat/清内存），但容器内没有 docker 权限，不能也不该给。
+- 实现：`request_restart()` 写 `staging/<task>/request.json`（type=restart，无 files）→ supervisor 快照 → `run.sh` 重建容器 → `/health` 探活 → 写 result.json。结果值 `restarted` / `restart_failed`，单独限额 5 次/小时，不计入自改配额。
+- prompt 已说明适用/不适用场景，并提醒模型：调用后自身约 3 秒内被终止，靠 resume_task 续做。
+- 验证：容器 ID 574ab38 → ab0efc3，result=restarted，快照 20261022_181155，health ok；5 道门全过。
+- 注意：改 `deploy/` 下脚本后必须 `sudo systemctl restart yuki-supervisor` 才生效（本次踩到：旧服务把 restart 请求判成 files 为空）。

@@ -136,4 +136,3 @@ def read_work_trace(task_id: str, max_chars: int = 4000) -> str:
         )
     return f"=== 任务 {safe} 轨迹（{len(content)} 字符）===\n{body}{extra}"
 
-# 自审流程端到端验证标记

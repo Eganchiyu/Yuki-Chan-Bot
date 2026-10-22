@@ -10,8 +10,10 @@
 这样即使模型乱来，也改不到正在运行的代码，更谈不上把 Yuki 弄到起不来。
 """
 import ast
+import asyncio
 import json
 import os
+import time
 from datetime import datetime
 
 from core.maid.maid_charter import (
@@ -214,8 +216,37 @@ def verify_patch(task_id: str) -> str:
     return "\n".join(out)
 
 
-def request_self_reload(task_id: str, summary: str = "", reason: str = "") -> str:
-    """落 request.json，交给宿主 supervisor 走 校验→切换→回滚 的完整链路。"""
+async def _wait_result(result_path: str, wait_seconds: float):
+    """同步等 supervisor 的处理结果。
+
+    设计前提：审查驳回 / 应用失败 / 校验失败这三类都**不发生重启**，
+    进程还活着，所以可以等到结果后在同一轮继续改；一旦进入应用+重启，
+    本进程会被终止，轮询也就随之中断。
+    """
+    deadline = time.monotonic() + max(5, wait_seconds)
+    while time.monotonic() < deadline:
+        await asyncio.sleep(2)
+        if not os.path.exists(result_path):
+            continue
+        try:
+            with open(result_path, encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            continue          # supervisor 可能正在写，稍后再读
+    return None
+
+
+async def request_self_reload(
+    task_id: str,
+    summary: str = "",
+    reason: str = "",
+    wait_seconds: float = 180,
+) -> str:
+    """提交给宿主 supervisor：审查 → 快照 → 应用 → 校验 → 重启 → 健康检查。
+
+    会同步等一小段时间拿回「审查/校验」结果：这些环节失败不重启进程，
+    所以可以就地拿到意见继续修改，不用等下一次任务。
+    """
     tdir = _task_dir(task_id)
     fdir = os.path.join(tdir, FILES_SUBDIR)
     if not os.path.isdir(fdir):
@@ -235,19 +266,50 @@ def request_self_reload(task_id: str, summary: str = "", reason: str = "") -> st
         "summary": (summary or "未命名自改")[:120],
         "reason": str(reason)[:1000],
         "files": files,
-        "requested_at": __import__("datetime").datetime.now().isoformat(timespec="seconds"),
+        "requested_at": datetime.now().isoformat(timespec="seconds"),
     }
+    result_path = os.path.join(tdir, "result.json")
+    # 允许对被驳回的同一份补丁重新提交：先清掉旧结果，supervisor 才会重新处理
+    try:
+        if os.path.exists(result_path):
+            os.remove(result_path)
+    except Exception as e:
+        logger.warning(f"[Maid] 清理旧 result.json 失败: {e}")
+
     with open(os.path.join(tdir, REQUEST_FILE), "w", encoding="utf-8") as f:
         json.dump(request, f, ensure_ascii=False, indent=2)
 
-    logger.info(f"[Maid] 已提交自改请求: {tdir}")
-    return (
-        "已提交给守护进程，正在执行：路径分级校验 → yuki_memory 快照 → 应用 + git commit "
-        "→ 5 道校验门 → 重启容器 → 健康检查。\n"
-        "成功会打 tag 存档；失败会自动回滚到上一个可用版本，并把错误日志写进 "
-        f"{os.path.join(tdir, 'result.json')} 和 logs/self_evolve.jsonl。\n"
-        "重启期间 Yuki 会短暂离线（约 15~30 秒），这是预期行为。"
-    )
+    logger.info(f"[Maid] 已提交自改请求: {tdir}，等待审查/校验结果（≤{int(wait_seconds)}s）")
+    result = await _wait_result(result_path, wait_seconds)
+
+    if result is None:
+        return (
+            "已提交，但等待超时：宿主守护进程没有在时限内返回结果。\n"
+            "可能原因：supervisor 未运行、正在执行 5 道校验门、或已被重启流程接管。\n"
+            "请稍后用 read_evolution_result 查看结果，不要立即重复提交。"
+        )
+
+    verdict = str(result.get("result") or "")
+    detail = str(result.get("detail") or "")
+
+    # 这些结果都不重启进程，可以原地继续改
+    if verdict in {"review_rejected", "verify_failed", "apply_failed", "rejected"}:
+        return (
+            f"未生效（{verdict}），代码没有任何改动，进程仍在运行，你可以继续修改。\n\n"
+            f"{detail}\n\n"
+            "请针对上面的问题修改代码，然后重新 propose_patch 并再次 request_self_reload。"
+        )
+
+    if verdict in {"ok", "restarted"}:
+        return f"已通过审查并生效（{verdict}）：{detail}\nYuki 正在（或即将）重启，你的进程会被中断。"
+
+    if verdict in {"health_failed", "restart_failed"}:
+        return (
+            f"已应用但健康检查失败（{verdict}），已自动回滚到改动前的提交。\n{detail}\n"
+            "你的进程即将随重启中断；重启后可用 resume_task 继续修复。"
+        )
+
+    return f"处理结果（{verdict}）：{detail}"
 
 
 def request_restart(task_id: str, reason: str = "") -> str:

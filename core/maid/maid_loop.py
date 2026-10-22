@@ -8,6 +8,7 @@ from config import cfg
 from utils.llm_client import llm_chat
 
 from core.maid import maid_common, maid_memory
+from core.maid.maid_worklog import list_previous_work, read_work_trace
 from core.maid.maid_common import (
     LOGS_DIR,
     MAX_MAID_ERRORS,
@@ -317,17 +318,30 @@ async def maid_evolution_loop(user_goal: str, chat_id: str = None, approver=None
                 logger.info("[Maid] 自改：快速自检")
                 res = verify_patch(task_id)
             elif tool == "request_self_reload":
-                logger.info("[Maid] 自改：请求生效")
-                res = request_self_reload(
+                logger.info("[Maid] 自改：请求生效（等待审查/校验结果）")
+                res = await request_self_reload(
                     task_id,
                     summary=args.get("summary", ""),
                     reason=args.get("reason", ""),
+                    wait_seconds=args.get("wait_seconds") or 180,
                 )
             elif tool == "restart_yuki":
                 logger.info("[Maid] 请求重启 Yuki 容器")
                 res = request_restart(
                     task_id,
                     reason=args.get("reason", ""),
+                )
+            elif tool == "list_previous_work":
+                logger.info("[Maid] 查询历史工作记录")
+                res = list_previous_work(
+                    keyword=args.get("keyword"),
+                    limit=args.get("limit", 8),
+                )
+            elif tool == "read_work_trace":
+                logger.info(f"[Maid] 读取历史轨迹: {args.get('task_id')}")
+                res = read_work_trace(
+                    args.get("task_id"),
+                    max_chars=args.get("max_chars", 4000),
                 )
             elif tool == "read_evolution_result":
                 res = read_last_result(args.get("task_id"))

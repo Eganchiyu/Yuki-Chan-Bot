@@ -45,8 +45,10 @@ FORBIDDEN_PATHS = (
 SENSITIVE_HINTS = ("yuki_memory", "chromadb", "embedding", "collection", "vector")
 
 # ---------------------------------------------------------------- 限额
-MAX_PATCH_FILES = 3          # 单次 patch 文件数上限
-MAX_PATCH_ADDED_LINES = 200  # 单次 patch 净增行数上限
+# 硬限额只做「防呆兜底」，真正的放行判断交给宿主侧模型审查（deploy/reviewer.py）。
+# 数值放宽是因为复杂功能改造常常横向涉及多个文件，卡在 3 个文件会逼模型拆碎改动。
+MAX_PATCH_FILES = 10          # 单次 patch 文件数上限
+MAX_PATCH_ADDED_LINES = 1000  # 单次 patch 净增行数上限
 MAX_PATCH_REMOVED_RATIO = 0.5  # 单个文件删掉超过原行数这个比例就拒绝（防误删整模块）
 MAX_EVOLVE_PER_HOUR = 3      # 每小时自改上限
 MAX_EVOLVE_PER_DAY = 10      # 每日自改上限
@@ -91,7 +93,8 @@ EVOLUTION_CHARTER = """
    - 自由区：`skills/`、`workspace/`、`temp/`。
    - 受限区：`core/`、`utils/`、`modules/`、`network/`、`main.py`、`config.py`——必须走校验→试启动→切换→健康检查。
    - 禁区（一律拒绝）：`deploy/`、`.git/`、`.gitignore`、`configs/`、`data/`、`yuki_memory/`、`memory/`、`logs/`、`models/`、`maid_venv/`、`maid_approval.py` 的拦截规则、本准则文件。
-3. **小步**：单次 patch ≤ 3 个文件、净增 ≤ 200 行。禁止顺手重构，禁止整模块重写。
+3. **小步**：单次 patch ≤ 10 个文件、净增 ≤ 1000 行；超过会被驳回，请拆分。禁止顺手重构，禁止整模块重写。
+   每个 patch 会先经一次独立模型审查：只看出改动是否服务于任务目标、是否删功能、是否碰数据。被驳回时按意见改，不要原样重提。
 4. **实证**：每个 patch 必须说明 改了什么 / 为什么 / 怎么验证 / 失败怎么回滚。缺一项不许提交。
 5. **验证先行**：编译 → 测试 → 试启动 → 健康检查，任一级失败都不许请求切换，带报错重试。
 6. **诚实**：失败必须上报，不许隐藏，不许无证据宣称完成。

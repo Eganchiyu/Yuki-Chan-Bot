@@ -29,21 +29,36 @@ deploy/
 ```
 小女仆 propose_patch      → staging/<task>/files/
 小女仆 verify_patch       → 容器内快速自检（语法/规模/定义数）
-小女仆 request_self_reload → staging/<task>/request.json
+小女仆 request_self_reload → staging/<task>/request.json，并**同步等待**结果
     ↓
 supervisor（宿主，每 3 秒轮询）
     1. 路径分级校验      禁区直接拒（人格/配置/数据/部署/准则）
     2. 速率与冷却检查    每小时 3 次、每天 10 次、连败 2 次冷却 6 小时
-    3. yuki_memory 快照  rsync --link-dest 增量，秒级，保留 7 份
-    4. 应用 + git commit self-evolve: <summary>
-    5. verify.sh         编译 → 导入 → 单测 → 试启动 → 探针（仅受限区）
-    6. 重启容器          deploy/run.sh
-    7. 健康检查          GET /health，最多等 150s
-    8. 失败 → git reset --hard <last_good> → 重启 → 复查
-    9. 成功 → git tag good-<ts>，写 logs/self_evolve.jsonl
+    3. 独立模型审查      deploy/reviewer.py：相关性/删功能/数据安全/正确性/副作用
+       └─ 驳回 → 写 review_rejected，**不写盘不重启**，意见同步回传
+    4. yuki_memory 快照  rsync --link-dest 增量，秒级，保留 7 份
+    5. 应用 + git commit self-evolve: <summary>（只含补丁路径）
+    6. verify.sh         编译 → 导入 → 单测 → 试启动 → 探针（仅受限区）
+    7. 重启容器          deploy/run.sh
+    8. 健康检查          GET /health，最多等 150s
+    9. 失败 → git reset --hard <本次基线> → 重启 → 复查
+   10. 成功 → git tag good-<ts>，写 logs/self_evolve.jsonl
     ↓
 staging/<task>/result.json  ← 结果回传给小女仆
 ```
+
+### 同步反馈 vs 异步重启
+
+| 结果 | 是否重启进程 | 小女仆能否就地继续 |
+|---|---|---|
+| `review_rejected` / `verify_failed` / `apply_failed` / `rejected` | 否 | ✅ 拿到意见立刻改，不用等下一次任务 |
+| `ok` / `restarted` | 是 | ❌ 进程被中断，重启后 `resume_task` 续做 |
+
+### 历史交接工具
+
+- `list_previous_work(keyword, limit)`：查历史任务与自改记录（目标/状态/结果/commit）
+- `read_work_trace(task_id)`：读某次任务的完整步骤轨迹
+- `resume_task(task_id)`：恢复被中断任务的上下文
 
 ## 常用命令
 
