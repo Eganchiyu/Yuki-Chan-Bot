@@ -19,3 +19,10 @@
 - 实测：成功路径 34 秒完成（快照+5门+重启+health+tag）；坏补丁路径 `verify_failed` 精确回传 SyntaxError 行号并回滚到基线；速率限制（3 次/小时）与禁区拦截均生效。
 - 坑：`git add -A` 会把 staging 卷进自改提交、回滚时删掉 request 目录 → 已改为只 add 补丁路径；`staging/`、`deploy/state.json` 已入 .gitignore。
 - 待办：安装常驻服务 `sudo bash deploy/install-service.sh`；health 的 napcat 字段已修但未在容器内复验。
+
+## 2026-10-22 修复：容器化后表情包/文件发不出去
+
+- 根因：NapCat 在宿主机，Yuki 用 `file:///<绝对路径>` 发图；容器内路径是 `/app/...`，宿主无 `/app`，NapCat 找不到文件，发送静默失败（`send()` 不等响应所以日志只显示“发送完成”）。
+- 修法：容器挂载改成与宿主同路径 `-v $ROOT:$ROOT:ro`（数据卷同样同路径），`WORKDIR` 与 `-w` 改为 `$ROOT`；`verify.sh` 的 tmpfs 与 `-w` 同步；`test_gate.py` 的 ROOT 默认改用 `$YUKI_ROOT` 或 cwd。
+- 验证：容器内 `os.path.abspath('data/stickers')` == 宿主路径；真实发送测试 `send_private_msg` 返回 `retcode: 0`（message_id 85613626）。
+- 顺带确认：`screenshots/` 在只读区但不被代码写；`temp_images/ output/ staging/` 等已 rw 挂载。
