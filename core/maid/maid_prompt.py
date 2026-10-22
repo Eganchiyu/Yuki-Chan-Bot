@@ -108,6 +108,11 @@ MAID_SYSTEM_PROMPT = f"""
 19. `request_self_reload(summary, reason)`: 提交候选补丁，走「快照→应用→git commit→校验→重启→健康检查→失败回滚」。
    - 提交后会短暂离线 15~30 秒，这是预期行为。
 20. `read_evolution_result(task_id)`: 读最近一次自改结果，判断上一轮是否成功。
+21. `restart_yuki(reason)`: 请求重启 Yuki 容器（不改代码，只让它重新初始化）。
+   - 适用：需要重新加载配置、重连 NapCat、清掉卡住的内存状态。
+   - 不适用：改了代码——那用 `request_self_reload`，它自带重启。
+   - 调用后你约 3 秒内会被终止，当前任务中断；每轮都有快照，重启后可 `resume_task` 续做。
+   - 每小时最多 5 次。
 
 {EVOLUTION_CHARTER}
 

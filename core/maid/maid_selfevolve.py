@@ -250,6 +250,37 @@ def request_self_reload(task_id: str, summary: str = "", reason: str = "") -> st
     )
 
 
+def request_restart(task_id: str, reason: str = "") -> str:
+    """请求重启 Yuki 容器（不改代码，只让它重新初始化）。
+
+    容器内没有 docker 权限，所以同样只写 request.json，由宿主 supervisor 执行
+    「快照 → 重建容器 → /health 探活」。适合场景：需要重新加载配置、
+    重连 NapCat、清理内存状态。改了代码请用 request_self_reload。
+    """
+    tdir = _task_dir(task_id)
+    os.makedirs(tdir, exist_ok=True)
+    request = {
+        "type": "restart",
+        "task_id": os.path.basename(tdir),
+        "summary": "重启 Yuki 容器",
+        "reason": str(reason)[:1000],
+        "files": [],
+        "requested_at": datetime.now().isoformat(timespec="seconds"),
+    }
+    with open(os.path.join(tdir, REQUEST_FILE), "w", encoding="utf-8") as f:
+        json.dump(request, f, ensure_ascii=False, indent=2)
+
+    logger.info(f"[Maid] 已提交重启请求: {tdir}（原因：{reason or '未说明'}）")
+    return (
+        "重启请求已提交。守护进程会先给 yuki_memory 做快照，然后重建容器并做健康检查。\n"
+        "注意：**你的进程马上会被终止**（约 3 秒内），当前任务会中断。\n"
+        "任务快照每轮都会保存，重启后可以调 resume_task 接着做；"
+        "重启结果写在 "
+        f"{os.path.join(tdir, 'result.json')}，也可以用 read_evolution_result 查看。\n"
+        "重启期间 Yuki 离线约 15~30 秒。如果只是想改代码，用 request_self_reload（它自带重启）。"
+    )
+
+
 def read_last_result(task_id: str = None) -> str:
     """读最近一次自改结果，供任务 resume 后判断上一轮是否成功。"""
     if not os.path.isdir(STAGING_DIR):

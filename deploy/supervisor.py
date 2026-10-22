@@ -50,6 +50,7 @@ MAX_EVOLVE_PER_DAY = _charter.MAX_EVOLVE_PER_DAY
 MAX_EVOLVE_PER_HOUR = _charter.MAX_EVOLVE_PER_HOUR
 MAX_PATCH_ADDED_LINES = _charter.MAX_PATCH_ADDED_LINES
 MAX_PATCH_FILES = _charter.MAX_PATCH_FILES
+MAX_RESTART_PER_HOUR = int(os.environ.get("YUKI_MAX_RESTART_PER_HOUR", 5))
 classify_path = _charter.classify_path
 is_sensitive = _charter.is_sensitive
 
@@ -172,6 +173,8 @@ def rate_limit_reason(state):
 # ------------------------------------------------------------------ 应用补丁
 def validate_request(req):
     """返回 (ok, reason, files)。禁区命中一律拒绝。"""
+    if str(req.get("type") or "patch") == "restart":
+        return True, "", []          # 重启不带补丁
     files = req.get("files") or []
     if not files:
         return False, "request.files 为空", []
@@ -300,6 +303,21 @@ def handle_request(request_dir):
     limited = rate_limit_reason(state)
     if limited:
         return finish("rejected", limited)
+
+    # ---- 重启类请求：不改代码，只重新初始化（快照 → 重建容器 → 探活）----
+    if str(req.get("type") or "patch") == "restart":
+        recent = [
+            h for h in state.get("history", [])
+            if h.get("result") in {"restarted", "restart_failed"} and time.time() - h.get("ts", 0) < 3600
+        ]
+        if len(recent) >= MAX_RESTART_PER_HOUR:
+            return finish("rejected", f"每小时重启已达上限 {MAX_RESTART_PER_HOUR} 次")
+        snap = snapshot_memory()
+        log(f"[{task_id}] 重启请求，记忆快照: {snap or '(跳过)'}")
+        ok, health = restart_container()
+        if ok:
+            return finish("restarted", f"容器已重建并健康；快照={os.path.basename(snap) if snap else '-'}")
+        return finish("restart_failed", f"重建后健康检查失败，需人工介入: {health}")
 
     summary = str(req.get("summary") or "未命名自改")[:120]
     needs_restart = any(classify_path(f["path"]) == "restricted" for f in files)

@@ -22,6 +22,7 @@ from core.maid.maid_prompt import MAID_SYSTEM_PROMPT
 from core.maid.maid_selfevolve import (
     propose_patch,
     read_last_result,
+    request_restart,
     request_self_reload,
     verify_patch,
 )
@@ -320,6 +321,12 @@ async def maid_evolution_loop(user_goal: str, chat_id: str = None, approver=None
                 res = request_self_reload(
                     task_id,
                     summary=args.get("summary", ""),
+                    reason=args.get("reason", ""),
+                )
+            elif tool == "restart_yuki":
+                logger.info("[Maid] 请求重启 Yuki 容器")
+                res = request_restart(
+                    task_id,
                     reason=args.get("reason", ""),
                 )
             elif tool == "read_evolution_result":
