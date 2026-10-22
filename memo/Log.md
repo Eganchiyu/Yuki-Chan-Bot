@@ -6,3 +6,16 @@
 - 已装 Docker 26.1.5（Debian trixie，overlay2/cgroup2），asumi 已入 docker 组。
 - 已写准则：`docs/evolution-charter.md`（人读）+ `core/maid/maid_charter.py`（代码侧单一来源：路径分级、限额、验证门、prompt 片段）。人格（`core/prompts.py`）与 `configs/` 设为硬禁区，无例外。
 - 待办 P0：Dockerfile/只读代码挂载、`/health`、`YUKI_DRY_RUN`、supervisor 校验回滚、小女仆 propose_patch/verify_patch/request_self_reload、保留策略脚本。
+
+## 2026-10-22 P0 自进化闭环完成（已端到端验证）
+
+- 容器：`deploy/Dockerfile` 只装依赖（3.5 分钟构建，`yuki:base`）；代码整树 `:ro` 挂载，数据目录单独 rw，`--network host` 直连宿主 NapCat，容器以宿主 uid 运行（否则 staging 属主是 root，宿主写不了 result.json）。
+- 探针：`utils/health_server.py` 独立线程标准库服务，`main.py` 注入 `/health`（ready/napcat_online/maid 队列）；`napcat_online` 改用 `NapCatGateway.connected`，不再用乐观默认值。
+- 试启动：`YUKI_DRY_RUN=1` 只做初始化自检，跳过 NapCat 接管与配置回写。
+- 校验门：`deploy/verify.sh` 5 门（compileall/import/tests/dry_run/health），临时容器断网 + tmpfs 数据；测试门改基线差集（既有 33 个环境性失败），只对新增失败报警。
+- 守护：`deploy/supervisor.py` 轮询 `staging/*/request.json` → 分级校验 → yuki_memory 硬链接快照 → 应用 → 只提交补丁路径 → 校验 → 重启 → `/health` → 失败 `git reset --hard <本次基线>` → 写 result.json/self_evolve.jsonl。
+- 小女仆工具：`core/maid/maid_selfevolve.py` 四个工具接入 `maid_loop.py`，准则注入 `maid_prompt.py`。
+- 保留：`deploy/retention.py`（trace 归档 7 天→按周 tar.gz 上限 200MB、日志截断、staging 3 天清理、快照留 7 份）。
+- 实测：成功路径 34 秒完成（快照+5门+重启+health+tag）；坏补丁路径 `verify_failed` 精确回传 SyntaxError 行号并回滚到基线；速率限制（3 次/小时）与禁区拦截均生效。
+- 坑：`git add -A` 会把 staging 卷进自改提交、回滚时删掉 request 目录 → 已改为只 add 补丁路径；`staging/`、`deploy/state.json` 已入 .gitignore。
+- 待办：安装常驻服务 `sudo bash deploy/install-service.sh`；health 的 napcat 字段已修但未在容器内复验。
