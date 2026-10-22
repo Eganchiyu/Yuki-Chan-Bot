@@ -34,3 +34,21 @@
 - prompt 已说明适用/不适用场景，并提醒模型：调用后自身约 3 秒内被终止，靠 resume_task 续做。
 - 验证：容器 ID 574ab38 → ab0efc3，result=restarted，快照 20261022_181155，health ok；5 道门全过。
 - 注意：改 `deploy/` 下脚本后必须 `sudo systemctl restart yuki-supervisor` 才生效（本次踩到：旧服务把 restart 请求判成 files 为空）。
+
+## 2026-10-22 自改流程升级：模型审查 + 同步接续 + 历史交接
+
+- 限额：3 文件/200 行 → **10 文件/1000 行**（硬限额只做防呆，放行判断交给审查）。
+- 新增 `deploy/reviewer.py`：宿主侧独立审查（deepseek-flash，温度 0.2，JSON 输出），
+  看相关性/删功能/数据安全/正确性/回滚性/副作用；驳回则不写盘不重启，意见同步回传。
+  自带极简 yaml 解析（宿主 python3 无 PyYAML）。
+- `request_self_reload` 改为 async 同步轮询 result.json（≤180s）：审查驳回、apply_failed、
+  verify_failed 都不重启进程，模型可在同一 session 继续改；一旦通过进入重启才断开。
+- 新增 `core/maid/maid_worklog.py`：`list_previous_work` / `read_work_trace`，用于跨任务交接；
+  self_evolve.jsonl 记录补上 summary 字段。
+- 实测：通过路径 46s（审查 2.6s + 校验 + 重启 + health + tag good-20261022_182221）；
+  驳回路径同步返回具体问题与改法，进程存活。
+- 事故（已回滚）：测试 fixture 直接放进 staging 且带 request.json，运行中的旧 supervisor
+  立刻消费并把 `while True: pass` 提交进 core/tools/tools_common.py（commit 89d39cd）。
+  已 reset --soft 回滚并保留工作区改动。教训：往 staging 放 fixture 前必须先停 supervisor；
+  这恰好证明审查层的必要性。
+- 注意：改 `deploy/` 后必须 `sudo systemctl restart yuki-supervisor`。
