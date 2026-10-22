@@ -18,11 +18,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         libgomp1 libgl1 libglib2.0-0 curl ca-certificates git \
     && rm -rf /var/lib/apt/lists/*
 
-WORKDIR /app
+# 与宿主路径保持一致：容器内代码挂到同一绝对路径，file:// 引用才通
+WORKDIR /home/asumi/Yuki
 
 # 只把依赖声明带进来，改代码不会让依赖层失效
-COPY pyproject.toml /app/pyproject.toml
-RUN python -c "import tomllib;d=tomllib.load(open('/app/pyproject.toml','rb'));open('/tmp/req.txt','w').write('\n'.join(d['project']['dependencies']))" \
+COPY pyproject.toml /tmp/pyproject.toml
+RUN python -c "import tomllib;d=tomllib.load(open('/tmp/pyproject.toml','rb'));open('/tmp/req.txt','w').write('\n'.join(d['project']['dependencies']))" \
     && pip install --extra-index-url https://download.pytorch.org/whl/cpu -r /tmp/req.txt
 
 ENV YUKI_HEALTH_PORT=8778 \

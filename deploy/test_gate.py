@@ -15,7 +15,7 @@ import os
 import subprocess
 import sys
 
-ROOT = os.environ.get("YUKI_ROOT", "/app")
+ROOT = os.environ.get("YUKI_ROOT") or os.getcwd()
 TESTS = os.path.join(ROOT, "tests")
 BASELINE = os.environ.get("YUKI_TEST_BASELINE", os.path.join(ROOT, "deploy", "test_baseline.json"))
 

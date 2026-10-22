@@ -25,17 +25,17 @@ run_gate() {
   local name="$1" cmd="$2" out rc
   say "=== 门[$name] ==="
   out=$(docker run --rm --network none \
-        -v "$ROOT:/app:ro" \
-        -v "$ROOT/models:/app/models:ro" \
-        -v "$ROOT/configs:/app/configs:ro" \
-        --tmpfs /app/data:rw,size=256m \
-        --tmpfs /app/yuki_memory:rw,size=256m \
-        --tmpfs /app/memory:rw,size=64m \
-        --tmpfs /app/logs:rw,size=64m \
+        -v "$ROOT:$ROOT:ro" \
+        -v "$ROOT/models:$ROOT/models:ro" \
+        -v "$ROOT/configs:$ROOT/configs:ro" \
+        --tmpfs "$ROOT/data":rw,size=256m \
+        --tmpfs "$ROOT/yuki_memory":rw,size=256m \
+        --tmpfs "$ROOT/memory":rw,size=64m \
+        --tmpfs "$ROOT/logs":rw,size=64m \
         --tmpfs /tmp:rw,size=256m \
         -e PYTHONPYCACHEPREFIX=/tmp/pycache \
         -e YUKI_DRY_RUN=1 \
-        -w /app "$IMAGE" bash -lc "$cmd" 2>&1)
+        -w "$ROOT" -e YUKI_ROOT="$ROOT" "$IMAGE" bash -lc "$cmd" 2>&1)
   rc=$?
   if [[ $rc -ne 0 ]]; then
     fail "$name" "$out"

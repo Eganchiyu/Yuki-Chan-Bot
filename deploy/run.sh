@@ -23,23 +23,27 @@ docker rm -f "$NAME" >/dev/null 2>&1 || true
 # 宿主 supervisor 才能回写 result.json 并管理这些文件。
 mkdir -p "$ROOT/data/home"
 
+# 容器内路径与宿主完全一致（挂到同一个绝对路径）。
+# 原因：NapCat 在宿主机，Yuki 用 `file:///<绝对路径>` 发图片/文件/语音，
+# 路径一旦不同（例如容器内 /app），NapCat 就找不到文件，表情包会静默发不出去。
 args=(
   run -d --name "$NAME"
   --restart unless-stopped
   --network host
   --user "$(id -u):$(id -g)"
-  -e HOME=/app/data/home
+  -e HOME="$ROOT/data/home"
   --label yuki.role=production
-  -v "$ROOT:/app:ro"
-  -v "$ROOT/models:/app/models:ro"
+  -v "$ROOT:$ROOT:ro"
+  -v "$ROOT/models:$ROOT/models:ro"
 )
 
 for d in "${RW_DIRS[@]}"; do
   mkdir -p "$ROOT/$d"
-  args+=(-v "$ROOT/$d:/app/$d")
+  args+=(-v "$ROOT/$d:$ROOT/$d")
 done
 
 args+=(
+  -w "$ROOT"
   -e YUKI_HEALTH_PORT=8778
   -e YUKI_DESKTOP_PET=0
   "$IMAGE"
