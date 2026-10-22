@@ -86,3 +86,21 @@
 - 测试基线：`origin/main` 与本地各有 23 项环境性失败（缺依赖、真实 LLM 调用、终端宽度），
   无新增回归。
 - 推送待机主提供凭据：`git push -u origin HEAD:fix/maid-env-vision-prefetch`。
+
+## 2026-10-22 小女仆能力升级（记忆/预算/授权/看图）
+
+按机主反馈重排范围，砍掉 safe_edit_file、notes、技能固化与成功率统计，只补运行体感缺口。
+
+- S1 `read_file_content`：64KB / 单行 2000 字符 / `offset` 续读，base64 不再吃满上下文。
+- S2 有效轮提到 40，网络与解析失败独立计错（≤5，不占轮），新增 900s 墙钟。
+- S3 新增 `maid_memory`：每轮写 `tasks/state/<task_id>.json`，开始时注入最近 3 条摘要，
+  新增 `resume_task`（仅允许恢复一次，避免重置轮次死循环），结束写 `logs/task_index.jsonl`。
+- S4 新增 `maid_approval`：硬拦截只留 sudo/关机/mkfs/dd/删根目录/fork 炸弹，其余可疑命令
+  交给继承当前 session 上下文的 Yuki 静默判定；`MAID_ESCALATE_TO_MASTER=1` 可升级问机主。
+- S5 新增 `read_image`：原生 image_url 图块直塞 maid 模型，图块只存活一轮后降级为文本。
+- S6 temp_skill 支持 timeout/interpreter，注入 PYTHONPATH，缓存 pip list 与环境自检
+  （重复执行 1.4s → 0.01s）。
+- S7 提示词只加必要条目，报告末尾追加轮次/耗时/trace。
+
+验证：`tests/run_tests.py` → `passed=114 failed=23`，失败集合与基线完全一致；
+新增 `tests/test_maid_features.py` 14 例全过。需重启 `main.py` 生效。

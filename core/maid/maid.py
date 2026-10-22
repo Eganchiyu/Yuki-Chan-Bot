@@ -3,12 +3,17 @@ import asyncio
 from utils.llm_client import close_global_session
 
 from core.maid.maid_boundary import MaidCapabilityBoundary, build_maid_report, build_maid_task
+from core.maid.maid_approval import classify_command, judge_by_yuki
 from core.maid.maid_common import (
     LOGS_DIR,
+    MAID_MAX_WALL_SECONDS,
     MAID_VENV_DIR,
+    MAX_MAID_ERRORS,
     MAX_MAID_ROUNDS,
     MAX_TOOL_OUTPUT_CHARS,
     SKILLS_DIR,
+    TASK_INDEX_FILE,
+    TASK_STATE_DIR,
     TASKS_DIR,
     TERMINAL_DEFAULT_TIMEOUT,
     TERMINAL_MAX_TIMEOUT,
@@ -21,6 +26,13 @@ from core.maid.maid_common import (
     logger,
 )
 from core.maid.maid_loop import call_cloud_maid_robust, maid_evolution_loop
+from core.maid.maid_memory import (
+    append_task_index,
+    build_startup_context,
+    list_unfinished_states,
+    load_task_state,
+    save_task_state,
+)
 from core.maid.maid_prompt import MAID_SYSTEM_PROMPT
 from core.maid.maid_runtime import (
     _clean_workspace,
@@ -30,6 +42,7 @@ from core.maid.maid_runtime import (
     _kill_process_tree,
     install_package,
     list_skills,
+    prepare_image_message,
     read_skill,
     run_skill,
     terminal_command_maid,
@@ -63,6 +76,10 @@ __all__ = [
     "TERMINAL_DEFAULT_TIMEOUT",
     "TERMINAL_MAX_TIMEOUT",
     "MAX_MAID_ROUNDS",
+    "MAX_MAID_ERRORS",
+    "MAID_MAX_WALL_SECONDS",
+    "TASK_STATE_DIR",
+    "TASK_INDEX_FILE",
     "_ensure_maid_env",
     "_ensure_skill_deps",
     "_truncate_text",
@@ -88,6 +105,14 @@ __all__ = [
     "browser_search_maid",
     "amap_search_maid",
     "maid_evolution_loop",
+    "prepare_image_message",
+    "classify_command",
+    "judge_by_yuki",
+    "save_task_state",
+    "load_task_state",
+    "list_unfinished_states",
+    "append_task_index",
+    "build_startup_context",
 ]
 
 

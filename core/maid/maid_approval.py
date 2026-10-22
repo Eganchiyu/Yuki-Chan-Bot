@@ -236,8 +236,9 @@ async def wait_for_master_reply(history_manager, chat_id, timeout: float = 300, 
     except Exception:
         baseline = 0
 
-    deadline = asyncio.get_event_loop().time() + timeout
-    while asyncio.get_event_loop().time() < deadline:
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    while loop.time() < deadline:
         await asyncio.sleep(interval)
         try:
             session = history_manager.load().get(str(chat_id)) or []

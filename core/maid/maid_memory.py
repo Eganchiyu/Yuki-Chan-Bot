@@ -7,6 +7,7 @@
 import asyncio
 import json
 import os
+import threading
 from datetime import datetime
 
 from core.maid.maid_common import TASK_INDEX_FILE, TASK_STATE_DIR, logger
@@ -15,7 +16,8 @@ MAX_SNAPSHOT_MESSAGE_CHARS = 3000
 MAX_INDEX_RESULT_CHARS = 500
 MAX_SUMMARY_GOAL_CHARS = 120
 
-_lock = asyncio.Lock()
+# 用线程锁而不是 asyncio.Lock：写盘跑在 to_thread 里，且测试会多次起事件循环
+_io_lock = threading.Lock()
 
 
 def _now() -> str:
@@ -60,9 +62,10 @@ def _trim_messages(messages) -> list:
 def _write_json_atomic(path: str, payload: dict) -> None:
     os.makedirs(os.path.dirname(path), exist_ok=True)
     tmp = f"{path}.tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(payload, f, ensure_ascii=False, indent=1)
-    os.replace(tmp, path)
+    with _io_lock:
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False, indent=1)
+        os.replace(tmp, path)
 
 
 async def save_task_state(
@@ -89,8 +92,7 @@ async def save_task_state(
     }
     path = _state_path(task_id)
     try:
-        async with _lock:
-            await asyncio.to_thread(_write_json_atomic, path, payload)
+        await asyncio.to_thread(_write_json_atomic, path, payload)
     except Exception as e:
         logger.warning(f"[Maid] 写任务快照失败: {e}")
     return path
@@ -99,7 +101,7 @@ async def save_task_state(
 async def load_task_state(task_id: str = None) -> dict:
     """读取指定任务快照；task_id 为空时取最近更新的那个未完成快照。"""
     if not task_id:
-        states = await list_unfinished_states(include_running=True)
+        states = await list_unfinished_states()
         return states[0] if states else {}
     path = _state_path(task_id)
     if not os.path.exists(path):
@@ -116,8 +118,8 @@ def _read_json(path: str) -> dict:
         return json.load(f)
 
 
-async def list_unfinished_states(include_running: bool = False) -> list:
-    """按更新时间倒序列出未完成任务快照（status=running）。"""
+async def list_unfinished_states() -> list:
+    """按更新时间倒序列出所有任务快照（正常结束的任务会删掉自己的快照）。"""
     def _scan():
         if not os.path.isdir(TASK_STATE_DIR):
             return []
@@ -129,7 +131,7 @@ async def list_unfinished_states(include_running: bool = False) -> list:
                 data = _read_json(os.path.join(TASK_STATE_DIR, name))
             except Exception:
                 continue
-            if include_running or data.get("status") == "running":
+            if data.get("status") != "finished":
                 items.append(data)
         items.sort(key=lambda x: x.get("updated_at", ""), reverse=True)
         return items
@@ -152,8 +154,9 @@ async def delete_task_state(task_id: str) -> None:
 
 def _append_line(path: str, payload: dict) -> None:
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "a", encoding="utf-8") as f:
-        f.write(json.dumps(payload, ensure_ascii=False) + "\n")
+    with _io_lock:
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(payload, ensure_ascii=False) + "\n")
 
 
 async def append_task_index(
@@ -180,8 +183,7 @@ async def append_task_index(
     if state_path:
         payload["state"] = state_path
     try:
-        async with _lock:
-            await asyncio.to_thread(_append_line, TASK_INDEX_FILE, payload)
+        await asyncio.to_thread(_append_line, TASK_INDEX_FILE, payload)
     except Exception as e:
         logger.warning(f"[Maid] 写任务索引失败: {e}")
 
@@ -216,7 +218,7 @@ def _one_line(text, limit: int) -> str:
 async def build_startup_context(limit: int = 3) -> str:
     """任务开始时注入的上下文：最近任务摘要 + 未完成快照提示。没有内容时返回空串。"""
     recent = await asyncio.to_thread(_read_recent_index, limit)
-    unfinished = await list_unfinished_states(include_running=True)
+    unfinished = await list_unfinished_states()
 
     lines = []
     for item in recent:

@@ -1,148 +1,90 @@
-# 小女仆（Maid）能力升级：计划与交接文档
+# 小女仆（Maid）能力升级：实施记录
 
-> 状态：P0+P1 未开工（本文件即开工说明）。P2/P3 仅记录设计，不实施。
-> 最后更新：2026-10-21
+> 状态：已实施（S1–S7 全部完成）。
+> 最后更新：2026-10-22
 
-## 1. 当前环境与仓库状态
+## 1. 背景
 
-| 项目 | 值 |
-| --- | --- |
-| 工作目录 | `/home/asumi/Yuki` |
-| 远端 | `git@github.com:Eganchiyu/Yuki-Chan-Bot.git`（已从 HTTPS 改为 SSH） |
-| 当前分支 | `fix/maid-env-vision-prefetch` |
-| HEAD | `b7754de docs: 记录仓库接回与测试基线` |
-| 本地 `main` | 与 HEAD 同一提交，未推送 |
-| Yuki 运行解释器 | `/home/asumi/miniconda3/envs/yuki/bin/python`（3.11.15，主进程 `python main.py`） |
-| 小女仆环境 | `maid_venv`，已原地修复（`home=/home/asumi/miniconda3/envs/yuki/bin`，pip 24.0，197 个包保留） |
-| 备份 | `/tmp/maid_bin.bak`、`/tmp/maid_pyvenv.cfg.bak`（临时目录，重启机器会丢） |
+原计划（P0/P1 工程方案：安全改动守卫、跨会话留言、技能固化、预算双闸）在评审后被砍。
+机主给出的实际阻碍是运行体感问题：
 
-### 测试基线
-```bash
-cd /home/asumi/Yuki
-/home/asumi/miniconda3/envs/yuki/bin/python tests/run_tests.py
-```
-- 当前：`passed=86 failed=23`，其中 3 个 `LOAD ERROR`。
-- 23 项失败在 `origin/main` 基线上同样存在（缺依赖、真实 LLM 调用失败、终端宽度假设），
-  **判定为环境性失败，不是回归**。新增改动后对比该基线即可。
-- 注意：`tests/test_config.py`、`test_github_monitor.py`、`test_napcat_gateway.py` 加载失败是
-  缺依赖/单例冲突，不要在本次任务里顺手修。
+1. `write_and_run_temp_skill` 摩擦大，模型倒向 terminal；terminal 的关键词黑名单常误杀正常命令。
+2. 没有读取本地图片的能力。
+3. 20 轮上限不够用，网络/解析失败还占轮次。
+4. 每个 session 相互隔离，任务无法断点续跑。
 
-## 2. 已完成（本分支内）
+原则：**不做工程解，只补功能缺口；同时尽量不抢占模型注意力。**
 
-1. `fix(maid)`：虚拟环境失效自愈
-   - `_is_maid_env_usable()` 真实执行 `-c "import encodings, sys"`，并校验 `pyvenv.cfg` 的 `home`。
-   - pip 统一走 `python -m pip`（`_run_pip` / `_get_maid_pip_cmd`），不再依赖 `bin/pip` 脚本 shebang。
-   - `_upgrade_maid_env()`：版本一致时 `venv.EnvBuilder(upgrade=True)` 原地修复，保留 site-packages；
-     失败才 `_rebuild_maid_env()` 全量重建。`_repair_maid_pip()` 用 ensurepip 兜底。
-2. `fix(vision)`、`fix(utils)`、`docs`：与本次 Maid 升级无关，仅作为上下文。
+## 2. 明确砍掉（不再实施）
 
-## 3. 本次目标（P0 + P1）
+- `safe_edit_file`（权限已是最高，不考虑安全）
+- `leave_note` / `read_notes`（小题大做）
+- `promote_skill` / 技能固化 / 技能成功率（改为记忆驱动，整块不做）
+- `search_history`（由自动摘要注入替代）
 
-原则：**只改 `core/maid/`，外加少量接入点**；不碰主链路业务逻辑；不引入新运行时依赖。
+## 3. 已实施
 
-### P0-1 安全改动守卫
-- 新增 `safe_edit_file(path, old_text, new_text)`（`core/maid/maid_runtime.py`）：
-  - 限制在项目根目录内（`os.path.commonpath`），拒绝 `maid_venv/`、`data/`、`configs/`。
-  - 写入前备份到 `backups/maid_edit/<YYYYmmdd_HHMMSS>/<相对路径>`。
-  - 修改后若为 `.py`，执行 `py_compile`；失败则自动还原并返回错误详情。
-  - 返回：备份路径、改动行数、编译结果。
-- 提示词明确：改代码只能用它，禁止用 `terminal` 直接 `sed`/重定向改 `.py`。
-- 验收：语法错误补丁 → 文件内容不变 + 返回错误；正常补丁 → 备份存在且 `py_compile` 通过。
+### S1 文件读取防爆（`maid_tools.py`）
+`read_file_content(path, max_lines, offset, max_bytes)`：单次 64KB、单行 2000 字符、
+按行截断，返回总行数/字节数与续读 `offset`；content 含 NUL 或目录直接报错。
+曾有 base64 文件把上下文顶到 98 万字符，现在 900KB 单行文件只返回约 2KB。
 
-### P0-2 任务状态快照（可诊断 / 可续跑）
-- 新文件 `tasks/state/<task_id>.json`，每轮工具执行后写一次，字段：
-  `task_id, goal, chat_id, round, last_step, messages, created_at, updated_at, status`
-  （`messages` 直接存，单条工具结果已被 `_truncate_text` 限制在 3000 字符内）。
-- `finish` / 超时 / 异常退出时删除快照，并在汇总里记 `last_state` 路径。
-- 对外接口（`core/maid/maid_memory.py`）：
-  `save_task_state() / load_task_state() / list_unfinished_states()`。
-- **不做自动续跑**：启动自动 resume 会往群里发消息，需机主另行决定；本期只提供
-  `maid_evolution_loop(resume_state=...)` 的入口能力 + 人工/后续接入。
+### S2 预算与轮次（`maid_common.py` / `maid_loop.py`）
+- `MAX_MAID_ROUNDS = 40`（有效轮）
+- `MAX_MAID_ERRORS = 5`：网络失败 / JSON 解析失败独立计数，**不占有效轮**
+- `MAID_MAX_WALL_SECONDS = 900`：每轮开头检查，超限走带 `last_step` 的 timeout 分支
+- `TERMINAL_MAX_TIMEOUT` 提到 600s
 
-### P0-3 预算双闸
-- `core/maid/maid_common.py` 增加 `MAID_MAX_WALL_SECONDS = 900`（15 分钟）。
-- loop 每轮开始检查 `time.monotonic()`，超限 → 走“优雅超时”分支（带 `last_step`，状态 `timeout`），
-  不再继续消耗 LLM 调用。
-- 验收：把上限临时调成 5 秒的单元测试，任务应在 2 轮内返回 `timeout`，且不再调用 LLM 第二次。
+### S3 断点（`maid_memory.py` 新建 + loop）
+- `tasks/state/<task_id>.json` 每轮覆盖写（messages 单条 ≤3000、剔除图块）
+- 正常结束删快照；超时/中断保留快照，`status=interrupted`
+- 任务开始注入最近 3 条任务摘要（≤120 字/条）+ 未完成快照提示
+- `resume_task(task_id)`：读回消息续跑，**每次任务只允许恢复一次**（否则会重置轮次死循环）
+- `logs/task_index.jsonl` 每任务一行
 
-### P1-1 任务历史索引 + 检索
-- `logs/task_index.jsonl`，每次任务结束追加一行：
-  `{task_id, goal, status, result(≤500字), rounds, elapsed, chat_id, skills, files, finished_at}`
-- 工具 `search_history(keyword=None, limit=10)`：按 goal/result 子串匹配，返回摘要列表。
-- 任务开始时把**最近 3 条**摘要（每条 ≤120 字）注入 prompt，格式：
-  `[最近任务] 2026-10-21 13:00 | finished | 目标：xxx | 结果：xxx`
-- 验收：跑一次任务 → index 多一行；`search_history` 能命中；新任务 prompt 含最近摘要。
+### S4 终端授权（`maid_approval.py` 新建）
+- 硬拦截只剩：`sudo`、关机/重启、`mkfs`/`format X:`、`dd of=/dev/`、删根目录、fork 炸弹
+- `rm -rf /tmp/x` 不再被 `"rm -rf /"` 子串误杀，改为走授权判定
+- 可疑命令（删改文件、装依赖、kill、git 历史操作、`curl|bash`、写项目外路径）交给
+  **继承了当前 session 人格与上下文的 Yuki** 做一次 JSON 判定，30s 超时、解析失败按拒绝
+- 无 approver 的路径（CLI、toolchain inline）直接放行并记日志
+- `MAID_ESCALATE_TO_MASTER=1` 时，Yuki 拒绝后可升级为群内询问机主（默认关闭）
 
-### P1-2 跨会话留言（notes）
-- `memory/maid_notes.jsonl`，字段：`id, ts, content, tags[], chat_id, read_at`。
-- 工具：`leave_note(content, tags)`、`read_notes(tags=None, unread_only=True, limit=20)`。
-- 任务开始时注入未读 note（≤10 条），并在成功注入后写 `read_at`（避免反复占用上下文）。
-- 注意：`memory/` 已被 `.gitignore` 忽略，笔记不会进仓库。
-- 验收：写 note → 新任务 prompt 出现 → 再次任务不重复出现。
+### S5 图片读取（`maid_runtime.prepare_image_message` + loop）
+`read_image(path, question)`：复用 `MemeProcessor.compress_image` 压到 768/70，
+构造 `image_url` 图块插入本轮消息；图块只存活一轮，下一轮降级为文本占位并剔除出快照。
+已用 `deepseek-flash` 实测识别 `yuki_help.png` 成功，无需视觉模型转写兜底。
 
-### P1-3 草稿固化 + 技能成功率
-- 工具 `promote_skill(name, summary, self_test=None)`：
-  - 源：`workspace/<name>.py`；目标：`skills/<name>.py` + `skills/<name>.md`（首行 = summary）。
-  - `self_test` 为必填的断言式自测代码（或缺省时拒绝固化），在 maid_venv 中执行，
-    退出码 0 才允许固化；已存在同名技能时先备份到 `backups/skills/`。
-- `list_skills()` 增加最近 30 天成功率（从 `task_index.jsonl` 统计 `skills` 字段），
-  格式：`- name: 简介（近30天 成功x/失败y）`。
-- 验收：自测失败 → 不落盘；成功 → `skills/` 两个文件存在，`read_skill` 可读。
+### S6 临时技能降摩擦（`maid_runtime.py`）
+- `write_and_run_temp_skill` / `run_skill` 支持 `timeout`（默认 120、上限 600）与
+  `interpreter`（`maid` 隔离环境 / `yuki` 主环境）
+- 子进程注入 `PYTHONPATH=项目根`，模型可直接 `import config/utils/core`
+- 成功也回传 stderr；失败只给末 40 行
+- `pip list` 与虚拟环境可用性进程内缓存：重复执行 1.4s → 0.01s
+- 依赖自动安装加 180s 超时
 
-### P1-4 汇报增强
-- `build_maid_report()` 追加：耗时、轮次、改动文件、trace 路径。
-- 保持 `【小女仆完成! 小女仆汇报】` 前缀不变（上层有解析/测试依赖该格式）。
+### S7 提示词与汇报
+- 提示词只加：新工具各一行（`read_image`/`resume_task`）、`timeout`/`interpreter` 说明、
+  3 条纪律、「被 Yuki 判定拒绝时换方案」；修掉重复的「8.」编号（3569 → 4251 字符）
+- `build_maid_report` 前缀不变，末尾追加 `轮次 | 耗时 | trace | 快照`
+- `core/maid/maid.py` 导出新符号
 
-## 4. 需要改的文件清单
-
-| 文件 | 改动 |
-| --- | --- |
-| `core/maid/maid_common.py` | 新增 `MAID_MAX_WALL_SECONDS`、`TASK_INDEX_FILE`、`NOTES_FILE`、`TASK_STATE_DIR` |
-| `core/maid/maid_memory.py`（新建） | 索引读写、notes 读写、状态快照读写 |
-| `core/maid/maid_runtime.py` | `safe_edit_file()`、`promote_skill()`、`list_skills()` 成功率 |
-| `core/maid/maid_loop.py` | 新工具分发、预算检查、快照写入、开始时注入历史/笔记、结束时写索引 |
-| `core/maid/maid_prompt.py` | 新工具说明 + 使用纪律（改代码只走 `safe_edit_file`、固化需自测） |
-| `core/maid/maid_boundary.py` | `build_maid_report()` 增加耗时/轮次/文件 |
-| `core/maid/maid.py` | 导出新符号（保持 `__all__` 一致） |
-| `tests/test_maid_memory.py`（新建） | 索引、notes、快照、预算、promote 的单元测试 |
-
-## 5. 明确不做（留待 P2/P3，需单独确认）
-
-- `ask_yuki` 半双工提问 / 任务挂起恢复。
-- `propose_patch` 提案式改代码。
-- 任何形式的热重载（`importlib.reload` 会残留旧对象与重复注册的 asyncio 任务/定时器；
-  正确做法是外置 supervisor + `os.execv` 自重启，属于运维层决策）。
-- 多 worker 并行消费 `maid_task_queue`。
-
-## 6. 约束与坑
-
-1. **单进程**：`maid_evolution_loop` 在 Yuki 的事件循环里跑。任何新工具不得阻塞
-   （文件 IO 一律 `asyncio.to_thread`，子进程用 `create_subprocess_exec` + `wait_for`）。
-2. `_clean_workspace()` 在任务结束时清空 `workspace/`，**promote 必须在 finish 前完成**。
-3. 所有新工具的输出都要过 `_truncate_text`，避免撑爆上下文。
-4. 不要提交：`configs/config.yaml`（含 key）、`data/`、`models/`、`logs/`、`memory/`、`maid_venv/`、
-   `skills/`、`backups/`（均已在 `.gitignore` 内）。
-5. 推送分支用 `fix/maid-env-vision-prefetch`，**不要直推 `main`**。
-6. 别动 `tests/test_maid.py`（占位失败用例）和其它环境性失败用例。
-
-## 7. 恢复上下文 / 开发流程
+## 4. 验证
 
 ```bash
-cd /home/asumi/Yuki
-git status && git log --oneline -3
-/home/asumi/miniconda3/envs/yuki/bin/python tests/run_tests.py            # 全量
-/home/asumi/miniconda3/envs/yuki/bin/python tests/run_tests.py test_maid_memory  # 单模块
-./maid_venv/bin/python -c "import encodings; print('env ok')"             # 小女仆环境自检
+/home/asumi/miniconda3/envs/yuki/bin/python tests/run_tests.py                  # 全量
+/home/asumi/miniconda3/envs/yuki/bin/python tests/run_tests.py test_maid_features
 ```
 
-实施顺序建议：`maid_common` → `maid_memory` → `maid_runtime` → `maid_loop` → `maid_prompt` →
-`maid_boundary`/`maid.py` → 测试 → 更新 `docs/Log.md` → 提交。
+- 基线：`passed=100 failed=23`（3 个 LOAD ERROR，均为环境性失败）
+- 当前：`passed=114 failed=23`，失败集合与基线完全一致（新增 14 个用例全过）
+- 新增 `tests/test_maid_features.py`：读文件截断/续读、墙钟预算、错误轮不计数、
+  快照与索引往返、续跑、命令分级、授权拒绝/放行、图块注入与降级
 
-每个任务独立提交，前缀沿用 `feat(maid): ...`；完成后更新本文件顶部的状态行。
+## 5. 已知代价与后续
 
-## 8. 未决问题（下个 session 先确认）
-
-1. `MAID_MAX_WALL_SECONDS` 取 900 秒是否合适（当前 20 轮 × LLM 延迟，实际约 3~8 分钟）？
-2. `promote_skill` 的自测是“必填”还是“允许模型跳过、但记录未自测标记”？
-3. 历史注入条数 3 条、notes 注入 10 条是否够用（可先用常量，跑一周再调）？
-4. `build_maid_report` 格式变更是否需要同步 `tests/`（当前无对应断言，预计安全）。
+1. 授权判定是额外一次 LLM 调用（约 1~3s），只对可疑命令触发；Yuki 的批准不等于权限隔离
+   （同一模型换上下文再采样），它是懂语境的过滤器，不是安全边界。
+2. `maid_worker` 串行消费任务队列，授权判定期间队列停摆（但不再有 300s 人类等待）。
+3. `tasks/state/` 已加入 `.gitignore`；未完成的快照会保留，需要时可手动清理。
+4. 未做：`ask_yuki` 半双工提问、热重载、多 worker 并行；`agently_*` 分支缺 import 的旧 bug 未修。
