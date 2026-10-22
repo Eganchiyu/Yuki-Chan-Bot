@@ -1,12 +1,16 @@
+import asyncio
 import json
 import os
+import time
 from datetime import datetime
 
 from config import cfg
 from utils.llm_client import llm_chat
 
+from core.maid import maid_common
 from core.maid.maid_common import (
     LOGS_DIR,
+    MAX_MAID_ERRORS,
     MAX_MAID_ROUNDS,
     TERMINAL_DEFAULT_TIMEOUT,
     clean_code_block,
@@ -73,32 +77,70 @@ async def maid_evolution_loop(user_goal: str, chat_id: str = None):
 
     last_step = {"round": 0, "thought": "尚未开始", "tool": None, "result": "还没有执行任何工具。"}
 
-    for i in range(1, MAX_MAID_ROUNDS + 1):
-        remaining_rounds = MAX_MAID_ROUNDS - i
-        logger.info(f"[Maid] 第 {i}/{MAX_MAID_ROUNDS} 轮决策，剩余 {remaining_rounds} 轮")
+    start_time = time.monotonic()
+    wall_budget = maid_common.MAID_MAX_WALL_SECONDS
+    rounds_done = 0
+    error_rounds = 0
+    stopped_reason = ""
+
+    while True:
+        if rounds_done >= MAX_MAID_ROUNDS:
+            stopped_reason = f"已用完 {MAX_MAID_ROUNDS} 个有效轮"
+            break
+        if error_rounds >= MAX_MAID_ERRORS:
+            stopped_reason = f"网络/解析错误达到 {MAX_MAID_ERRORS} 次"
+            break
+        elapsed = time.monotonic() - start_time
+        if elapsed >= wall_budget:
+            stopped_reason = f"墙钟超时（已耗时 {int(elapsed)}s，上限 {int(wall_budget)}s）"
+            break
+
+        round_no = rounds_done + 1
+        logger.info(
+            f"[Maid] 有效轮 {round_no}/{MAX_MAID_ROUNDS}，错误 {error_rounds}/{MAX_MAID_ERRORS}，"
+            f"已耗时 {elapsed:.0f}s"
+        )
 
         # 调用稳健 API。进度只作为本轮即时状态，不永久堆入上下文。
         progress_msg = {
             "role": "user",
-            "content": f"[系统进度] 当前是第 {i}/{MAX_MAID_ROUNDS} 轮决策，剩余 {remaining_rounds} 轮。请据此控制步骤；如果剩余轮次不足，优先返回当前状态和已获得的结果，不要无声耗尽轮次。"
+            "content": f"[系统进度] 当前是第 {round_no}/{MAX_MAID_ROUNDS} 个有效轮，网络/解析错误已发生 {error_rounds}/{MAX_MAID_ERRORS} 次。请据此控制步骤；如果剩余轮次不足，优先返回当前状态和已获得的结果，不要无声耗尽轮次。"
         }
         messages.append(progress_msg)
         content = await call_cloud_maid_robust(messages)
         messages.pop()
 
         if f"{cfg.ROBOT_NAME.title()} 好像有点不舒服" in content:
-            logger.error("[Maid] 线路全线崩溃，停止尝试")
-            break
+            error_rounds += 1
+            logger.warning(
+                f"[Maid] LLM 调用失败（{error_rounds}/{MAX_MAID_ERRORS}），本轮不计入有效轮"
+            )
+            messages.append({
+                "role": "user",
+                "content": "[系统] 上一条请求没有返回有效内容（线路/网络问题）。本轮不计入任务轮次，请直接重新输出 JSON。",
+            })
+            await asyncio.sleep(min(3 * error_rounds, 15))
+            continue
 
         try:
             call = json.loads(content)
-            thought = call.get("thought", "思考中...")
-            tool = call.get("tool")
-            args = call.get("args", {})
+        except json.JSONDecodeError:
+            error_rounds += 1
+            logger.warning(
+                f"[Maid] JSON 解析失败（{error_rounds}/{MAX_MAID_ERRORS}），本轮不计入有效轮"
+            )
+            messages.append({"role": "user", "content": "错误：请务必输出纯净的 JSON 格式。"})
+            continue
 
-            logger.info(f"[Maid] 思考: {thought}")
-            logger.info(f"[Maid] 动作: {tool}")
+        thought = call.get("thought", "思考中...")
+        tool = call.get("tool")
+        args = call.get("args", {})
+        rounds_done += 1
 
+        logger.info(f"[Maid] 思考: {thought}")
+        logger.info(f"[Maid] 动作: {tool}")
+
+        try:
             if tool == "list_skills":
                 res = list_skills()
             elif tool == "write_temp_skill":  # 改为 temp
@@ -200,11 +242,11 @@ async def maid_evolution_loop(user_goal: str, chat_id: str = None):
             else:
                 res = f"错误：未知工具 {tool}"
 
-            last_step = {"round": i, "thought": thought, "tool": tool, "result": _truncate_text(res, 3000)}
+            last_step = {"round": rounds_done, "thought": thought, "tool": tool, "result": _truncate_text(res, 3000)}
 
             # 写入日志文件
             with open(log_file, "a", encoding="utf-8") as f:
-                f.write(f"### 步骤 {i}\n**思考**: {thought}\n\n**动作**: `{tool}`({args})\n\n**结果**: \n{res}\n\n")
+                f.write(f"### 步骤 {rounds_done}\n**思考**: {thought}\n\n**动作**: `{tool}`({args})\n\n**结果**: \n{res}\n\n")
 
             messages.append({"role": "assistant", "content": content})
             feedback = f"执行结果：\n{res}"
@@ -213,9 +255,6 @@ async def maid_evolution_loop(user_goal: str, chat_id: str = None):
 
             messages.append({"role": "user", "content": feedback})
 
-        except json.JSONDecodeError:
-            logger.warning("[Maid] JSON 解析失败，反馈给模型重试")
-            messages.append({"role": "user", "content": "错误：请务必输出纯净的 JSON 格式。"})
         except Exception as e:
             logger.error(f"[Maid] 运行异常: {str(e)}")
             messages.append({"role": "user", "content": f"运行中发生异常：{str(e)}（如果任务涉及发送图片任务，只需要保存文件，并在finish中返回该文件的绝对路径，说明这个图片可以被发送即可）"})
@@ -226,8 +265,10 @@ async def maid_evolution_loop(user_goal: str, chat_id: str = None):
     except Exception as e:
         logger.error(f"[Maid] 清理草稿区失败: {e}")
 
+    elapsed_total = time.monotonic() - start_time
     timeout_result = (
-        f"任务处理超时（已用完 {MAX_MAID_ROUNDS} 轮）。"
+        f"任务中止（{stopped_reason}）。有效轮 {rounds_done}/{MAX_MAID_ROUNDS}，"
+        f"错误 {error_rounds}/{MAX_MAID_ERRORS}，耗时 {int(elapsed_total)}s。"
         f"最后进度：第 {last_step['round']} 轮，动作={last_step['tool']}，"
         f"思考={last_step['thought']}，结果={last_step['result']}"
     )

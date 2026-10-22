@@ -18,8 +18,10 @@ for d in [SKILLS_DIR, WORKSPACE_DIR, TASKS_DIR, LOGS_DIR, MAID_VENV_DIR]:
 
 MAX_TOOL_OUTPUT_CHARS = 12000
 TERMINAL_DEFAULT_TIMEOUT = 30
-TERMINAL_MAX_TIMEOUT = 120
-MAX_MAID_ROUNDS = 20
+TERMINAL_MAX_TIMEOUT = 600
+MAX_MAID_ROUNDS = 40          # 有效轮：真正执行了工具决策的轮次
+MAX_MAID_ERRORS = 5           # 网络失败 / JSON 解析失败的上限，不占有效轮
+MAID_MAX_WALL_SECONDS = 900   # 单任务墙钟上限，兜底失控任务
 
 
 def clean_json_output(text):
