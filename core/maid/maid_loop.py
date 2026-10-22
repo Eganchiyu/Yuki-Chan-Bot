@@ -131,8 +131,9 @@ async def maid_evolution_loop(user_goal: str, chat_id: str = None):
             elif tool == "read_file":
                 file_path = args.get('path') or args.get('file_path')
                 max_lines = args.get('max_lines', 500)
-                logger.info(f"[Maid] 正在读取文件: {file_path}")
-                res = read_file_content(file_path, max_lines)
+                offset = args.get('offset', 0)
+                logger.info(f"[Maid] 正在读取文件: {file_path} (offset={offset})")
+                res = read_file_content(file_path, max_lines, offset)
             elif tool == "list_directory":
                 dir_path = args.get('path') or args.get('dir_path') or "."
                 show_hidden = args.get('show_hidden', False)
