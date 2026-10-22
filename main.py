@@ -106,8 +106,10 @@ def start_health_probe(components):
             queued = queue.qsize() if queue is not None else 0
         except Exception:
             queued = 0
+        sender = getattr(engine, "sender", None)
         return {
-            "napcat_online": bool(getattr(engine, "napcat_online", False)),
+            # 用 WS 真实状态，而不是 engine.napcat_online（那是乐观默认值 True）
+            "napcat_online": bool(getattr(sender, "connected", False)),
             "maid_queued": queued,
             "maid_running": len(getattr(yuki, "maid_current_tasks", {}) or {}),
         }

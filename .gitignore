@@ -65,7 +65,6 @@ data/
 # 自改候选区与守护进程运行时状态不进 git（只由 supervisor 管理）
 staging/
 deploy/state.json
-deploy/test_baseline.json
 # 技能是自进化的产物，必须进 git 才能追溯（准则第 10 条）。
 # 只忽略缓存，不忽略 .py/.md。
 skills/__pycache__/

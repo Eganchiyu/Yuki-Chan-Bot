@@ -130,7 +130,7 @@ def trim_file(path, max_mb):
         tail = f.read()
     tmp = path + ".tmp"
     with open(tmp, "wb") as f:
-        f.write(b"[... 前半部分已按保留策略截断 ...]\n" + tail)
+        f.write("[... 前半部分已按保留策略截断 ...]\n".encode("utf-8") + tail)
     os.replace(tmp, path)
 
 
