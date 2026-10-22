@@ -104,3 +104,71 @@
 
 验证：`tests/run_tests.py` → `passed=114 failed=23`，失败集合与基线完全一致；
 新增 `tests/test_maid_features.py` 14 例全过。需重启 `main.py` 生效。
+
+## 2026-10-22 自进化（小女仆改自身代码 + 容器热重载 + 降级回滚）落地
+
+### 目标
+让 Yuki 能修改自身代码并生效，同时保证「改坏了也能自己退回去」：
+容器化热重载 + 错误降级反馈 + 可追溯 + 不爆存储 + `yuki_memory` 重点保护 + 人格不可改。
+
+### 为什么不做进程内热重载
+`importlib.reload` 只会替换模块对象，已持有引用的 `cfg` 单例、`FunctionRegistry`、
+全局 aiohttp session、ChromaDB client、NapCat WS 连接、运行中的 maid 协程全部保留旧版，
+结果是「代码是新的、行为是旧的」。且 `config.py` 明确写着「启动时一次性加载，无热重载」。
+因此采用**整进程替换**（容器重建）作为唯一生效方式。
+
+另一个硬约束：`data/yuki.lock` 单实例锁 + `yuki_memory` 是文件锁型 ChromaDB，
+无法蓝绿并行，只能「离线校验 → 短窗口切换」。
+
+### 交付物
+- `deploy/Dockerfile`：只装依赖（约 2.27GB），代码不进镜像 → 改代码只需重启容器，不必重建镜像
+- `deploy/run.sh`：代码树 `:ro` 挂载、数据目录 rw 卷、`--network host`、宿主 uid 运行、容器内外**同绝对路径**
+- `deploy/verify.sh`：5 道门（compileall / import / tests / dry_run / health），临时容器断网 + tmpfs
+- `deploy/test_gate.py` + `test_baseline.json`：测试门用基线差集（既有 33 项环境性失败不阻塞）
+- `deploy/reviewer.py`：宿主侧独立模型审查（deepseek-flash，温度 0.2，JSON 输出）
+- `deploy/supervisor.py`：宿主守护，串联分级校验→审查→快照→应用→commit→校验→重启→回滚
+- `deploy/retention.py`：trace 7 天→按周 tar.gz（上限 200MB）、日志截断、staging 3 天、快照 7 份
+- `deploy/yuki-supervisor.service` + `install-service.sh`：常驻 + 每日 cron
+- `utils/health_server.py` + `main.py` 接入：`/health` 探针、`YUKI_DRY_RUN` 试启动
+- `docs/evolution-charter.md` + `core/maid/maid_charter.py`：准则与路径分级（单一来源）
+- `core/maid/maid_selfevolve.py`：`propose_patch` / `verify_patch` / `request_self_reload` /
+  `read_evolution_result` / `request_restart`
+- `core/maid/maid_worklog.py`：`list_previous_work` / `read_work_trace`（跨任务交接）
+
+### 安全模型
+三层隔离：代码只读挂载（agent 改不到运行中的代码）→ 唯一可写代码位置是 `staging/`
+→ 只有宿主 supervisor 能改代码/重启。禁区由路径分级强制：`deploy/`、`.git/`、`configs/`、
+`data/`、`yuki_memory/`、`memory/`、`logs/`、`models/`、`maid_venv/`、
+**`core/prompts.py`（人格，无例外）**、准则文件本身。
+
+### 有效性与反馈的分层
+| 结果 | 是否重启 | 模型能否就地继续 |
+|---|---|---|
+| review_rejected / verify_failed / apply_failed | 否 | 是（同步拿到意见） |
+| ok / restarted | 是 | 否（重启后 resume_task） |
+
+### 踩过的坑
+1. 容器路径 `/app` 与宿主不一致 → `file:///` 表情包/文件/语音全部静默发不出去。改为同路径挂载。
+   `send()` 不等响应，所以日志只显示「发送完成」，极难发现。
+2. 只读挂载下 `compileall` 写 `.pyc` 失败 → 用 `PYTHONPYCACHEPREFIX` 指向 tmpfs。
+3. 容器以 root 写 staging → 宿主无法回写 `result.json` → 改以宿主 uid 运行。
+4. `git add -A` 把 staging 与运行时状态卷进自改提交，回滚时连 request 目录一起删。
+   改为只 add 补丁路径；`staging/`、`deploy/state.json` 入 `.gitignore`。
+5. 回滚目标是「本次改动前的 HEAD」而不是 `last_good`（后者可能未初始化）。
+6. 改 `deploy/` 后必须 `sudo systemctl restart yuki-supervisor`，否则守护进程跑旧逻辑。
+7. 测试 fixture 直接放进 `staging/` 且带 `request.json`，运行中的旧 supervisor 立刻消费，
+   把 `while True: pass` 提交进 `core/tools/tools_common.py`（commit 89d39cd）。已回滚。
+   教训：放 fixture 前先停守护进程；此事也印证了审查层的必要性。
+
+### 验证结果
+- 成功路径 46s：审查 2.6s → 应用 → commit → 5 门 → 重启 → health → tag `good-20261022_182221`
+- 坏补丁路径：`verify_failed`，回滚到基线，回传 `SyntaxError` 精确行号
+- 审查驳回路径：同步返回具体问题与改法，进程保持存活
+- 重启工具：容器 ID 变更、`result=restarted`、快照生成
+- 表情包：`send_private_msg` 返回 `retcode: 0`
+- 5 道门稳定通过（测试门新增失败 0）
+
+### 待办
+- P1：连续失败进入安全模式（`YUKI_SAFE_MODE=1` 只读启动并通知机主）
+- P1：切换后观察窗口（如 5 分钟内 error 率超阈值自动回滚）
+- P2：审查抽检（人工复核被放行的 patch）、影子只读回放
