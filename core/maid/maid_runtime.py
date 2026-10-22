@@ -381,6 +381,76 @@ async def terminal_command_maid(
         return json.dumps({"ok": False, "error": f"终端执行异常：{str(e)}", "command": command}, ensure_ascii=False)
 
 
+IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"}
+IMAGE_MAX_BYTES = 15 * 1024 * 1024
+IMAGE_MAX_SIDE = 768
+IMAGE_JPEG_QUALITY = 70
+
+
+def _read_image_bytes(path: str) -> bytes:
+    with open(path, "rb") as f:
+        return f.read()
+
+
+def _compress_image_b64(data: bytes) -> str:
+    """复用视觉管线的压缩逻辑；依赖缺失或解析失败时返回空串。"""
+    try:
+        from modules.vision.processor import MemeProcessor
+    except Exception as e:
+        logger.warning(f"[Maid] 无法加载图片压缩器: {e}")
+        return ""
+    try:
+        return MemeProcessor.compress_image(data, max_size=IMAGE_MAX_SIDE, quality=IMAGE_JPEG_QUALITY) or ""
+    except Exception as e:
+        logger.warning(f"[Maid] 图片压缩失败: {e}")
+        return ""
+
+
+async def prepare_image_message(path, question=None):
+    """读取本地图片并压成原生图块，返回 (工具结果文本, 带图消息)。"""
+    if not path:
+        return "错误：未提供图片路径", None
+
+    abs_path = os.path.abspath(path)
+    if not os.path.exists(abs_path):
+        return f"错误：图片不存在 '{abs_path}'", None
+    if os.path.isdir(abs_path):
+        return f"错误：'{abs_path}' 是目录", None
+
+    ext = os.path.splitext(abs_path)[1].lower()
+    if ext not in IMAGE_EXTENSIONS:
+        return f"错误：'{ext or '(无扩展名)'}' 不是支持的图片格式（支持 {', '.join(sorted(IMAGE_EXTENSIONS))}）", None
+
+    file_size = os.path.getsize(abs_path)
+    if file_size > IMAGE_MAX_BYTES:
+        return f"错误：图片过大（{file_size / 1024 / 1024:.1f} MB），上限 {IMAGE_MAX_BYTES // 1024 // 1024} MB", None
+    if file_size == 0:
+        return f"错误：图片 '{abs_path}' 是空文件", None
+
+    try:
+        data = await asyncio.to_thread(_read_image_bytes, abs_path)
+        b64_data = await asyncio.to_thread(_compress_image_b64, data)
+    except Exception as e:
+        return f"错误：读取图片失败 - {e}", None
+
+    if not b64_data:
+        return f"错误：无法解析图片 '{abs_path}'（压缩失败，可能不是有效图片）", None
+
+    prompt = (question or "").strip() or "请查看这张图片，说明画面内容；如有文字请转写。"
+    image_message = {
+        "role": "user",
+        "content": [
+            {"type": "text", "text": f"[图片 {os.path.basename(abs_path)}] {prompt}"},
+            {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64_data}"}},
+        ],
+    }
+    return (
+        f"已读取图片 {os.path.basename(abs_path)}（{file_size / 1024:.1f} KB），"
+        f"图片已附在这条消息里，请直接查看后再回答。",
+        image_message,
+    )
+
+
 def _clean_workspace():
     """安全清理 workspace 目录：只删除文件，不删除目录本身（避免 Windows 权限问题）"""
     if not os.path.exists(WORKSPACE_DIR):

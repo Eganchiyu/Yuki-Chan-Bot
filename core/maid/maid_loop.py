@@ -21,6 +21,7 @@ from core.maid.maid_common import (
 from core.maid.maid_prompt import MAID_SYSTEM_PROMPT
 from core.maid.maid_runtime import (
     _clean_workspace,
+    prepare_image_message,
     install_package,
     list_skills,
     read_skill,
@@ -37,6 +38,19 @@ from core.maid.maid_tools import (
     read_file_content,
     search_diary_fast,
 )
+
+
+def _degrade_image_message(message, note="[图片内容已过期，本轮不再附上]"):
+    """把带图消息压成纯文本，避免同一张图在多轮里反复占用上下文。"""
+    content = message.get("content")
+    if not isinstance(content, list):
+        return
+    texts = [
+        str(block.get("text") or "")
+        for block in content
+        if isinstance(block, dict) and block.get("type") == "text"
+    ]
+    message["content"] = (" ".join(t for t in texts if t) or "[图片]") + " " + note
 
 
 async def call_cloud_maid_robust(messages):
@@ -92,6 +106,8 @@ async def maid_evolution_loop(user_goal: str, chat_id: str = None, approver=None
     error_rounds = 0
     resume_used = False
     stopped_reason = ""
+    image_messages = []
+    image_rounds = {}
 
     while True:
         if rounds_done >= MAX_MAID_ROUNDS:
@@ -105,6 +121,13 @@ async def maid_evolution_loop(user_goal: str, chat_id: str = None, approver=None
             stopped_reason = f"墙钟超时（已耗时 {int(elapsed)}s，上限 {int(wall_budget)}s）"
             break
 
+        for image_message in list(image_messages):
+            if image_rounds.get(id(image_message), 0) < rounds_done:
+                _degrade_image_message(image_message)
+                image_messages.remove(image_message)
+                image_rounds.pop(id(image_message), None)
+
+        pending_image = None
         round_no = rounds_done + 1
         logger.info(
             f"[Maid] 有效轮 {round_no}/{MAX_MAID_ROUNDS}，错误 {error_rounds}/{MAX_MAID_ERRORS}，"
@@ -187,6 +210,15 @@ async def maid_evolution_loop(user_goal: str, chat_id: str = None, approver=None
                 skill_name = args.get('name')
                 logger.info(f"[Maid] 正在查阅技能源码: {skill_name}")
                 res = read_skill(skill_name)
+            elif tool == "read_image":
+                image_path = args.get("path") or args.get("file_path")
+                question = args.get("question")
+                logger.info(f"[Maid] 正在读取图片: {image_path}")
+                res, image_message = await prepare_image_message(image_path, question)
+                if image_message is not None:
+                    pending_image = image_message
+                    image_messages.append(image_message)
+                    image_rounds[id(image_message)] = rounds_done
             elif tool == "resume_task":
                 target_id = args.get("task_id") or None
                 state = {} if resume_used else await maid_memory.resume_state(target_id)
@@ -307,6 +339,8 @@ async def maid_evolution_loop(user_goal: str, chat_id: str = None, approver=None
                 feedback += "\n[系统提示]: 你似乎忘记在代码中 'import' 必要的库了。"
 
             messages.append({"role": "user", "content": feedback})
+            if pending_image is not None:
+                messages.append(pending_image)
 
             await maid_memory.save_task_state(
                 task_id=task_id,
