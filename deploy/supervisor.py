@@ -215,10 +215,20 @@ def apply_patch(request_dir, files):
     return True, f"已应用 {len(files)} 个文件"
 
 
-def git_commit(summary, task_id):
-    sh(["git", "add", "-A"], cwd=ROOT)
+def git_commit(summary, task_id, files):
+    """只提交补丁涉及的路径。
+
+    绝不用 `git add -A`：那会把守护进程自己的运行时状态、staging 目录、
+    以及人工未提交的改动一起卷进自进化提交，回滚时连带删掉不该删的东西。
+    """
+    paths = [str(f["path"]) for f in files]
+    rc, out = sh(["git", "add", "--"] + paths, cwd=ROOT)
+    if rc != 0:
+        return False, f"git add 失败: {out}"
     rc, out = sh(["git", "commit", "-m", f"self-evolve: {summary}\n\ntask: {task_id}"], cwd=ROOT)
-    if rc != 0 and "nothing to commit" not in out:
+    if rc != 0:
+        if "nothing to commit" in out:
+            return False, "补丁与原文件完全相同，没有实际改动，已取消（无需重启）"
         return False, out
     rc, sha = sh(["git", "rev-parse", "HEAD"], cwd=ROOT)
     return True, sha.strip()
@@ -311,7 +321,7 @@ def handle_request(request_dir):
         git_reset(base)
         return finish("apply_failed", msg)
 
-    ok, sha = git_commit(summary, task_id)
+    ok, sha = git_commit(summary, task_id, files)
     if not ok:
         git_reset(base)
         return finish("apply_failed", f"git commit 失败: {sha}")
