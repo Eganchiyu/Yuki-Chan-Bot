@@ -7,7 +7,7 @@ from datetime import datetime
 from config import cfg
 from utils.llm_client import llm_chat
 
-from core.maid import maid_common
+from core.maid import maid_common, maid_memory
 from core.maid.maid_common import (
     LOGS_DIR,
     MAX_MAID_ERRORS,
@@ -66,9 +66,17 @@ async def maid_evolution_loop(user_goal: str, chat_id: str = None):
     created_skill_files = []
 
     current_skills = list_skills()
+    startup_context = await maid_memory.build_startup_context()
+    initial_user = (
+        f"\n[系统环境]：当前真实时间是 {today_str}。如果任务涉及时间推算（如'今天'、'昨天'），请以此为准。\n"
+        f"特别说明：（如果涉及发送图片到群聊的任务，只需要保存文件，并最终返回该文件的绝对路径，说明这个图片可以被发送即可，不用执行发送）\n"
+        f"当前目标：{user_goal}\n当前技能列表：{current_skills}"
+    )
+    if startup_context:
+        initial_user += f"\n\n[历史上下文]\n{startup_context}"
     messages = [
         {"role": "system", "content": MAID_SYSTEM_PROMPT},
-        {"role": "user", "content": f"\n[系统环境]：当前真实时间是 {today_str}。如果任务涉及时间推算（如'今天'、'昨天'），请以此为准。\n特别说明：（如果涉及发送图片到群聊的任务，只需要保存文件，并最终返回该文件的绝对路径，说明这个图片可以被发送即可，不用执行发送）\n当前目标：{user_goal}\n当前技能列表：{current_skills}"}
+        {"role": "user", "content": initial_user},
     ]
 
     logger.info(f"[Maid] 任务启动: {user_goal}")
@@ -76,11 +84,13 @@ async def maid_evolution_loop(user_goal: str, chat_id: str = None):
         f.write(f"# 小女仆任务追踪: {task_id}\n\n**任务目标**: {user_goal}（如果涉及发送图片到群聊的任务，只需要保存文件，并最终返回该文件的绝对路径，说明这个图片可以被发送即可，不用执行发送）\n\n---\n")
 
     last_step = {"round": 0, "thought": "尚未开始", "tool": None, "result": "还没有执行任何工具。"}
+    started_at = today_str
 
     start_time = time.monotonic()
     wall_budget = maid_common.MAID_MAX_WALL_SECONDS
     rounds_done = 0
     error_rounds = 0
+    resume_used = False
     stopped_reason = ""
 
     while True:
@@ -170,6 +180,21 @@ async def maid_evolution_loop(user_goal: str, chat_id: str = None):
                 skill_name = args.get('name')
                 logger.info(f"[Maid] 正在查阅技能源码: {skill_name}")
                 res = read_skill(skill_name)
+            elif tool == "resume_task":
+                target_id = args.get("task_id") or None
+                state = {} if resume_used else await maid_memory.resume_state(target_id)
+                if resume_used:
+                    res = "本次任务已经恢复过一次快照，不能重复恢复。请基于当前上下文继续。"
+                elif not state:
+                    res = "没有可恢复的任务快照。"
+                else:
+                    restored_from = state.get("task_id")
+                    messages = maid_memory.build_resumed_messages(state, MAID_SYSTEM_PROMPT, user_goal)
+                    rounds_done = max(rounds_done, int(state.get("round") or 0))
+                    last_step = state.get("last_step") or last_step
+                    resume_used = True
+                    logger.info(f"[Maid] 从快照恢复任务: {restored_from}（第 {rounds_done} 轮）")
+                    res = f"已从任务 {restored_from} 的快照恢复上下文，有效轮从 {rounds_done} 继续。"
             elif tool == "read_file":
                 file_path = args.get('path') or args.get('file_path')
                 max_lines = args.get('max_lines', 500)
@@ -238,7 +263,28 @@ async def maid_evolution_loop(user_goal: str, chat_id: str = None):
 
                 with open(log_file, "a", encoding="utf-8") as f:
                     f.write(f"### 任务完成\n**结果**: {reason}\n")
-                return {"status": "finished", "result": reason, "goal": user_goal}
+
+                elapsed_used = time.monotonic() - start_time
+                await maid_memory.append_task_index(
+                    task_id=task_id,
+                    goal=user_goal,
+                    status="finished",
+                    result=reason,
+                    rounds=rounds_done,
+                    elapsed=elapsed_used,
+                    chat_id=chat_id,
+                )
+                await maid_memory.delete_task_state(task_id)
+                return {
+                    "status": "finished",
+                    "result": reason,
+                    "goal": user_goal,
+                    "task_id": task_id,
+                    "rounds": rounds_done,
+                    "elapsed": round(elapsed_used, 1),
+                    "trace": log_file,
+                    "state": "",
+                }
             else:
                 res = f"错误：未知工具 {tool}"
 
@@ -255,6 +301,16 @@ async def maid_evolution_loop(user_goal: str, chat_id: str = None):
 
             messages.append({"role": "user", "content": feedback})
 
+            await maid_memory.save_task_state(
+                task_id=task_id,
+                goal=user_goal,
+                messages=messages,
+                round_no=rounds_done,
+                last_step=last_step,
+                chat_id=chat_id,
+                created_at=started_at,
+            )
+
         except Exception as e:
             logger.error(f"[Maid] 运行异常: {str(e)}")
             messages.append({"role": "user", "content": f"运行中发生异常：{str(e)}（如果任务涉及发送图片任务，只需要保存文件，并在finish中返回该文件的绝对路径，说明这个图片可以被发送即可）"})
@@ -266,10 +322,40 @@ async def maid_evolution_loop(user_goal: str, chat_id: str = None):
         logger.error(f"[Maid] 清理草稿区失败: {e}")
 
     elapsed_total = time.monotonic() - start_time
+    state_path = await maid_memory.save_task_state(
+        task_id=task_id,
+        goal=user_goal,
+        messages=messages,
+        round_no=rounds_done,
+        last_step=last_step,
+        chat_id=chat_id,
+        status="interrupted",
+        created_at=started_at,
+    )
     timeout_result = (
         f"任务中止（{stopped_reason}）。有效轮 {rounds_done}/{MAX_MAID_ROUNDS}，"
         f"错误 {error_rounds}/{MAX_MAID_ERRORS}，耗时 {int(elapsed_total)}s。"
         f"最后进度：第 {last_step['round']} 轮，动作={last_step['tool']}，"
         f"思考={last_step['thought']}，结果={last_step['result']}"
+        f"（快照已保留，可用 resume_task 继续）"
     )
-    return {"status": "timeout", "result": timeout_result, "goal": user_goal}
+    await maid_memory.append_task_index(
+        task_id=task_id,
+        goal=user_goal,
+        status="timeout",
+        result=timeout_result,
+        rounds=rounds_done,
+        elapsed=elapsed_total,
+        chat_id=chat_id,
+        state_path=state_path,
+    )
+    return {
+        "status": "timeout",
+        "result": timeout_result,
+        "goal": user_goal,
+        "task_id": task_id,
+        "rounds": rounds_done,
+        "elapsed": round(elapsed_total, 1),
+        "trace": log_file,
+        "state": state_path,
+    }

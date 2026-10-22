@@ -13,7 +13,10 @@ TASKS_DIR = "tasks"
 LOGS_DIR = "logs"
 MAID_VENV_DIR = "maid_venv" # 存放小女仆独立运行环境的目录
 
-for d in [SKILLS_DIR, WORKSPACE_DIR, TASKS_DIR, LOGS_DIR, MAID_VENV_DIR]:
+TASK_STATE_DIR = os.path.join(TASKS_DIR, "state")        # 任务快照（可续跑）
+TASK_INDEX_FILE = os.path.join(LOGS_DIR, "task_index.jsonl")  # 任务历史索引
+
+for d in [SKILLS_DIR, WORKSPACE_DIR, TASKS_DIR, LOGS_DIR, MAID_VENV_DIR, TASK_STATE_DIR]:
     os.makedirs(d, exist_ok=True)
 
 MAX_TOOL_OUTPUT_CHARS = 12000
