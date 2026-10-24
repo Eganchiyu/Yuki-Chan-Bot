@@ -103,15 +103,34 @@ class TaskRunner:
         self.workdir = os.path.join(WORKSPACE, f"dsh_{self.task_id}")
         self.session_id = None
         self.tools = []
+        self.last_texts = []      # 过程中的 assistant 文本，超时时当部分结论用
+        self.last_args = {}
         self.steps = 0
         self.final_text = ""
         self.stopped = False
 
     # ---- 收尾 ----
+    def partial_summary(self):
+        """没拿到 final 时，至少告诉 Yuki 它做到哪、被什么卡住。"""
+        bits = []
+        if self.last_texts:
+            bits.append("最后的话：" + self.last_texts[-1][:600])
+        if self.last_args:
+            bits.append(f"最后一个动作：{self.last_args.get('tool')}"
+                        f"({str(self.last_args.get('input'))[:300]})")
+        if self.tools:
+            bits.append(f"共 {self.steps} 步，工具序列（尾段）：{self.tools[-6:]}")
+        return "\n".join(bits)
+
     def finish(self, status, detail, started):
+        text = self.final_text
+        if not text and status != "finished":
+            # 超时/崩溃时 final 往往是空的；丢掉全部进度等于白跑，这里拼个部分结论
+            summary = self.partial_summary()
+            text = f"[任务未完成：{status}] {detail}\n{summary}".strip()
         payload = {
             "status": status,
-            "result": (self.final_text or detail or "")[:RESULT_MAX_CHARS],
+            "result": (text or detail or "")[:RESULT_MAX_CHARS],
             "detail": str(detail or "")[-3000:],
             "session_id": self.session_id or "",
             "task_id": self.task_id,
@@ -136,10 +155,16 @@ class TaskRunner:
             self.session_id = ev.get("sessionId") or self.session_id
         elif kind == "status" and ev.get("phase") == "step_start":
             self.steps = max(self.steps, int(ev.get("step") or 0))
+        elif kind == "text":
+            text = (ev.get("text") or "").strip()
+            if text:
+                self.last_texts.append(text[:1500])
+                self.last_texts = self.last_texts[-5:]
         elif kind == "tool_call":
             name = ev.get("tool")
             if name:
                 self.tools.append(name)
+                self.last_args = {"tool": name, "input": ev.get("input")}
         elif kind == "final":
             self.final_text = ev.get("text") or self.final_text
         elif kind == "turn_end":

@@ -28,3 +28,12 @@
 - id: approval
   config:
     policy: never
+
+# 无人值守的第二道保险：Yuki 是 QQ 机器人，背后没有实时坐在屏幕前的人。
+# 「向用户提问」和「呈现计划等批准」这两条交互通道一律关掉——
+# 模型拿不到回答就只会空转到超时，任务等于白跑。
+# 需要机主拍板的事，走结论里的「待确认」，由 Yuki 转述。
+- id: user-questions
+  disabled: true
+- id: plan-mode
+  disabled: true
