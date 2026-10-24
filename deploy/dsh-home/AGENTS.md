@@ -53,12 +53,16 @@ staging/<task_id>/files/<相对路径>      # 例如 staging/20261024_150000_123
     `models/` `maid_venv/` `core/prompts.py`（人格）`core/maid/maid_charter.py`（准则）
 - 限额：单次 ≤ 10 个文件、净增 ≤ 1000 行；单个文件删掉超过原行数 50% 会被判为误删。
 
-### 2. 自查
+### 2. 自查（必须做，证据写进 reason）
 
 ```bash
-python3 -m py_compile staging/<task_id>/files/**/*.py    # 至少过语法
-git diff --no-index skills/../<原文件> staging/...        # 看改动是否符合预期
+python3 -m py_compile staging/<task_id>/files/**/*.py     # 语法
+diff -u <原文件> staging/<task_id>/files/<路径>            # 改动是否符合预期
+grep -n "<你新引用的符号>" <它应该在的文件>                 # 证明符号真的存在
 ```
+
+**审查员会因为你「没有证据就引用外部符号」直接驳回。** 每个新 import / 新调用的
+函数或字段，都在 `reason` 里附上 `grep` 的输出；改了逻辑就附上跑一次的输出。
 
 ### 3. 提交生效
 
@@ -76,12 +80,19 @@ git diff --no-index skills/../<原文件> staging/...        # 看改动是否�
 然后轮询同目录的 `result.json`（每 3~5 秒看一次，最多等 3 分钟）。宿主 supervisor 的顺序是
 **独立模型审查 → 记忆快照 → 应用 + git commit → 5 道校验门 → 重启容器 → `/health` → 失败自动回滚**。
 
+### 审查怎么判（两级）
+
+审查员只把两类东西当驳回理由：**会出真事的**（导入/运行时错误、删掉既有防护、数据面与外发面
+扩大、无界读取/循环、阻塞事件循环、无依据的符号引用）。
+命名不统一、注释不够、风格差异、"如果……可能……"这类推测，只算建议，**不阻断生效**。
+所以：被驳回时 list 里的每条都是必须解决的真问题，别绕过它去改措辞。
+
 `result.status` 的含义与应对：
 
 | status | 含义 | 你该做什么 |
 |---|---|---|
 | `ok` | 已生效并提交（带 tag） | 报告 commit 前 10 位与是否重启 |
-| `review_rejected` | 审查驳回，**没有写盘、没有重启** | 读 `result.detail` 的意见，改完重新提交 |
+| `review_rejected` | 审查驳回，**没有写盘、没有重启** | 读 `result.detail` 与 `staging/<task_id>/review.json`，逐条改必修项后重新提交 |
 | `apply_failed` / `verify_failed` | 补丁应用或校验失败，已回滚 | 读 detail 里的报错，修好重来 |
 | `health_failed` | 新版本起不来，已回滚 | 说明风险，别硬推同一份补丁 |
 | `rejected` | 命中限额/冷却/禁区 | 停手，报告给 Yuki |
@@ -90,7 +101,12 @@ git diff --no-index skills/../<原文件> staging/...        # 看改动是否�
 - 提交后你会被重启打断（容器重建约 15~30s）。**先把当前结论和 request.json 路径写下来**，
   重启后用 session 续做接着看 result.json。
 - 被驳回时 `result.json` 会留着；重新提交前先删掉旧 `result.json`，否则 supervisor 当作已处理。
-- 自改要克制：一次只解决一个明确问题，不顺手重构。`deploy/` 是禁区，改它需要机主重启服务。
+  `staging/<task_id>/review.json` 记录 `rounds`/`rejects`/`detail`，重启后仍可读。
+- 同一份补丁最多被驳回 3 次。第 3 次仍未过，就停手，把必修项原样报告给 Yuki，
+  不要用「换个说法重提」的方式绕。
+- **一次一个最小可验证改动**。一次提交多个文件的改动，审查几乎必然挑出必修项；
+  拆成几个小补丁逐个过，比一个大补丁反复被打回快得多。
+- `deploy/` 是禁区，改它需要机主重启服务。
 
 ## 输出
 

@@ -51,6 +51,7 @@ MAX_EVOLVE_PER_HOUR = _charter.MAX_EVOLVE_PER_HOUR
 MAX_PATCH_ADDED_LINES = _charter.MAX_PATCH_ADDED_LINES
 MAX_PATCH_FILES = _charter.MAX_PATCH_FILES
 MAX_RESTART_PER_HOUR = int(os.environ.get("YUKI_MAX_RESTART_PER_HOUR", 5))
+MAX_REVIEW_REJECTS = int(os.environ.get("YUKI_MAX_REVIEW_REJECTS", 3))
 classify_path = _charter.classify_path
 is_sensitive = _charter.is_sensitive
 
@@ -276,6 +277,35 @@ def restart_container():
     return wait_health()
 
 
+def _bump_review_round(request_dir, approved, detail, risk):
+    """记录这份补丁的审查轮次，返回「本次是第几次被驳回」。
+
+    存在 staging/<task>/review.json：模型可以直接读它，不必只靠同步返回的文本
+    （重启/session 断掉之后还能看）。
+    """
+    path = os.path.join(request_dir, "review.json")
+    record = {"rejects": 0, "rounds": 0}
+    try:
+        with open(path, encoding="utf-8") as f:
+            record.update(json.load(f) or {})
+    except Exception:
+        pass
+
+    record["rounds"] = int(record.get("rounds") or 0) + 1
+    record["approved"] = bool(approved)
+    record["risk"] = str(risk)
+    record["detail"] = str(detail)[-4000:]
+    record["ts"] = datetime.now().isoformat(timespec="seconds")
+    if not approved:
+        record["rejects"] = int(record.get("rejects") or 0) + 1
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(record, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        log(f"写 review.json 失败: {e}")
+    return int(record.get("rejects") or 0)
+
+
 # ------------------------------------------------------------------ 主处理
 def handle_request(request_dir):
     task_id = os.path.basename(request_dir.rstrip("/"))
@@ -342,7 +372,7 @@ def handle_request(request_dir):
     snap = snapshot_memory()
     log(f"[{task_id}] 记忆快照: {snap or '(跳过)'} 基线: {base[:10]}")
 
-    # 2) 独立模型审查（宿主侧）：驳回则不写盘、不重启，直接把意见回传
+    # 2) 独立模型审查（宿主侧）：只有必修问题才驳回，建议类不阻断
     t_review = time.time()
     try:
         approved, review_detail, risk = review_patch(request_dir, req, files)
@@ -350,8 +380,21 @@ def handle_request(request_dir):
         approved, review_detail, risk = False, f"审查不可用：审查器异常 {e}", "unknown"
     review_ms = int((time.time() - t_review) * 1000)
     log(f"[{task_id}] 审查 {'通过' if approved else '驳回'}（{risk}, {review_ms}ms）")
+
+    # 驳回次数落盘：既给模型下一轮读，也防止同一份补丁无限打转
+    rejects = _bump_review_round(request_dir, approved, review_detail, risk)
+    if approved and rejects:
+        review_detail += f"\n（注：这份补丁之前被驳回 {rejects} 次，本次才通过）"
     if not approved:
-        return finish("review_rejected", review_detail, summary)
+        hint = (
+            f"\n\n[第 {rejects} 次被驳回] 改完直接重新提交即可（删掉 staging 里的旧 result.json）。"
+        )
+        if rejects >= MAX_REVIEW_REJECTS:
+            hint = (
+                f"\n\n[已连续被驳回 {rejects} 次，达到上限 {MAX_REVIEW_REJECTS}] "
+                "不要再原样重试：把问题原样报告给 Yuki，说明卡在哪一条必修问题上。"
+            )
+        return finish("review_rejected", review_detail + hint, summary)
 
     # 3) 应用 + 提交（先提交，失败才能 reset 回滚）
     ok, msg = apply_patch(request_dir, files)
