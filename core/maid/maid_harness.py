@@ -98,7 +98,8 @@ def _save_session_state(task_id, goal, session_id, status, steps, chat_id):
     return path
 
 
-async def harness_evolution_loop(user_goal: str, chat_id: str = None, approver=None, resume_task_id=None):
+async def harness_evolution_loop(user_goal: str, chat_id: str = None, approver=None,
+                                 mode: str = None, resume_task_id=None):
     """执行一个小女仆任务。返回值结构与原 maid_evolution_loop 保持一致。"""
     del approver  # harness 自带沙箱与审批策略，容器侧不再二次拦截
     task_id = _new_task_id()
@@ -114,6 +115,7 @@ async def harness_evolution_loop(user_goal: str, chat_id: str = None, approver=N
     request = {
         "goal": user_goal,
         "chat_id": str(chat_id) if chat_id is not None else "",
+        "mode": str(mode or "group"),
         "timeout_s": int(MAID_MAX_WALL_SECONDS),
     }
     if resume_session:

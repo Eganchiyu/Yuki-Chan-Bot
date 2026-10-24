@@ -12,8 +12,12 @@ import os
 BACKEND = (os.environ.get("YUKI_MAID_BACKEND") or "harness").strip().lower()
 
 if BACKEND == "legacy":
-    from core.maid.maid_loop import maid_evolution_loop  # noqa: F401
+    from core.maid.maid_loop import maid_evolution_loop as _legacy_loop
+
+    async def maid_evolution_loop(user_goal, chat_id=None, approver=None, mode=None, **kwargs):
+        """legacy 不需要 mode（它只靠 chat_id 决定回报对象），但签名要保持一致。"""
+        return await _legacy_loop(user_goal, chat_id, approver)
 else:
-    from core.maid.maid_harness import harness_evolution_loop as maid_evolution_loop  # noqa: F401
+    from core.maid.maid_harness import harness_evolution_loop as maid_evolution_loop
 
 __all__ = ["BACKEND", "maid_evolution_loop"]

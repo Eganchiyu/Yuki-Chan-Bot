@@ -4,6 +4,7 @@ from core.maid.maid_approval import build_approver
 from core.maid.maid_boundary import build_maid_report
 from core.maid.maid_common import logger
 from core.maid.maid_backend import maid_evolution_loop
+from core.maid.maid_resume import mark_reported
 
 
 async def maid_worker(engine, yuki_state, sender, history_manager):
@@ -23,9 +24,12 @@ async def maid_worker(engine, yuki_state, sender, history_manager):
                 goal=goal,
                 gateway=getattr(engine, "sender", None) or sender,
             )
-            result_dict = await maid_evolution_loop(user_goal=goal, chat_id=chat_id, approver=approver)
+            result_dict = await maid_evolution_loop(
+                user_goal=goal, chat_id=chat_id, approver=approver, mode=mode)
             report = build_maid_report(goal, result_dict)
             history_manager.append_session_message(chat_id, "user", report, is_maid_report=True)
+            # 打上「已汇报」标记，重启后的补报巡检不会重复说一遍
+            mark_reported(result_dict.get("task_id"))
             while not getattr(engine, "napcat_online", True):
                 await asyncio.sleep(20)
             if engine.process_callback is not None:

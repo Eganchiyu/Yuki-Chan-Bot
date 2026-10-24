@@ -1,6 +1,7 @@
 # core/tools/tools_maid.py
 """小女仆委托工具。"""
 from core.maid.maid import MaidCapabilityBoundary, build_maid_task, maid_evolution_loop
+from core.maid.maid_resume import mark_reported
 from core.toolchain import ToolResult
 
 
@@ -19,7 +20,9 @@ async def delegate_to_maid_tool(context, goal, run_inline=False):
         )
 
     if run_inline:
-        result = await maid_evolution_loop(user_goal=goal, chat_id=context.chat_id)
+        result = await maid_evolution_loop(
+            user_goal=goal, chat_id=context.chat_id, mode=context.mode)
+        mark_reported(result.get("task_id"))
         return ToolResult(
             success=result.get("status") == "finished",
             content=result.get("result", "小女仆未返回结果"),
