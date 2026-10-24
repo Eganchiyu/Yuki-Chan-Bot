@@ -85,3 +85,22 @@
   拼部分结论。同样任务复测：14 步 / 77s 收敛，结论具体（定位到 reset_and_import_meme.py
   的 sys.path 与 manual_stickers.json 相对路径问题）+ 待确认清单。
 - 经验：harness 没有轮次上限，开放式委托必须靠提示词约束收敛；任务描述越含糊越要设预算。
+
+## 2026-10-24 自改审查改为两级（保留审查，去掉"一条建议就驳回"）
+
+- 机主先问「还要审批门吗」，随后改主意要求保留审查但别把人卡死。
+- 先看证据：`logs/self_evolve.jsonl` 21 条记录里 11 条 `review_rejected`。逐条翻，驳回内容全是真问题
+  ——未证明存在的 import、对响应体无界 `await read()`、白名单里混进 `data/image_store`（历史图片可外发）、
+  DNS 校验失败反而放行。所以审查本身有效，问题在**二值判定**：命名/注释/推测性风险与
+  「会 ImportError」同权，一条不一致就整份打回；旧内置循环只有 20 轮，几次驳回就耗尽，模型改不动。
+- 改法（不拆任何安全门）：
+  - `reviewer.py` 输出 `blocking` / `advisory` 两级，只有 blocking 驳回。blocking 限定六类会出真事的问题；
+    命名/注释/风格/"如果可能"一律 advisory，写进 detail 当参考。兼容旧的 approve/problems/suggestions 格式。
+  - 提示词要求采信 reason 里的验证证据，且 blocking 必须写"需要哪条具体证据才能放行"，
+    不接受"建议再确认一下"这种无法执行的意见。
+  - `supervisor.py` 落 `staging/<task>/review.json`（rounds/rejects/detail，重启后可读），
+    同一补丁最多驳回 3 次（`YUKI_MAX_REVIEW_REJECTS`），超了明确要求停手报告。
+  - `AGENTS.md`：提交前必须贴 `py_compile` / `diff` / `grep` 证据；一次一个最小可验证改动。
+- 实测：无害改动（加一行注释）→ 通过 + 3 条 advisory；引用不存在符号 → high 风险驳回。
+  审查员自己在 case2 里有一处幻觉（说"该文件中存在该符号"），但结论与改法是对的。
+- 待机主：`sudo systemctl restart yuki-supervisor`（reviewer/supervisor 都是宿主进程内加载的）。
