@@ -71,3 +71,17 @@
 - 成本：系统提示基线 ~6.4k token（旧 maid prompt 约 1.5k），换来的是全套工具与压缩策略。
 - 待机主：`sudo bash deploy/install-service.sh` 安装 `yuki-maid-runner` 服务（含 sudo，未执行）。
 - 教训：`pkill -f "deploy/maid_runner.py"` 会匹配到自己那条 bash 命令，把自己杀掉；先用 `ps -eo pid,args` 精确看。
+
+## 2026-10-24 无人值守收口：禁提问 + 探索预算
+
+- 机主要求：小女仆不许向用户提问（Yuki 是 QQ 机器人，没人实时回答）。
+- 实际排查：`ask_user_question` 工具本来就没挂进 headless bundle；但 `user-questions`
+  与 `plan-mode` 两个服务还活着，后者的文案会引导「呈现计划等批准」——同样是死等。
+  两条在 profile 里都禁用。
+- 实测踩到的坑：任务越模糊越危险。第一次跑「那个脚本好像坏了」，模型 34 步 / 61 次 bash
+  一路穷举到超时，且 timeout 时 final 为空 → 结果全丢，只回报一句「超时」。
+- 两处修：AGENTS.md 加探索预算（定位类 ≤8 步、写代码 ≤20 步、同一错误连败 3 次停手，
+  宁可给不完整结论也不要跑到被杀）；maid_runner 超时时用「最后的话 + 最后一个动作 + 工具尾段」
+  拼部分结论。同样任务复测：14 步 / 77s 收敛，结论具体（定位到 reset_and_import_meme.py
+  的 sys.path 与 manual_stickers.json 相对路径问题）+ 待确认清单。
+- 经验：harness 没有轮次上限，开放式委托必须靠提示词约束收敛；任务描述越含糊越要设预算。
