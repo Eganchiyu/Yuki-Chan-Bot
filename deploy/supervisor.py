@@ -270,7 +270,40 @@ def wait_health(timeout=HEALTH_TIMEOUT):
     return False, last
 
 
+RESTART_NOTICE = "⚙️ Yuki 进程重启中（大约十几秒），小女仆手上的任务不受影响，继续干。"
+
+
+def notify_restart(text=None):
+    """重启前先让容器自己往活跃的小女仆会话喊一声。
+
+    为什么要绕一圈：NapCat 的 WS 在容器里，宿主没有连接；容器暴露的
+    /notify 端点会把消息交给 Yuki 自己的 sender 发，接口约定见 utils/health_server.py。
+    通知失败不影响重启——只是少一句话，不能因此把切换卡住。
+    """
+    base = HEALTH_URL[:-len("/health")] if HEALTH_URL.endswith("/health") else HEALTH_URL
+    payload = json.dumps({"kind": "restart", "text": text or RESTART_NOTICE},
+                         ensure_ascii=False).encode("utf-8")
+    req = urllib.request.Request(
+        base + "/notify",
+        data=payload,
+        headers={"Content-Type": "application/json; charset=utf-8"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            body = json.loads(resp.read().decode("utf-8") or "{}")
+        log(f"重启通知: {body.get('detail') or 'ok'}")
+        return True
+    except urllib.error.HTTPError as e:
+        detail = e.read().decode("utf-8", errors="replace")[:200]
+        log(f"重启通知失败（http {e.code}）: {detail}")
+    except Exception as e:
+        log(f"重启通知失败: {e}")
+    return False
+
+
 def restart_container():
+    notify_restart()
     rc, out = sh(["bash", os.path.join(ROOT, "deploy", "run.sh")], cwd=ROOT, timeout=300)
     if rc != 0:
         return False, out

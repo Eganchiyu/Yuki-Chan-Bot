@@ -177,8 +177,47 @@ def start_desktop_pet_if_enabled(pipeline, pipeline_loop):
         logger.error(f"[DesktopPet] 启动失败: {exc}")
 
 
+async def _send_restart_notice(payload) -> tuple:
+    """容器内收到「即将重启」通知：往正在等结果的小女仆会话里喊一声。
+
+    为什么由容器自己发：supervisor 在宿主机，手里只有 HTTP 探针端口，
+    没有 NapCat 的 WS 连接。借 Yuki 自己的连接发，消息才能落到正确的会话。
+    """
+    text = str(payload.get("text") or "⚙️ Yuki 进程重启中，稍等十几秒…")
+    chats = dict(getattr(components.get("yuki"), "maid_active_chats", {}) or {})
+    sender = getattr(components.get("engine"), "sender", None)
+    if not chats:
+        return True, "没有正在跑的小女仆任务，跳过通知"
+    if sender is None:
+        return False, "sender 不可用"
+    sent, failed = 0, 0
+    for chat_id, mode in chats.items():
+        try:
+            await sender.send(str(chat_id), text, mode=mode or "group")
+            sent += 1
+        except Exception as e:
+            failed += 1
+            logger.warning(f"[System] 重启通知发送失败 chat={chat_id}: {e}")
+    return (sent > 0 or failed == 0), f"已通知 {sent} 个会话，失败 {failed}"
+
+
+def _install_restart_notifier() -> None:
+    """把 /notify 的 HTTP 线程回调接到当前事件循环上。"""
+    from utils.health_server import set_notifier
+
+    loop = asyncio.get_running_loop()
+
+    def _notifier(payload):
+        future = asyncio.run_coroutine_threadsafe(_send_restart_notice(payload), loop)
+        return future.result(timeout=6)   # 让 supervisor 等到消息真的发出去
+
+    set_notifier(_notifier)
+    logger.info("[System] 重启通知端点已就绪：POST /notify")
+
+
 async def run_runtime() -> None:
     try:
+        _install_restart_notifier()
         # 桌宠启动包含起 aiohttp 服务（最长等 3 秒）和拉起 Electron，
         # 放到线程里跑，避免阻塞消息管线的事件循环。
         await asyncio.to_thread(

@@ -15,6 +15,8 @@ async def maid_worker(engine, yuki_state, sender, history_manager):
         chat_id = str(task["chat_id"])
         mode = task.get("mode", "group")
         yuki_state.maid_current_tasks[chat_id] = goal
+        if hasattr(yuki_state, "maid_active_chats"):
+            yuki_state.maid_active_chats[chat_id] = mode
         try:
             approver = build_approver(
                 yuki_state=yuki_state,
@@ -40,4 +42,6 @@ async def maid_worker(engine, yuki_state, sender, history_manager):
             logger.error(f"[Maid] 处理任务失败: {e}")
         finally:
             yuki_state.maid_current_tasks.pop(chat_id, None)
+            if hasattr(yuki_state, "maid_active_chats"):
+                yuki_state.maid_active_chats.pop(chat_id, None)
             yuki_state.maid_task_queue.task_done()

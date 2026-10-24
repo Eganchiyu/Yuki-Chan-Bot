@@ -98,6 +98,7 @@ class YukiState:
         # 在 __init__ 里添加
         self.maid_task_queue = asyncio.Queue()
         self.maid_current_tasks = {}  # chat_id -> 当前任务描述（让Yuki知道她在干什么）
+        self.maid_active_chats = {}  # chat_id -> mode，重启前要往这些会话喊一声
         self.maid_executor = ThreadPoolExecutor(max_workers=2)  # 并行执行小女仆
 
         # --- 新增：用户昵称到QQ号的映射 ---

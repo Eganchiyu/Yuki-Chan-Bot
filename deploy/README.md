@@ -123,6 +123,21 @@ staging/<task>/result.json  ← 结果回传给小女仆
 配套的防打转机制：`staging/<task>/review.json` 记录 `rounds` / `rejects` / `detail`，
 同一份补丁最多驳回 `YUKI_MAX_REVIEW_REJECTS`（默认 3）次，超了明确要求停手报告，不许原样重试。
 
+### 重启前先喊一声
+
+切换要重建容器，Yuki 会离线十几秒。为了让在等她回话的人知道发生了什么，
+supervisor 在 `restart_container()` 之前会 `POST http://127.0.0.1:8778/notify`，
+由**容器内**的 Yuki 把消息发到正在跑小女仆任务的会话里。
+
+绕这一圈的原因：NapCat 的 WS 连接在容器里，supervisor 在宿主，手里只有探针端口。
+端点契约见 `utils/health_server.py`；没注册处理函数或没有活跃会话时返回非 200，
+supervisor 只记一条日志就继续重启——通知失败不能把切换卡住。
+
+```bash
+# 手动试一下（容器里要有正在跑的小女仆任务才有接收方）
+curl -sS -X POST http://127.0.0.1:8778/notify   -H 'Content-Type: application/json'   -d '{"kind":"restart","text":"⚙️ 进程重启中"}'
+```
+
 ### 同步反馈 vs 异步重启
 
 | 结果 | 是否重启进程 | 小女仆能否就地继续 |
