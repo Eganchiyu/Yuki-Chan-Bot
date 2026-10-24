@@ -120,3 +120,19 @@
 - 实测（mock 通道）：造一条 10 分钟前完成未汇报的任务 → 文案正确（重启说明 + commit/tag +
   轮次/耗时/trace）、callback 收到 group/force_reply、reported.ok 落盘、复扫为空。
 - 生效条件：容器重启（新代码）＋ `yuki-maid-runner` 服务已安装。
+
+## 2026-10-24 重启通知通道（/notify）
+
+- 需求：容器重启十几秒期间，在等结果的人要知道发生了什么。
+- 限制：`dsh --profile headless` 是 one-shot，任务正文走 stdin 后就关了，**没有注入通道**；
+  往 harness 的 conversation 里塞消息做不到。所以消息发到 **QQ 会话**，不是发给 harness。
+- 链路：`supervisor.restart_container()` → `POST 127.0.0.1:8778/notify` → 容器内回调
+  （有 NapCat WS 连接）→ `maid_active_chats` 里的会话 → 发完才重启。
+- 兜底：没有活跃任务时（手动重启/任务刚做完），退回到 `tasks/dsh` 里最近一条 request.json
+  的 chat_id；这条是实测时补的——第一版会因为「队列空」而闷声不响。
+- 通知失败只记日志，绝不阻塞重启；回滚重启也会通知。
+- 实测：容器重建 7 秒就绪；`POST /notify` 返回 `{"ok":true,"detail":"已通知 1 个会话，失败 0"}`，
+  目标群 1057020972（取自最近任务的 request.json，mode=group）。
+- 另：`deploy/run.sh` 只 `docker rm` + `docker run`，不 build，代码是只读挂载；
+  重建容器 ≈ 7~9 秒（14:56 那次 9s，15:05 这次 7s），不会重装 torch。
+- 待机主：`sudo systemctl restart yuki-supervisor` 才能让「自动重启前发通知」生效。
