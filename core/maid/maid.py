@@ -25,7 +25,8 @@ from core.maid.maid_common import (
     clean_json_output,
     logger,
 )
-from core.maid.maid_loop import call_cloud_maid_robust, maid_evolution_loop
+from core.maid.maid_loop import call_cloud_maid_robust
+from core.maid.maid_backend import maid_evolution_loop
 from core.maid.maid_memory import (
     append_task_index,
     build_startup_context,

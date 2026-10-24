@@ -25,11 +25,14 @@ ROOT = os.environ.get("YUKI_ROOT", "/home/asumi/Yuki")
 LOGS = os.path.join(ROOT, "logs")
 ARCHIVE = os.path.join(LOGS, "archive")
 STAGING = os.path.join(ROOT, "staging")
+DSH_TASKS = os.path.join(ROOT, "tasks", "dsh")
+DSH_WORKSPACE = os.path.join(ROOT, "workspace")
 
 TRACE_KEEP_DAYS = 7
 ARCHIVE_BUDGET_MB = 200
 SUPERVISOR_LOG_MAX_MB = 20
 STAGING_KEEP_DAYS = 3
+DSH_TASKS_KEEP_DAYS = 3
 
 dry_run = False
 
@@ -151,6 +154,33 @@ def clean_staging():
                 shutil.rmtree(d, ignore_errors=True)
 
 
+# ---------------------------------------------------------------- 小女仆任务清理
+def clean_dsh_tasks():
+    """harness 任务目录 + 草稿区：已完成且过期就清，未完成的留着给人看。"""
+    if os.path.isdir(DSH_TASKS):
+        cutoff = time.time() - DSH_TASKS_KEEP_DAYS * 86400
+        for name in os.listdir(DSH_TASKS):
+            d = os.path.join(DSH_TASKS, name)
+            if not os.path.isdir(d):
+                continue
+            if not os.path.exists(os.path.join(d, "result.json")):
+                continue  # 还在跑或从没跑起来，不动
+            if os.path.getmtime(d) < cutoff:
+                log(f"dsh: 删除已完成的任务 {name}")
+                if not dry_run:
+                    shutil.rmtree(d, ignore_errors=True)
+    if os.path.isdir(DSH_WORKSPACE):
+        cutoff = time.time() - DSH_TASKS_KEEP_DAYS * 86400
+        for name in os.listdir(DSH_WORKSPACE):
+            if not name.startswith("dsh_"):
+                continue  # 只清 maid_runner 建的草稿，别碰别人的
+            d = os.path.join(DSH_WORKSPACE, name)
+            if os.path.isdir(d) and os.path.getmtime(d) < cutoff:
+                log(f"workspace: 删除过期草稿 {name}")
+                if not dry_run:
+                    shutil.rmtree(d, ignore_errors=True)
+
+
 def main():
     global dry_run
     ap = argparse.ArgumentParser()
@@ -164,6 +194,7 @@ def main():
     trim_file(os.path.join(LOGS, "supervisor.log"), SUPERVISOR_LOG_MAX_MB)
     trim_file(os.path.join(ROOT, "data", "yuki_log.txt"), SUPERVISOR_LOG_MAX_MB)
     clean_staging()
+    clean_dsh_tasks()
     log("保留策略完成")
 
 

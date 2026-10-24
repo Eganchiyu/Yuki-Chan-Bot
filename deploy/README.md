@@ -20,9 +20,68 @@ deploy/
 ├── run.sh            启动生产容器（代码只读 + 数据卷 + --network host）
 ├── verify.sh         5 道校验门（临时容器，断网，tmpfs 数据）
 ├── supervisor.py     宿主守护：应用补丁 → 提交 → 校验 → 切换 → 回滚
-├── retention.py      保留策略（trace 归档 / 日志截断 / staging 清理）
+├── maid_runner.py    ★ 小女仆执行器：轮询 tasks/dsh/ → 拉起 dsh 子进程 → 回写事件与结果
+├── dsh-home/         ★ yuki-maid profile（人格 + AGENTS.md 准则 + 沙箱策略）
+├── dsh-runtime/      ★ 固定版本的 @deepseek-ai/dsh（npm 装在项目内，版本锁死）
+├── retention.py      保留策略（trace 归档 / 日志截断 / staging + dsh 任务清理）
 └── state.json        last_good 提交与自改历史（只留最近 50 条）
 ```
+
+## 小女仆 harness 后端（★）
+
+小女仆的执行不再由 Yuki 进程内的自建循环负责，而是交给宿主侧的 DeepSeek Harness。
+
+| 层 | 位置 | 职责 |
+|---|---|---|
+| 任务派发 | 容器内 `core/maid/maid_harness.py` | 写 `tasks/dsh/<task>/request.json`，盯 `events.jsonl`，把结果翻译成 Yuki 的格式 |
+| 执行 | 宿主 `deploy/maid_runner.py` | 拉起 `dsh --profile yuki-maid --json`，逐行落盘事件，写 `result.json` |
+| 行为 | 宿主 `deploy/dsh-home/` | 人格（`cordis.patch.yml` 的 personaPrefix）、准则（`AGENTS.md`）、沙箱与审批策略 |
+| 切换 | 环境变量 `YUKI_MAID_BACKEND` | 默认 `harness`；设成 `legacy` 回退到原来的内置循环 |
+
+协议只走文件，两边不开端口：
+
+```
+tasks/dsh/<task_id>/request.json    容器 → 宿主   {goal, session_id?, timeout_s?}
+tasks/dsh/<task_id>/events.jsonl    宿主 → 容器   dsh --json 原始事件（逐行追加）
+tasks/dsh/<task_id>/result.json     宿主 → 容器   {status, result, session_id, steps, tools, elapsed}
+tasks/dsh/<task_id>/running.lock    宿主独占标记
+```
+
+三条约束：
+
+1. **cwd 是草稿区**。`maid_runner` 把 cwd 设成 `workspace/dsh_<task_id>/`，沙箱全放行也只放行到那儿；
+   要改生产代码仍然走 `propose_patch` → `staging/` → supervisor 审查，与 harness 无关。
+2. **审批策略是 never**。headless 无人值守没有可问的对象，`workspace-write` 下越界操作会挂住等一个
+   永远不来的回答，所以 profile 里显式设成 `danger-full-access` + `never`。这是机主的明确选择。
+3. **版本锁死**。`deploy/dsh-runtime/package.json` 固定 `@deepseek-ai/dsh` 版本，升级要先跑一批回归任务，
+   因为事件流字段（`tool_call` / `final` / `turn_end`）与版本绑定。
+
+### 小女仆相关命令
+
+```bash
+# 安装/更新服务（含执行器；需要 sudo）
+sudo bash deploy/install-service.sh
+
+# 看执行器状态与日志
+systemctl status yuki-maid-runner
+tail -f logs/maid_runner.log
+
+# 手动派一个任务（模拟容器侧行为，调试用）
+mkdir -p tasks/dsh/manual_1 && cat > tasks/dsh/manual_1/request.json <<'EOF'
+{"goal": "报告当前工作目录与磁盘剩余空间", "timeout_s": 120}
+EOF
+python3 deploy/maid_runner.py --once
+cat tasks/dsh/manual_1/result.json
+
+# 单个任务的完整事件流
+cat tasks/dsh/<task_id>/events.jsonl | jq -r 'select(.type=="tool_call") | .tool'
+```
+
+### 续做
+
+`result.json` 里有 `session_id`。中断任务的快照写在 `tasks/state/<task_id>.json`，
+把该 id 作为 `resume_task_id` 传给 `harness_evolution_loop` 即可让 harness 接着上一次会话继续，
+不需要重放历史消息。
 
 ## 一次自进化的完整时序
 
@@ -100,10 +159,15 @@ bash deploy/run.sh
 - **不要**把 `.git`、`configs/`、`yuki_memory/` 从只读挂载里挪到可写。
 - **不要**让容器内有 docker socket（等于把重启/回滚权交给被测方）。
 - `deploy/`、`core/prompts.py`（人格）、`core/maid/maid_charter.py`（准则）在代码侧是硬禁区。
+- `deploy/dsh-home/profiles/yuki-maid/` 是 harness 的人格与沙箱定义，改它等于改小女仆的权限，
+  必须人工审阅（改完 `systemctl restart yuki-maid-runner` 生效，不用重启容器）。
 
 ## 已知限制
 
 - 切换期间 Yuki 离线 15~30s（初始化 7~17s + 模型加载）。
+- 小女仆每任务起一个 dsh 进程（Node 冷启动 ~1s，系统提示 ~6k token 基线）；任务密集时排队串行执行。
+- `deploy/maid_runner.py` 是独立 systemd 服务，不随容器重启；它挂了任务会以
+  `runner_unavailable` 明确失败，不会静默卡住（容器侧 90 秒内无动静即判定）。
 - 不能蓝绿并行：`data/yuki.lock` 单实例锁 + `yuki_memory` 是文件锁型 ChromaDB。
 - 容器内跑不了 Live2D 桌宠（Electron/GUI），已用 `YUKI_DESKTOP_PET=0` 关闭。
 - `.dockerignore` 排除了 `models/`，模型以只读卷挂载（不重复占盘）。

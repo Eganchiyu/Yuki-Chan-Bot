@@ -3,7 +3,7 @@ import asyncio
 from core.maid.maid_approval import build_approver
 from core.maid.maid_boundary import build_maid_report
 from core.maid.maid_common import logger
-from core.maid.maid_loop import maid_evolution_loop
+from core.maid.maid_backend import maid_evolution_loop
 
 
 async def maid_worker(engine, yuki_state, sender, history_manager):
