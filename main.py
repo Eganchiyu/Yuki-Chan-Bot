@@ -1,6 +1,7 @@
 # main.py
 # by: Eganchiyu
 import asyncio
+import json
 import os
 import sys
 import time
@@ -177,6 +178,29 @@ def start_desktop_pet_if_enabled(pipeline, pipeline_loop):
         logger.error(f"[DesktopPet] 启动失败: {exc}")
 
 
+def _last_maid_chat():
+    """从 tasks/dsh 里找最近一次委托的 (chat_id, mode)，作为通知的兜底目标。"""
+    import glob
+
+    base = os.path.join(os.path.dirname(os.path.abspath(__file__)), "tasks", "dsh")
+    try:
+        dirs = [d for d in glob.glob(os.path.join(base, "*")) if os.path.isdir(d)]
+        dirs.sort(key=lambda d: os.path.getmtime(os.path.join(d, "request.json"))
+                  if os.path.exists(os.path.join(d, "request.json")) else 0, reverse=True)
+    except Exception:
+        return None
+    for d in dirs[:5]:
+        try:
+            with open(os.path.join(d, "request.json"), encoding="utf-8") as f:
+                req = json.load(f)
+        except Exception:
+            continue
+        chat_id = str(req.get("chat_id") or "").strip()
+        if chat_id:
+            return chat_id, str(req.get("mode") or "group")
+    return None
+
+
 async def _send_restart_notice(payload) -> tuple:
     """容器内收到「即将重启」通知：往正在等结果的小女仆会话里喊一声。
 
@@ -185,9 +209,15 @@ async def _send_restart_notice(payload) -> tuple:
     """
     text = str(payload.get("text") or "⚙️ Yuki 进程重启中，稍等十几秒…")
     chats = dict(getattr(components.get("yuki"), "maid_active_chats", {}) or {})
+    if not chats:
+        # 没有正在跑的任务时（手动重启、或任务刚好做完），退回到最近一次委托的会话：
+        # 重启这件事本身也需要让人知道，不能因为队列空了就闷声不响。
+        fallback = _last_maid_chat()
+        if fallback:
+            chats = {fallback[0]: fallback[1]}
     sender = getattr(components.get("engine"), "sender", None)
     if not chats:
-        return True, "没有正在跑的小女仆任务，跳过通知"
+        return True, "没有活跃或近期的小女仆会话，跳过通知"
     if sender is None:
         return False, "sender 不可用"
     sent, failed = 0, 0
