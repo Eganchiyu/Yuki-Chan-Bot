@@ -18,12 +18,18 @@ from .tools_timer import manage_timer_task_tool
 TOOL_SPECS = [
     ToolSpec(
         name="delegate_to_maid",
-        description="将工作任务委托给电脑上的小女仆处理。使用小女仆完成你自己不能完成的任务。",
+        description=(
+            "将工作任务委托给电脑上的小女仆处理。使用小女仆完成你自己不能完成的任务。"
+            "委托后立即返回，她在后台干活，完成后会主动把结果汇报给你——"
+            "不要等待结果，也不需要反复询问进度。"
+        ),
         parameters={
             "type": "object",
             "properties": {
-                "goal": {"type": "string", "description": "要完成的任务描述"},
-                "run_inline": {"type": "boolean"},
+                "goal": {
+                    "type": "string",
+                    "description": "要完成的任务描述，写清目标和验收标准",
+                },
             },
             "required": ["goal"],
         },
