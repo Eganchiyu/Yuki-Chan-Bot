@@ -52,3 +52,22 @@
   已 reset --soft 回滚并保留工作区改动。教训：往 staging 放 fixture 前必须先停 supervisor；
   这恰好证明审查层的必要性。
 - 注意：改 `deploy/` 后必须 `sudo systemctl restart yuki-supervisor`。
+
+## 2026-10-24 小女仆后端切换到宿主侧 DeepSeek Harness
+
+- 动机：内置 `core/maid/maid_loop.py` 是自建 LLM 循环 + JSON function-call 协议 + 人肉工具分派（3147 行），
+  工具质量、沙箱、上下文压缩都远不如 harness；而 harness 本来就是解耦的 agent，可直接当执行体。
+- 形态（方案 A）：容器不加 node、不塞 key。容器写 `tasks/dsh/<id>/request.json`，宿主
+  `deploy/maid_runner.py` 拉起 `dsh --profile yuki-maid --json`，逐行落 `events.jsonl`，写 `result.json`。
+  容器侧 `core/maid/maid_harness.py` 把事件流翻译成原 `maid_evolution_loop` 的结果结构，上层零改动。
+- profile：`deploy/dsh-home/`（入 git）——personaPrefix 小女仆人设、AGENTS.md 准则、
+  `danger-full-access` + 审批 `never`（机主明确选择，headless 无人可问）、`workspaceRoot=process.cwd()`。
+  `deploy/dsh-runtime/` 锁 `@deepseek-ai/dsh@0.2.1-rc.2`。
+- 安全：cwd 固定为 `workspace/dsh_<task>`，沙箱全放行也只放到草稿区；改生产代码仍走
+  `staging/` + supervisor 审查 + 5 门 + 回滚，与 harness 无关。AGENTS.md 里写了完整自改协议与 status 应对表。
+- 回退：`YUKI_MAID_BACKEND=legacy` 恢复旧循环，代码都还在。
+- 实测：单任务 5~8s / 3~8 步；人格、cwd、写权限、AGENTS.md 全部生效；
+  自改协议演练（写 staging/files + REQUEST.json.draft）字段完全正确；runner --once 端到端跑通。
+- 成本：系统提示基线 ~6.4k token（旧 maid prompt 约 1.5k），换来的是全套工具与压缩策略。
+- 待机主：`sudo bash deploy/install-service.sh` 安装 `yuki-maid-runner` 服务（含 sudo，未执行）。
+- 教训：`pkill -f "deploy/maid_runner.py"` 会匹配到自己那条 bash 命令，把自己杀掉；先用 `ps -eo pid,args` 精确看。
