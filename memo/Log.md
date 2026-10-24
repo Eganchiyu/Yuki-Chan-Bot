@@ -104,3 +104,19 @@
 - 实测：无害改动（加一行注释）→ 通过 + 3 条 advisory；引用不存在符号 → high 风险驳回。
   审查员自己在 case2 里有一处幻觉（说"该文件中存在该符号"），但结论与改法是对的。
 - 待机主：`sudo systemctl restart yuki-supervisor`（reviewer/supervisor 都是宿主进程内加载的）。
+
+## 2026-10-24 重启补报：让一轮自改有始有终
+
+- 补上一个链路缺口：自改补丁生效要重启容器，容器里等 `result.json` 的协程随进程消失；
+  而宿主的 dsh 不受容器重启影响，会继续把结论写进 `tasks/dsh/<id>/result.json` →
+  任务做完了没人汇报，Yuki 不会主动说。
+- `core/maid/maid_resume.py`：常驻巡检（默认 30s），把「有 result.json 但没有 reported.ok」
+  的任务捡回来，走 maid_worker 同一条通道（写会话历史 + process_callback 主动回复），
+  完成后打 `reported.ok` 只报一次。完成时间超过 120s 的在前缀注明「Yuki 刚重启过」；
+  NapCat 离线最多等 5 分钟再留到下一轮；无 chat_id 的调试任务只标记不打扰。
+- 正常路径也在汇报成功后打标记（maid_worker + inline 委托），避免重启前后重复说一遍。
+- harness 的 request.json 新增 `mode`，补报才知道发群还是发私聊；`maid_backend` 吸收 mode 参数，
+  legacy 签名保持兼容。
+- 实测（mock 通道）：造一条 10 分钟前完成未汇报的任务 → 文案正确（重启说明 + commit/tag +
+  轮次/耗时/trace）、callback 收到 group/force_reply、reported.ok 落盘、复扫为空。
+- 生效条件：容器重启（新代码）＋ `yuki-maid-runner` 服务已安装。
