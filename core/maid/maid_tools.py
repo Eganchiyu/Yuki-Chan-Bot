@@ -1,11 +1,13 @@
 import json
 import os
+import random
 import re
 from datetime import datetime
 from urllib.parse import quote_plus
 
 import aiohttp
 
+from config import cfg
 from utils.http_client import create_tcp_connector
 
 # 读文件三重防爆：单次字节上限、单行字符上限（base64/压缩包伪装成 .txt 时的主要闸门）
@@ -13,10 +15,11 @@ READ_FILE_MAX_BYTES = 64 * 1024
 READ_FILE_MAX_LINE_CHARS = 2000
 
 
-def search_diary_fast(date_str=None, keyword=None):
-    if not date_str and not keyword:
-        return "错误：请至少提供 date_str 或 keyword"
+DIARY_PREVIEW_MAX = 8
 
+
+def search_diary_fast(date_str=None, keyword=None):
+    """按日期/关键词检索日记；无参数时随机翻看。命中结果同样随机抽取，不按时间顺序。"""
     try:
         import chromadb
         from config import cfg
@@ -27,32 +30,53 @@ def search_diary_fast(date_str=None, keyword=None):
         # 2. 获取 Collection（不加载任何 Embedding 模型）
         collection = client.get_collection(name="diaries") # 替换为你的真实 collection name
 
-        # 3. 瞬间拉取所有文档文本
-        results = collection.get(include=["documents"])
-        docs = results.get('documents', [])
+        # 3. 过滤交给向量库底层（where_document），不再把全表拉进内存
+        conditions = []
+        if date_str:
+            # 日记正文固定以 【日记(YYYY-MM-DD HH:MM)】 开头，日期前缀可直接用 $contains 粗筛
+            conditions.append({"$contains": f"【日记({date_str}"})
+        if keyword:
+            keyword_variants = {keyword}
+            if keyword.lower() != keyword or keyword.upper() != keyword:
+                keyword_variants.update({keyword.lower(), keyword.upper()})
+            keyword_conditions = [{"$contains": kw} for kw in sorted(keyword_variants)]
+            conditions.append(
+                keyword_conditions[0] if len(keyword_conditions) == 1 else {"$or": keyword_conditions}
+            )
 
-        if not docs:
-            return "记忆库目前为空。"
+        if conditions:
+            where_document = conditions[0] if len(conditions) == 1 else {"$and": conditions}
+            results = collection.get(where_document=where_document, include=["documents"])
+        else:
+            # 无日期无关键词：随机翻看日记本
+            results = collection.get(include=["documents"])
+        candidates = results.get("documents") or []
 
+        if not candidates:
+            return "没有找到匹配的日记。" if conditions else "记忆库目前是空的。"
+
+        # 4. 候选集已经很小，再用正则做精确校验（保持原日期语义）
+        date_pattern = re.compile(rf"【日记\({re.escape(date_str)}.*?\)】") if date_str else None
+        keyword_lower = keyword.lower() if keyword else None
         matched_docs = []
-        for doc in docs:
-            match = True
-            if date_str:
-                safe_date = re.escape(date_str)
-                if not re.search(rf"【日记\({safe_date}.*?\)】", doc):
-                    match = False
+        for doc in candidates:
+            if date_pattern and not date_pattern.search(doc):
+                continue
+            if keyword_lower is not None and keyword_lower not in doc.lower():
+                continue
+            matched_docs.append(doc)
 
-            if keyword and match:
-                if keyword not in doc:
-                    match = False
+        if not matched_docs:
+            return "没有找到匹配的日记。"
 
-            if match:
-                matched_docs.append(doc)
-
-        # ... 后续的格式化输出逻辑与之前一致 ...
-        max_results = 8
-        res_str = f"成功找到 {len(matched_docs)} 条记录（最多展示前{max_results}条）：\n"
-        for i, d in enumerate(matched_docs[:max_results]):
+        # 5. 随机抽取，避免总是返回最早写入的那几条
+        picked = random.sample(matched_docs, min(DIARY_PREVIEW_MAX, len(matched_docs)))
+        if conditions:
+            header = f"成功找到 {len(matched_docs)} 条记录（随机抽取 {len(picked)} 条展示）：\n"
+        else:
+            header = f"随机翻看日记本（共 {len(matched_docs)} 条，随机抽取 {len(picked)} 条）：\n"
+        res_str = header
+        for i, d in enumerate(picked):
             preview = d.replace("\n", " ")
             res_str += f"[{i+1}] {preview}...\n"
 
@@ -317,10 +341,10 @@ async def browser_search_maid(query, max_results=5, search_depth="basic"):
     if not query:
         return "错误：缺少搜索关键词"
 
-    api_key = os.getenv("TAVILY_API_KEY")
+    api_key = cfg.TAVILY_API_KEY
     if not api_key:
         url = f"https://www.bing.com/search?q={quote_plus(query)}"
-        return f"未配置 TAVILY_API_KEY，无法搜索。请访问：{url}"
+        return f"未配置 search.tavily_api_key（Tavily Key），无法搜索。请访问：{url}"
 
     _TAVILY_SEARCH_URL = "https://api.tavily.com/search"
     payload = {
@@ -358,9 +382,9 @@ async def amap_search_maid(keywords, search_type="text", location=None, address=
     高德地图搜索工具 - 供小女仆使用。
     search_type: text=关键词搜索, around=周边搜索(需坐标), geocode=地名转坐标
     """
-    api_key = os.getenv("AMAP_API_KEY")
+    api_key = cfg.AMAP_API_KEY
     if not api_key:
-        return "错误：未配置 AMAP_API_KEY，无法调用高德地图服务"
+        return "错误：未配置 search.amap_api_key（高德地图 Key），无法调用高德地图服务"
 
     _AMAP_AROUND_URL = "https://restapi.amap.com/v5/place/around"
     _AMAP_TEXT_URL = "https://restapi.amap.com/v5/place/text"

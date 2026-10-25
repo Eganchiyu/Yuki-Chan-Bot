@@ -37,7 +37,10 @@ TOOL_SPECS = [
     ),
     ToolSpec(
         name="search_diary",
-        description="查询日记/记忆，支持按日期和关键词检索。",
+        description=(
+            "查询日记/记忆。可按日期、关键词检索，命中结果是随机抽取的（不按时间顺序）。"
+            "两个参数都不填时随机翻看日记本里的若干条，适合想随意回忆/找话题时使用。"
+        ),
         parameters={
             "type": "object",
             "properties": {

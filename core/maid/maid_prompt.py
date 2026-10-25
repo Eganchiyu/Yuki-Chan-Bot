@@ -61,7 +61,7 @@ MAID_SYSTEM_PROMPT = f"""
 11. `resume_task(task_id)`: 从上次中断的任务快照恢复上下文继续干。
    - 'task_id': 可选，留空则取最近一个未完成任务。
 **日记相关工具:**
-12. `search_diary(date_str, keyword)`: 搜索 Yuki 的日记/记忆。
+12. `search_diary(date_str, keyword)`: 搜索 Yuki 的日记/记忆；两者都省略时随机翻看日记本。
    - 'date_str': 选填，日期字符串（如 "2026-05-20" 或 "2026-03"）。
    - 'keyword': 选填，需要全文匹配的关键词。
    - 规则：'date_str' 和 'keyword' 至少提供一个，未提供的填 null。

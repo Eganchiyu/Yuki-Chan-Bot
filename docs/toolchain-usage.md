@@ -191,9 +191,10 @@ ToolCallManager.execute_tool_calls()
 
 ### 5.1 search_diary
 
-- 参数：`date_str`、`keyword` 二选一或同时提供。
+- 参数：`date_str`、`keyword` 均可省略。
 - 行为：使用 `asyncio.to_thread()` 调用 `search_diary_fast()`，避免阻塞事件循环。
-- 失败条件：日期和关键词都为空时返回 `missing_date_or_keyword`。
+- 命中结果随机抽取最多 8 条展示（不再按写入时间顺序截断）。
+- 日期和关键词都为空时随机翻看日记本，抽 8 条。
 
 ### 5.2 delegate_to_maid
 
