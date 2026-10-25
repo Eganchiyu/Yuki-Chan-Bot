@@ -17,11 +17,14 @@ Yuki 是一个基于 Python 异步架构开发的个人智能助手系统，通�
 Yuki 通过 Function Call 工具 `delegate_to_maid`，Yuki 可以将复杂任务交由后台的"小女仆"处理。
 
 - **自主编程与进化**：小女仆拥有独立虚拟环境（`maid_venv`），可针对任务自主编写、调试和固化 Python 技能脚本
-- **演进循环**：最多 20 轮 LLM 决策循环，支持写代码、跑终端、安装依赖、搜索信息等
-- **非阻塞汇报**：后台任务完成后将结果写入 Yuki 记忆流，触发自然的异步回复
+- **执行后端**：默认交给宿主侧的 DeepSeek Harness（`deploy/maid_runner.py`）驱动，工具质量、上下文压缩与沙箱由 harness 提供；`YUKI_MAID_BACKEND=legacy` 可回退到内置循环
+- **受控自改**：`propose_patch` 写候选补丁 → 独立模型审查 → 宿主守护进程应用 + 5 道校验门 → 失败自动回滚到基线
+- **无人值守**：不允许提问或等待计划批准，探索有预算上限，任务一律后台执行
+- **非阻塞汇报**：后台任务完成后将结果写入 Yuki 记忆流，触发自然的异步回复；重启后还会补报已完成任务
+- **任务接续**：`resume_task` / `list_previous_work` / `read_work_trace` 支持跨任务交接与续做
 - **技能热复用**：已固化的技能可被后续任务直接调用，无需重复编写
 - **能力边界判定**：委托前自动评估任务复杂度、安全风险和资源消耗，拦截高风险操作
-- **完整工具集**：文件读写、目录浏览、日记搜索、网页搜索、地图搜索、定时任务管理
+- **完整工具集**：文件读写、目录浏览、日记搜索、网页搜索、地图搜索、定时任务管理、`restart_yuki` 受控重启
 
 ### 🧠 记忆与日记系统 (Memory & RAG)
 
@@ -31,6 +34,7 @@ Yuki 拥有真正的动态长效记忆：
 - **向量检索**：基于 ChromaDB + text2vec 嵌入模型，实现语义检索
 - **关键词补偿**：结合 jieba 分词的关键词检索，弥补纯向量检索的不足
 - **记忆库管理工具**：提供 AI 辅助去重、导入导出、审查候选等独立工具脚本
+- **结构化记忆（实验中）**：`YukiMemoryStore` 提供 profile/fact/summary 分层召回，与旧日记检索并行使用，默认关闭
 
 ### 🎭 生物感精力系统 (Energy Dynamics)
 
@@ -38,12 +42,14 @@ Yuki 拥有真正的动态长效记忆：
 - **高斯拟合生物钟**：融合基础睡眠模型与晨间、午间、晚间三个高斯活跃峰，模拟真实作息节律
 - **消息缓冲防抖**：群聊消息自动聚合防抖（默认 20 秒），避免频繁触发 API
 - **群聊活跃度**：非线性提升 + 半衰降温（每 10 分钟 × 0.65），精确模拟群聊参与度
+- **回复订阅（等回音）**：回复后按「像在等回答的程度」自动评分，够高就静默登记一个回执；到点没人回应时注入提醒，由 Yuki 自己决定要不要再补一句（最多两次）
 
 ### 🖼️ 多模态表情包管理 (Sticker System)
 
 - **视觉理解**：接入 VLM（视觉大模型）理解群聊表情包的含义与情感
 - **普通图片原生输入**：`model.llm_native_vision_enabled` 开启后，普通图片（非表情包）作为多模态图块直接交给主模型理解，表情包仍走 VLM 转写以节省开销
 - **向量检索 + 积热重排**：根据当前情绪和上下文，在表情包向量库中寻找最合适的一张
+- **入站图片预取**：收到带图消息即在防抖等待期间后台下载并做视觉处理，管线与工具链复用同一结果，同一张图只下载理解一次
 - **正反馈捕捉**：记录已发送的表情包，支持后续捕捉群友的正反馈（RLHF）
 - **可视化打标工具**：Gradio 界面辅助表情包标注、描述生成与入库
 
@@ -56,7 +62,7 @@ Yuki 具备标准化的工具调用能力，通过 Function Call 机制扩展 LL
 - **多轮工具调用**：支持模型连续请求多个工具，工具结果自动回传继续推理（最多 4 轮）
 - **拟人化延迟**：工具调用前可配置等待时间（默认 1.2 秒），降低机械感
 - **执行日志观测**：记录工具调用的参数、耗时和成功状态
-- **14 个内置工具**：日记搜索、小女仆委托、网页搜索、地图搜索、文生图、QQ 文件发送、戳一戳、空间说说发布、定时任务管理等
+- **14 个内置工具**：小女仆委托、日记搜索、主人状态、私聊通知、戳一戳、QQ 文件发送、网易云搜索/下载、群聊截屏留念与检索、空间说说发布、富文本（合并转发/小程序/卡片）解析、文件下载、文生图；网页搜索与地图搜索作为小女仆侧工具提供
 
 ### 💬 主人私聊双模系统 (Master Private Channel)
 
@@ -78,11 +84,31 @@ Yuki 具备标准化的工具调用能力，通过 Function Call 机制扩展 LL
 | **EngineDiaryService** | 会话摘要总结、日记写入记忆库 |
 | **EngineMonitorService** | 后台巡检（空闲日记检查、破冰监控） |
 
+回复格式由 `core/reply_format.py` 统一兜底：模型写错的分隔标记（括号变体、全角、未闭合）先归一化，布局块发送前剥离，历史落盘与启动预载时批量修复旧错格式。
+
+### 🧬 自进化与受控自改 (Self-Evolution)
+
+小女仆可以改 Yuki 自己的代码，但改不坏、可追溯、失败能自己退回：
+
+| 隔离 | 手段 |
+|------|------|
+| 代码 | 容器内代码树只读挂载，agent 物理上改不了运行中的代码 |
+| 写入 | 唯一可写代码位置是 `staging/`，候选补丁必须经宿主审核才生效 |
+| 权限 | 只有宿主 `deploy/supervisor.py` 能改代码/重启，权限收敛到一个可审计进程 |
+
+- **路径分级**：自由区 / 受限区 / 禁区（`docs/evolution-charter.md` + `core/maid/maid_charter.py`），人格与 `configs/` 为硬禁区
+- **审查 + 校验**：宿主侧独立模型审查（相关性/删功能/数据安全/正确性/回滚性/副作用），再跑 5 道校验门（编译/导入/单测/试启动/探针）
+- **失败回滚**：任一门失败即 `git reset` 回基线，错误输出回灌给模型
+- **记忆快照**：应用补丁前对 `yuki_memory/` 做硬链接快照，保留最近 7 份
+- **可观测**：`logs/self_evolve.jsonl` 记录每次自改的摘要、结果与 commit
+- **运行底座**：`deploy/Dockerfile` + `run.sh`（与宿主同路径挂载，直接连宿主 NapCat）、`/health` 探针、`YUKI_DRY_RUN=1` 试启动、`retention.py` 保留策略
+
 ### 📊 调试与观测系统
 
 - **Context Debug WebUI**：本地只读 Web 界面，实时观察 Yuki 状态、完整 LLM 构建上下文、RAG 召回结果，支持上下文复制导出与敏感字段脱敏
 - **轻量 Debug Snapshot**：`SessionPipeline` 自动记录输入合并、回复决策、RAG 召回、完整 LLM messages 与各阶段耗时
-- **执行日志观测**：控制台与文件分级——控制台默认只出 INFO 业务事件（收消息、决策、发送、日记、报错），文件始终记录 DEBUG 明细并归档
+- **健康探针**：`utils/health_server.py` 独立线程提供 `/health`（ready / napcat_online / maid 队列），供宿主守护与外部监控使用
+- **执行日志观测**：控制台与文件分级——控制台默认只出 INFO 业务事件（收消息、决策、发送、日记、报错），文件始终记录 DEBUG 明细并归档；多行长信息折叠为单行摘要
 
 ### ⚡ 稳健的异步架构
 
@@ -98,6 +124,7 @@ Yuki 具备标准化的工具调用能力，通过 Function Call 机制扩展 LL
 - **浏览器交互模式**：聚焦模式下的浏览器控制能力
 - **系统状态监控**：系统空闲与窗口巡检
 - **Shot Memory**：实时记忆渲染，记录群聊截屏留念
+- **网易云音乐**：搜歌与下载（含扫码登录保障），下载后可发送到会话
 - **Live2D 桌宠**：Electron + Live2D 桌面宠物交互（默认关闭，见「快速开始」，已适配 Linux）
 - **Debug WebUI**：上下文调试与观测界面
 
@@ -172,7 +199,7 @@ github_monitor:
 
 ### 4. 文生图 — 让 Yuki 帮你画画
 
-**位置**：`core/tools.py` 中的 `generate_image` 工具
+**位置**：`core/tools/tools_media.py` 中的 `generate_image` 工具
 
 Yuki 可以调用 AI 图像生成模型，根据描述生成图片。
 
@@ -181,6 +208,7 @@ Yuki 可以调用 AI 图像生成模型，根据描述生成图片。
 - **双引擎支持**：支持 DashScope（通义万相）和 OpenAI 兼容接口
 - **本地保存**：生成的图片自动保存到 `output/` 目录
 - **自动发送**：生成后自动调用 `send_qq_file` 发到群里
+- **参考图编辑**：可传本地图片路径或 `[img:XXX]` 索引作为参考图（最多 4 张），走图像编辑接口
 - **二次元风格**：prompt 中内置了 Yuki 的二次元少女特色描述
 
 #### 工具调用
@@ -208,7 +236,7 @@ Yuki 能感知主人是否在电脑前，甚至知道你在看什么窗口。
 
 ### 6. 高德地图搜索 — 出门找吃的一把好手
 
-**位置**：`core/tools.py` 中的 `amap_search_tool`
+**位置**：`core/tools/tools_search.py` 中的 `amap_search_tool`（Yuki 主对话不挂载，由小女仆调用）
 
 Yuki 可以查询高德地图，帮你找地点。
 
@@ -222,11 +250,10 @@ Yuki 可以查询高德地图，帮你找地点。
 #### 联动玩法
 
 小女仆 + 高德地图：让小女仆"帮我查一下附近评分最高的火锅店，把地址发给我"
----
 
 ### 7. 戳一戳 — 骚扰群友
 
-**位置**：`core/tools.py` 中的 `poke_tool`
+**位置**：`core/tools/tools_message.py` 中的 `poke_tool`
 
 Yuki 可以在群里戳一戳指定用户。
 
@@ -241,6 +268,23 @@ Yuki 可以在群里戳一戳指定用户。
 "Yuki，戳一下小明" → Yuki 调用 `poke` 工具 → 临雀哥哥被戳了
 "让Yuki戳戳你~" → Yuki 主动调用 `poke` 工具 → 前前前世哥哥被戳了
 
+### 8. 网易云点歌 — 顺手把歌发出来
+
+**位置**：`core/tools/tools_ncm.py`
+
+- **搜歌**：`ncm_search` 按关键词搜索（歌名/歌手/专辑），返回可下载的歌曲 ID
+- **下载**：`ncm_download` 下载到 `data/` 并可直接用 `send_qq_file` 发到群里
+- **登录保障**：未登录或接口要求鉴权时，走扫码登录流程（`core/ncm_login.py`）
+
+### 9. 富文本解析 — 合并转发、小程序、卡片都能读
+
+**位置**：`core/tools/tools_rich.py`
+
+- **自动识别**：合并转发、小程序、JSON/XML 卡片、Markdown
+- **分页阅读**：长合并转发用 `start` / `count` 分段读，嵌套转发自动展开到 `max_depth`
+- **触发方式**：消息里出现 `[合并转发:id=xxx]` / `[小程序]` 时，Yuki 调用 `parse_rich_message`
+
+---
 
 ## 系统流程
 
@@ -308,20 +352,44 @@ YukiV6/
 │   ├── maid/                        # 小女仆自治系统（子代理）
 │   │   ├── maid.py                  #   主入口
 │   │   ├── maid_worker.py           #   后台任务消费者
-│   │   ├── maid_loop.py             #   演进循环（最多20轮）
+│   │   ├── maid_harness.py          #   harness 后端（宿主侧 dsh 执行）
+│   │   ├── maid_loop.py             #   内置循环（legacy 后端，最多20轮）
 │   │   ├── maid_runtime.py          #   运行时环境管理
 │   │   ├── maid_tools.py            #   工具实现
 │   │   ├── maid_prompt.py           #   系统提示词
 │   │   ├── maid_boundary.py         #   安全边界判定
-│   │   ├── maid_common.py           #   公共工具函数
-│   │   └── maid_loop.py             #   演进循环
+│   │   ├── maid_charter.py          #   自进化准则（路径分级/限额/验证门）
+│   │   ├── maid_approval.py         #   审批与确认流程
+│   │   ├── maid_selfevolve.py       #   自改工具（propose/verify/reload）
+│   │   ├── maid_worklog.py          #   跨任务历史交接
+│   │   ├── maid_memory.py           #   小女仆记忆注入
+│   │   ├── maid_resume.py           #   任务续做
+│   │   ├── maid_backend.py          #   执行后端选择（harness/legacy）
+│   │   └── maid_common.py           #   公共工具函数
+│   ├── tools/                       # 标准工具集合（14 个工具，按领域拆分）
+│   │   ├── tools.py                 #   TOOL_SPECS 装配与导出
+│   │   ├── tools_message.py         #   私聊/戳一戳/文件发送
+│   │   ├── tools_media.py           #   文生图/文件下载
+│   │   ├── tools_ncm.py             #   网易云搜索与下载
+│   │   ├── tools_rich.py            #   富文本解析（合并转发/小程序/卡片）
+│   │   ├── tools_snapshot.py        #   群聊截屏留念与检索
+│   │   ├── tools_diary.py           #   日记搜索
+│   │   ├── tools_maid.py            #   小女仆委托
+│   │   ├── tools_status.py          #   主人状态感知
+│   │   ├── tools_qzone.py           #   空间说说发布
+│   │   ├── tools_search.py          #   网页/地图搜索（小女仆侧）
+│   │   ├── tools_timer.py           #   定时任务
+│   │   └── tools_browser.py         #   浏览器模式入口
 │   ├── brain.py                     # YukiState 状态管理（精力/活跃度/生物钟）
 │   ├── history_manager.py           # 对话历史持久化（原子化读写）
 │   ├── modes.py                     # 模式管理（QQChat / BrowserInteraction）
 │   ├── prompts.py                   # 系统提示词模板
+│   ├── reply_format.py              # 回复标记归一化与发送前清洗
+│   ├── reply_watch.py               # 回复订阅（等回音判定与追击提醒）
+│   ├── ncm_login.py                 # 网易云扫码登录
 │   ├── session_pipeline.py          # 会话管道（8 阶段串行处理管线）
 │   ├── toolchain.py                 # Function Call 工具链框架
-│   └── tools.py                     # 标准工具集合（14 个工具）
+│   └── yuki_memory/                 # 结构化记忆存储（ChromaDB 持久化）
 │
 ├── modules/                         # 功能模块
 │   ├── QQNapcatListen/              # QQ 入站适配（事件 → 会话管线）
@@ -339,10 +407,25 @@ YukiV6/
 │   └── napcat.py                    # NapCat 接入层（连接/帧路由/CQ 协议/收发）
 │
 ├── utils/                           # 工具与基础设施
-│   ├── llm_client.py                # LLM 客户端（主备故障转移）
+│   ├── llm_client.py                # LLM 客户端（主备故障转移 + 空回复重试）
 │   ├── http_client.py               # 统一 SSL/HTTP 客户端（certifi）
-│   ├── logger.py                    # 结构化日志系统
+│   ├── health_server.py             # /health 探针（独立线程标准库服务）
+│   ├── paths.py                     # 路径常量
+│   ├── logger.py                    # 结构化日志系统（控制台/文件分级）
 │   └── download_model.py            # 嵌入模型下载工具
+│
+├── deploy/                          # 自进化运行底座
+│   ├── Dockerfile                   # 运行镜像（只装依赖，代码只读挂载）
+│   ├── run.sh                       # 生产容器启动（同路径挂载 + 数据卷）
+│   ├── verify.sh                    # 5 道校验门
+│   ├── supervisor.py                # 宿主守护：应用/校验/重启/回滚
+│   ├── reviewer.py                  # 宿主侧独立模型审查
+│   ├── maid_runner.py               # 小女仆执行器（拉起 dsh 子进程）
+│   ├── retention.py                 # 保留策略（trace/日志/staging 清理）
+│   ├── dsh-home/                    # yuki-maid profile（人格/准则/沙箱）
+│   ├── dsh-runtime/                 # 固定版本 dsh
+│   ├── test_gate.py                 # 测试门基线差集
+│   └── install-service.sh           # supervisor 常驻服务安装
 │
 ├── scripts/                         # 独立工具脚本
 │   ├── 01_api_test_tools/           # API 对比测试工具
@@ -353,17 +436,28 @@ YukiV6/
 │   ├── 06_sticker_manager/          # 表情包管理工具
 │   └── debug_tools/                 # Debug WebUI 启动工具
 │
-├── tests/                           # 自动化测试
+├── tests/                           # 自动化测试（22 个测试文件）
 │   ├── test_config.py               # 配置系统测试
 │   ├── test_llm_client.py           # LLM 客户端故障转移测试
+│   ├── test_llm_retry.py            # 空回复/请求失败重试测试
 │   ├── test_maid.py                 # 小女仆系统测试
+│   ├── test_maid_features.py        # 小女仆续做/审批/交接测试
 │   ├── test_maid_search_diary.py    # 日记搜索测试
 │   ├── test_toolchain.py            # 工具链测试
 │   ├── test_engine.py               # 引擎测试
 │   ├── test_github_monitor.py       # GitHub 监控测试
 │   ├── test_modes.py                # 模式管理测试
 │   ├── test_system_state.py         # 系统状态测试
-│   └── test_ice_break_pipeline.py   # 破冰唤醒流程测试
+│   ├── test_ice_break_pipeline.py   # 破冰唤醒流程测试
+│   ├── test_reply_format.py         # 回复标记归一化测试
+│   ├── test_reply_subscription.py   # 回复订阅测试
+│   ├── test_napcat_gateway.py       # NapCat 连接层测试
+│   ├── test_napcat_inbound.py       # 入站事件测试
+│   ├── test_native_vision.py        # 原生视觉输入测试
+│   ├── test_vision_prefetch.py      # 图片预取测试
+│   ├── test_vision_placeholder.py   # 视觉占位符测试
+│   ├── test_logger.py               # 日志分级测试
+│   └── run_tests.py                 # 测试入口
 │
 ├── skills/                          # 小女仆固化技能存储
 ├── docs/                            # 项目文档
@@ -373,6 +467,10 @@ YukiV6/
 │   ├── api-reference.md             # 核心 API 参考
 │   ├── toolchain-usage.md           # 工具链使用指南
 │   ├── troubleshooting.md           # 常见问题排查
+│   ├── evolution-charter.md         # 自进化准则（人读版）
+│   ├── core-technical-debt.md       # core/ 技术债梳理
+│   ├── module-interface.md          # 模块接口约定
+│   ├── yuki-memory-runtime-guide.md # Yuki-Memory 运行手册
 │   └── ...
 │
 ├── future addons/                   # 未来扩展计划
@@ -383,8 +481,13 @@ YukiV6/
 │   ├── ISSUE_TEMPLATE/              # Issue 模板
 │   └── PULL_REQUEST_TEMPLATE.md     # PR 模板
 │
-└── .trae/rules/                     # IDE 开发规则
-    └── project_rules.md             # 项目开发公约
+├── .trae/rules/                     # IDE 开发规则
+│   └── project_rules.md             # 项目开发公约
+│
+├── yuki_memory/                     # ChromaDB 向量库持久化目录（数据资产）
+├── memory/ data/ output/ logs/      # 记忆 / 数据 / 产物 / 日志
+├── staging/ tasks/ workspace/       # 自改候选区 / 小女仆任务 / 工作区
+└── memo/                            # 开发日志（Log.md）
 ```
 
 ---
@@ -470,6 +573,23 @@ python scripts/04_meme_cache_tools/reset_and_import_meme.py
 
 详情请参考 [docs/architecture.md](docs/architecture.md) 中的表情包系统章节。
 
+### 6. 自进化底座（可选，需要 Docker）
+
+小女仆改代码依赖宿主侧的守护进程，不装也能正常跑 Yuki，只是自改工具不可用：
+
+```bash
+# 守护进程常驻（需要 sudo）
+sudo bash deploy/install-service.sh
+
+# 手动校验改动（5 道门）
+bash deploy/verify.sh
+```
+
+- `YUKI_DRY_RUN=1 python main.py`：只做初始化自检，跳过 NapCat 接管与历史落盘
+- `YUKI_HEALTH_PORT`（默认 `8778`）：`/health` 探针端口
+- `YUKI_MAID_BACKEND=legacy`：小女仆回退到内置循环
+- 细节见 [deploy/README.md](deploy/README.md) 与 [docs/evolution-charter.md](docs/evolution-charter.md)
+
 ---
 
 ## 文档
@@ -483,16 +603,23 @@ python scripts/04_meme_cache_tools/reset_and_import_meme.py
 | [toolchain-usage.md](docs/toolchain-usage.md) | Function Call 工具链使用指南 |
 | [troubleshooting.md](docs/troubleshooting.md) | 常见问题排查 |
 | [deployment-guide.md](docs/deployment-guide.md) | 部署指南 |
+| [evolution-charter.md](docs/evolution-charter.md) | 自进化准则（权限边界/限额/验证门） |
+| [core-technical-debt.md](docs/core-technical-debt.md) | core/ 技术债与整改优先级 |
+| [module-interface.md](docs/module-interface.md) | 模块接口约定 |
+| [yuki-memory-runtime-guide.md](docs/yuki-memory-runtime-guide.md) | 结构化记忆运行手册 |
+| [deploy/README.md](deploy/README.md) | 自进化部署与守护进程说明 |
 | [configs/README.md](configs/README.md) | 配置系统说明 |
 
 ### 运行测试
 
 ```bash
 # 激活虚拟环境
-.\.venv\Scripts\activate
+.\.venv\Scripts\activate   # Linux/macOS: source .venv/bin/activate
 
 # 运行全部测试
 pytest tests/
+# 或
+python tests/run_tests.py
 
 # 运行指定测试文件
 pytest tests/test_maid.py
@@ -518,6 +645,8 @@ pytest tests/test_engine.py
 | **主对话模型** | DeepSeek / OpenAI 兼容（可开启原生视觉） |
 | **图像生成** | 通义万相 / OpenAI 兼容 |
 | **桌面交互** | Live2D + Electron |
+| **小女仆执行** | DeepSeek Harness（宿主侧 dsh 子进程，可回退内置循环） |
+| **自改守护** | Docker（代码只读挂载）+ systemd supervisor + 独立模型审查 |
 
 ---
 
@@ -544,7 +673,14 @@ pytest tests/test_engine.py
 - [x] QQ 空间监控与发布
 - [x] 浏览器交互聚焦模式
 - [x] Shot Memory 实时记忆渲染
+- [x] 回复订阅：等不到回音时自己补一句
+- [x] 入站图片预取：下载与视觉理解前置到防抖等待期
+- [x] 回复标记容错与历史归一化
+- [x] 网易云音乐搜索/下载、富文本（合并转发/小程序）解析
+- [x] 容器化自进化闭环：受控自改 + 独立审查 + 校验门 + 自动回滚
+- [x] 小女仆执行后端切换到 DeepSeek Harness，支持任务续做与跨任务交接
 - [ ] 引入生物遗忘曲线：基于活跃时间戳的记忆唤醒与沉底
+- [ ] 结构化记忆（YukiMemoryStore）全量替换旧日记召回
 
 ---
 
@@ -554,4 +690,4 @@ pytest tests/test_engine.py
 
 ---
 
-_最后更新: 2026/08/02 · YukiV6_
+_最后更新: 2026/10/25 · YukiV6_

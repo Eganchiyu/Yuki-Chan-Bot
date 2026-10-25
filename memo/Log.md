@@ -159,3 +159,12 @@
 - 提交 618c69f（.gitignore + 女仆提示词微调），推送 fix/maid-env-vision-prefetch
 - 推送 main 原有 5 个提交，再合并特性分支（--no-ff，7ea5298）并推送
 - 当前：main == origin/main，工作区干净
+
+## 2026-10-25 README 同步当前实现
+
+- 特性区：小女仆改写为 harness 后端 + 受控自改 + 无人值守 + 任务接续；记忆区补结构化记忆（实验中）；精力区补回复订阅；表情包区补入站图片预取；工具链工具清单按 `core/tools/tools.py` 的 14 个 ToolSpec 修正（网页/地图搜索标注为小女仆侧工具）。
+- 新增「自进化与受控自改」小节（只读挂载 / staging / supervisor / 审查 + 5 门 / 回滚 / 快照 / self_evolve.jsonl）；调试区补 `/health` 探针。
+- 玩法区修正过期路径（`core/tools.py` → `core/tools/tools_media.py`、`tools_message.py`、`tools_search.py`），新增网易云点歌、富文本解析两节，顺手删掉错位的分隔线。
+- 项目结构树：`core/tools/` 包、`core/maid/` 新文件、`deploy/`、`utils/health_server.py`、`reply_format.py`、`reply_watch.py`、`ncm_login.py`、tests 22 个文件、docs 新增文档、数据目录（yuki_memory/memo/staging 等）。
+- 快速开始补「自进化底座（可选，需 Docker）」与环境变量（`YUKI_DRY_RUN` / `YUKI_HEALTH_PORT` / `YUKI_MAID_BACKEND`）；文档表、技术栈、开发计划、测试命令、最后更新日期同步。
+- 状态：仅文档改动，未跑测试。
