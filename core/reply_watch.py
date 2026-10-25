@@ -24,13 +24,13 @@ EVENT_SOURCE = "yuki.reply_watch"
 # --- 自动订阅判定 ---
 ENABLED = True
 # 评分权重：结尾问句 + 触发词 + 精力 + 生物钟 + 活跃度
-QUESTION_WEIGHT = 0.45
+QUESTION_WEIGHT = 0.40
 TRIGGER_WORD_WEIGHT = 0.15
-ENERGY_WEIGHT = 0.20
+ENERGY_WEIGHT = 0.05
 BIOCLOCK_WEIGHT = 0.15
 ACTIVITY_WEIGHT = 0.15
 # 随机化幅度与门槛：分数加一点抖动后过线才订阅
-SCORE_JITTER = 0.15
+SCORE_JITTER = 0.10
 SCORE_THRESHOLD = 0.55
 
 # 等待时长 = 最近平均消息间隔 + 20 秒，数据不足时用默认值
@@ -38,8 +38,9 @@ WAIT_EXTRA_SECONDS = 20.0
 DEFAULT_WAIT_SECONDS = 60.0
 RECENT_INTERVAL_SAMPLES = 8
 
+# 只收「明确在求回应」的词；呢/嘛 是陈述语气口癖，不算
 TRIGGER_WORDS = (
-    "吗", "呢", "嘛", "好不好", "对不对", "是不是", "行不行", "在吗",
+    "吗", "好不好", "对不对", "是不是", "行不行", "在吗",
     "有人", "理我", "回我", "回答我", "要不要", "你猜",
 )
 _MEME_TAG_RE = re.compile(r"\[MEME:[^\]]*\]")

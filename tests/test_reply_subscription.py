@@ -39,7 +39,7 @@ def _patch(min_timeout=0.02, threshold=0.0, jitter=0.0):
 def _restore():
     reply_watch.MIN_TIMEOUT_SECONDS = 30.0
     reply_watch.SCORE_THRESHOLD = 0.55
-    reply_watch.SCORE_JITTER = 0.15
+    reply_watch.SCORE_JITTER = 0.10
 
 
 def _build_pipeline(engine=None):
