@@ -15,14 +15,7 @@ if project_root not in sys.path:
     sys.path.append(project_root)
 
 from core import reply_watch
-from core.reply_watch import (
-    cancel_watch,
-    get_watch,
-    is_human_incoming,
-    reset_reply_watch,
-    resolve_watch,
-    start_watch,
-)
+from core.reply_watch import get_watch, is_human_incoming, reset_reply_watch, resolve, subscribe
 from core.session_pipeline import SessionPipeline
 from core.toolchain import ToolContext, ToolRuntime
 
@@ -48,7 +41,7 @@ def _build_context(callback):
     )
 
 
-def test_subscribe_fires_one_followup():
+def test_timeout_injects_reminder():
     async def run():
         _patch_min_timeout()
         reset_reply_watch()
@@ -58,22 +51,20 @@ def test_subscribe_fires_one_followup():
             calls.append({"chat_id": chat_id, "mode": mode, **kwargs})
 
         try:
-            watch = start_watch("c1", "group", callback, timeout_seconds=0.001, max_followups=1,
-                                expectation="等回答")
+            watch = subscribe("c1", "group", callback, timeout_seconds=0.001)
             assert watch["timeout_seconds"] == 0.02
             assert watch["status"] == "waiting"
 
-            await asyncio.sleep(0.06)
-
-            assert len(calls) == 1
+            # 到点后会自动提醒（随后还会自动排下一次）
+            await asyncio.sleep(0.03)
+            assert len(calls) >= 1
             assert calls[0]["chat_id"] == "c1"
             assert calls[0]["force_reply"] is True
             assert calls[0]["debounce_flag"] is False
             event = calls[0]["message_obj"]
             assert event["is_reply_watch_event"] is True
-            assert "等待超时" in event["content"]
-            # 次数用尽后订阅结束
-            assert get_watch("c1") is None
+            assert "没有人回复" in event["content"]
+            assert get_watch("c1")["followups"] >= 1
         finally:
             reset_reply_watch()
             _restore_min_timeout()
@@ -91,9 +82,8 @@ def test_human_message_resolves_watch():
             calls.append(kwargs)
 
         try:
-            start_watch("c2", "group", callback, timeout_seconds=0.001)
-            resolved = resolve_watch("c2", "human_message")
-            assert resolved is not None
+            subscribe("c2", "group", callback, timeout_seconds=0.001)
+            resolved = resolve("c2", "human_message")
             assert resolved["status"] == "human_message"
 
             await asyncio.sleep(0.08)
@@ -106,7 +96,7 @@ def test_human_message_resolves_watch():
     asyncio.run(run())
 
 
-def test_followups_capped_at_two():
+def test_reminders_capped_at_two():
     async def run():
         _patch_min_timeout()
         reset_reply_watch()
@@ -116,13 +106,9 @@ def test_followups_capped_at_two():
             calls.append(kwargs)
 
         try:
-            start_watch("c3", "group", callback, timeout_seconds=0.001, max_followups=99)
-            assert get_watch("c3")["max_followups"] == 2
-
+            subscribe("c3", "group", callback, timeout_seconds=0.001)
             await asyncio.sleep(0.15)
             assert len(calls) == 2
-            assert "第 1/2 次" in calls[0]["message_obj"]["content"]
-            assert "第 2/2 次" in calls[1]["message_obj"]["content"]
             assert get_watch("c3") is None
         finally:
             reset_reply_watch()
@@ -139,32 +125,10 @@ def test_timeout_lower_bound_is_30s():
             return None
 
         try:
-            watch = start_watch("c4", "group", callback, timeout_seconds=5, max_followups=1)
+            watch = subscribe("c4", "group", callback, timeout_seconds=5)
             assert watch["timeout_seconds"] == 30
         finally:
             reset_reply_watch()
-
-    asyncio.run(run())
-
-
-def test_cancel_watch_stops_followup():
-    async def run():
-        _patch_min_timeout()
-        reset_reply_watch()
-        calls = []
-
-        async def callback(chat_id, mode, **kwargs):
-            calls.append(kwargs)
-
-        try:
-            start_watch("c5", "group", callback, timeout_seconds=0.001)
-            cancelled = cancel_watch("c5", "tool_cancel")
-            assert cancelled["status"] == "tool_cancel"
-            await asyncio.sleep(0.08)
-            assert calls == []
-        finally:
-            reset_reply_watch()
-            _restore_min_timeout()
 
     asyncio.run(run())
 
@@ -175,8 +139,7 @@ def test_subscribe_tool_requires_callback_and_validates_timeout():
 
         reset_reply_watch()
         try:
-            context = _build_context(None)
-            result = await subscribe_reply_tool(context, timeout_seconds=5)
+            result = await subscribe_reply_tool(_build_context(None), time=5)
             assert result.success is False
             assert result.error == "callback_unavailable"
 
@@ -185,16 +148,12 @@ def test_subscribe_tool_requires_callback_and_validates_timeout():
             async def callback(chat_id, mode, **kwargs):
                 calls.append(kwargs)
 
-            context = _build_context(callback)
-            result = await subscribe_reply_tool(context, timeout_seconds=10, expectation="等回复")
+            result = await subscribe_reply_tool(_build_context(callback), time=10)
             assert result.success is True
             assert result.data["timeout_seconds"] == 30
             assert "30 秒" in result.content
 
-            cancel_result = await subscribe_reply_tool(context, action="cancel")
-            assert cancel_result.success is True
-            assert cancel_result.data["status"] == "tool_cancel"
-
+            resolve("test_chat", "human_message")
             await asyncio.sleep(0.05)
             assert calls == []
         finally:
@@ -236,7 +195,7 @@ def test_pipeline_resolves_watch_on_human_message():
         )
         pipeline.run_once = noop_run_once
         try:
-            start_watch("c6", "group", callback, timeout_seconds=0.001, max_followups=1)
+            subscribe("c6", "group", callback, timeout_seconds=0.001)
             await pipeline.enqueue_message(
                 "c6", "group", message_obj={"content": "我回来啦", "source": "napcat.group"}, debounce_flag=False
             )

@@ -144,3 +144,5 @@
 - `SessionPipeline.enqueue_message` 收到真人消息即 `resolve_watch`，机器人/定时/订阅事件不算。
 - 测试：`tests/test_reply_subscription.py` 8 项全过；全套 122 过 23 失败均为基线已知失败，无新增。
 - 状态：代码已落盘，生产容器（只读挂载）需重启才生效。
+- 简化（同日）：工具只剩 `subscribe_reply(time)`，去掉 action/expectation；到点注入「XX秒到啦～没有人回复」
+  走正常 enqueue；有人回复则订阅静默取消；最多自动提醒 2 次。测试 7 项全过，全套无新增失败。

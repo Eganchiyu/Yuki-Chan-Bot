@@ -241,33 +241,17 @@ TOOL_SPECS = [
     ToolSpec(
         name="subscribe_reply",
         description=(
-            "订阅接下来这段时间的回应。当你很期待答复、想紧迫追击时使用："
-            "在 timeout_seconds 秒内没人说话，系统会提醒你，让你自己决定补一句、追问还是收尾。"
-            "任何人的新消息一到即视为得到回应，订阅自动结束；最多追击两次，等待时间不能低于 30 秒。"
-            "不想再等时用 action='cancel' 主动放弃。"
+            "订阅接下来这段时间的回应。很期待答复、想紧迫追击时使用："
+            "在 time 秒内没人回复，系统会提醒你，让你自己补一句或追问；"
+            "期间有人回复则订阅自动取消，最多自动提醒两次，时间不能低于 30 秒。"
         ),
         parameters={
             "type": "object",
             "properties": {
-                "action": {
-                    "type": "string",
-                    "enum": ["subscribe", "cancel", "status"],
-                    "description": "subscribe 建立订阅（默认），cancel 放弃等待，status 查看当前订阅",
-                    "default": "subscribe",
-                },
-                "timeout_seconds": {
+                "time": {
                     "type": "number",
-                    "description": "希望多久内得到回答，最小 30 秒，无上限",
+                    "description": "希望多久内得到回复（秒），最小 30，无上限",
                     "default": 60,
-                },
-                "max_followups": {
-                    "type": "integer",
-                    "description": "最多追问几次，0~2，默认 2",
-                    "default": 2,
-                },
-                "expectation": {
-                    "type": "string",
-                    "description": "你在等什么，例如「等主人回答今晚回不回家」",
                 },
             },
         },

@@ -10,7 +10,7 @@ from typing import Any
 
 from config import cfg
 from core.reply_format import clean_visible_reply
-from core.reply_watch import is_human_incoming, resolve_watch
+from core.reply_watch import is_human_incoming, resolve
 from modules.debug.context_snapshot import PIPELINE_STAGES, context_snapshot_store
 from modules.vision.prefetch import prefetch_images, resolve_image
 from utils.logger import get_logger
@@ -178,7 +178,7 @@ class SessionPipeline:
             self.last_msg_time[chat_id_str] = time.time()
             # 有人来了就算等到了：解除回复订阅，避免 Yuki 继续追击
             if is_human_incoming(incoming_message):
-                resolve_watch(chat_id_str, "human_message")
+                resolve(chat_id_str, "human_message")
             # 消息一到就后台预取图片，把下载与图像理解挪出回复关键路径
             self._schedule_image_prefetch(incoming_message.content)
 
