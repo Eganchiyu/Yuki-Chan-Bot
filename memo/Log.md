@@ -136,3 +136,11 @@
 - 另：`deploy/run.sh` 只 `docker rm` + `docker run`，不 build，代码是只读挂载；
   重建容器 ≈ 7~9 秒（14:56 那次 9s，15:05 这次 7s），不会重装 torch。
 - 待机主：`sudo systemctl restart yuki-supervisor` 才能让「自动重启前发通知」生效。
+
+## 2026-10-25 回复订阅（subscribe_reply）
+- 新增 `core/reply_watch.py`：按 chat_id 维护「待回执」订阅，下限 30s，最多 2 次追击，
+  超时经 `process_callback(force_reply=True)` 注入 `【等待超时】` 事件，让 Yuki 自己决定补一句/追问/收尾。
+- 新增工具 `subscribe_reply`（action=subscribe/cancel/status），注册进 `core/tools/`。
+- `SessionPipeline.enqueue_message` 收到真人消息即 `resolve_watch`，机器人/定时/订阅事件不算。
+- 测试：`tests/test_reply_subscription.py` 8 项全过；全套 122 过 23 失败均为基线已知失败，无新增。
+- 状态：代码已落盘，生产容器（只读挂载）需重启才生效。

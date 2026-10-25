@@ -13,6 +13,7 @@ from .tools_rich import parse_rich_message_tool
 from .tools_search import amap_search_tool, browser_search_tool
 from .tools_snapshot import capture_group_snapshot_tool, search_group_snapshots_tool
 from .tools_status import get_master_status_tool
+from .tools_subscribe import subscribe_reply_tool
 from .tools_timer import manage_timer_task_tool
 
 TOOL_SPECS = [
@@ -236,6 +237,41 @@ TOOL_SPECS = [
             "required": ["prompt"],
         },
         handler=generate_image_tool,
+    ),
+    ToolSpec(
+        name="subscribe_reply",
+        description=(
+            "订阅接下来这段时间的回应。当你很期待答复、想紧迫追击时使用："
+            "在 timeout_seconds 秒内没人说话，系统会提醒你，让你自己决定补一句、追问还是收尾。"
+            "任何人的新消息一到即视为得到回应，订阅自动结束；最多追击两次，等待时间不能低于 30 秒。"
+            "不想再等时用 action='cancel' 主动放弃。"
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": ["subscribe", "cancel", "status"],
+                    "description": "subscribe 建立订阅（默认），cancel 放弃等待，status 查看当前订阅",
+                    "default": "subscribe",
+                },
+                "timeout_seconds": {
+                    "type": "number",
+                    "description": "希望多久内得到回答，最小 30 秒，无上限",
+                    "default": 60,
+                },
+                "max_followups": {
+                    "type": "integer",
+                    "description": "最多追问几次，0~2，默认 2",
+                    "default": 2,
+                },
+                "expectation": {
+                    "type": "string",
+                    "description": "你在等什么，例如「等主人回答今晚回不回家」",
+                },
+            },
+        },
+        handler=subscribe_reply_tool,
     ),
 ]
 
