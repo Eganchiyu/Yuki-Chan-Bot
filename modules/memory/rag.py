@@ -1,6 +1,7 @@
 import datetime
 import json
 import os
+import re
 import concurrent.futures
 import warnings
 
@@ -15,6 +16,28 @@ from config import cfg
 from utils.logger import get_logger
 
 logger = get_logger("rag")
+
+# 召回重排参数：所有加成都是"相对语义分"的比例提升，避免任何单一维度绝对压制
+CHAT_RELATIVE_BOOST = 0.15        # 当前群聊日记的相对提升
+SPEAKER_RELATIVE_BOOST = 0.05     # 每个命中发言者的相对提升
+SPEAKER_RELATIVE_BOOST_CAP = 0.15
+KEYWORD_RELATIVE_BOOST = 0.50     # 与 jieba 词权相乘，命中越多提升越多
+KEYWORD_RELATIVE_BOOST_CAP = 0.30
+RECENCY_HALF_LIFE_DAYS = 180.0    # 时间衰减半衰期
+RECENCY_FLOOR = 0.55              # 时间衰减下限，老回忆不会掉光
+
+_DIARY_DATE_RE = re.compile(r"【日记\((\d{4})-(\d{2})-(\d{2})(?:\s+(\d{2}):(\d{2}))?")
+
+# 关键词池里只命中这些虚词的日记不该抢占召回名额
+KEYWORD_STOPWORDS = {
+    "今天", "今年", "现在", "刚才", "最近", "以后", "以前", "时候", "时间",
+    "什么", "怎么", "为什么", "多少", "哪里", "这个", "那个", "这样", "那样",
+    "一下", "一点", "有点", "一些", "一个", "一起", "一样", "一直", "一定",
+    "要不", "不要", "不用", "不会", "不能", "不是", "是不是", "要不要", "可以", "可能",
+    "应该", "需要", "还是", "就是", "但是", "然后", "所以", "因为", "如果", "虽然",
+    "已经", "自己", "大家", "我们", "你们", "他们", "她们", "人家",
+    "知道", "觉得", "感觉", "看到", "听到", "东西", "事情", "问题", "样子",
+}
 
 
 class MemoryRAG:
@@ -219,9 +242,10 @@ class MemoryRAG:
         raw_keywords = jieba.analyse.extract_tags(query_text, topK=top_k_keywords, withWeight=True)
         keywords_with_weight = [
             (kw, w) for kw, w in raw_keywords
-            if kw.lower() not in self.name_blacklist
+            if len(kw) > 1 and kw.lower() not in self.name_blacklist and kw not in KEYWORD_STOPWORDS
         ]
         keywords = [kw for kw, _ in keywords_with_weight]
+        keyword_weight_sum = sum(w for _, w in keywords_with_weight)
         logger.debug(f"[RAG] 核心锚点词: {keywords}")
 
         # 2. 定义并行查询任务
@@ -276,20 +300,23 @@ class MemoryRAG:
                 }
 
         # --- 处理关键词池 ---
-        # 保留原有的保底分策略，但现在参与打捞的数据是经过 Chroma 引擎极速过滤的
-        initial_kw_score = max_v_score * 0.85
+        # 保底分改为「词权覆盖率」：命中弱词/单个词的日记只拿到很低的基础分，
+        # 避免只命中"今天"这类词的老日记挤掉真正语义相关的回忆。
         kw_found_count = 0
         if keyword_results and keyword_results['documents']:
             for i, content in enumerate(keyword_results['documents']):
                 doc_id = keyword_results['ids'][i]
-                if doc_id not in combined_map:
-                    combined_map[doc_id] = {
-                        "doc": content,
-                        "meta": keyword_results['metadatas'][i],
-                        "base_score": initial_kw_score,
-                        "source": f"关键词精准打捞(保底:{initial_kw_score:.2f})"
-                    }
-                    kw_found_count += 1
+                if doc_id in combined_map:
+                    continue
+                coverage = MemoryRAG._keyword_coverage(content, keywords_with_weight, keyword_weight_sum)
+                base_score = max_v_score * coverage
+                combined_map[doc_id] = {
+                    "doc": content,
+                    "meta": keyword_results['metadatas'][i],
+                    "base_score": base_score,
+                    "source": f"关键词打捞(覆盖率:{coverage:.2f})"
+                }
+                kw_found_count += 1
 
         # 5. 精准算分与加权补偿
         final_results = []
@@ -318,6 +345,44 @@ class MemoryRAG:
         return final_output
 
     @staticmethod
+    def _keyword_coverage(doc, keywords_with_weight, keyword_weight_sum):
+        """命中词权 / 全部锚点词权，取值 0~1。"""
+        if not keywords_with_weight or not keyword_weight_sum:
+            return 0.0
+        hit = sum(weight for kw, weight in keywords_with_weight if kw in doc)
+        return max(0.0, min(1.0, hit / keyword_weight_sum))
+
+    @staticmethod
+    def _diary_timestamp(doc, meta):
+        """优先用日记正文里的日期前缀，其次退回 metadata.timestamp。"""
+        match = _DIARY_DATE_RE.search(doc or "")
+        if match:
+            year, month, day, hour, minute = match.groups()
+            try:
+                return datetime.datetime(
+                    int(year), int(month), int(day), int(hour or 0), int(minute or 0)
+                ).timestamp()
+            except ValueError:
+                pass
+
+        try:
+            ts = float((meta or {}).get("timestamp") or 0)
+        except (TypeError, ValueError):
+            return None
+        return ts if ts > 0 else None
+
+    @staticmethod
+    def _recency_decay(doc, meta, now=None):
+        """按日记时间做指数衰减，下限 RECENCY_FLOOR。"""
+        ts = MemoryRAG._diary_timestamp(doc, meta)
+        if not ts:
+            return 1.0
+        now = now if now is not None else datetime.datetime.now().timestamp()
+        age_days = max(0.0, (now - ts) / 86400.0)
+        decay = RECENCY_FLOOR + (1.0 - RECENCY_FLOOR) * 0.5 ** (age_days / RECENCY_HALF_LIFE_DAYS)
+        return max(RECENCY_FLOOR, min(1.0, decay))
+
+    @staticmethod
     def _calculate_final_item(
         doc,
         meta,
@@ -325,35 +390,44 @@ class MemoryRAG:
         keywords_with_weight,
         chat_id=None,
         speaker_names=None,
+        now=None,
     ):
-        keyword_boost = 0.0
+        relevance = max(0.0, min(1.0, float(base_score or 0.0)))
+
+        keyword_hit = 0.0
         matched_words = []
         for kw, weight in keywords_with_weight:
             if kw in doc:
-                # 原汁原味的权重补偿，发挥极佳的“命中记忆”效果
-                keyword_boost += weight * 0.5
+                keyword_hit += weight
                 matched_words.append(kw)
+        keyword_boost = min(keyword_hit * KEYWORD_RELATIVE_BOOST, KEYWORD_RELATIVE_BOOST_CAP) * relevance
 
-        current_chat_boost = 0.0
+        chat_ratio = 0.0
         if chat_id and str(meta.get("chat_id", "")) == str(chat_id):
-            current_chat_boost = 10.0
+            chat_ratio = CHAT_RELATIVE_BOOST
+        chat_boost = chat_ratio * relevance
 
-        speaker_boost = 0.0
         speaker_matches = []
         for name in speaker_names or []:
             if name and name in doc:
-                speaker_boost += 0.15
                 speaker_matches.append(name)
-        speaker_boost = min(speaker_boost, 0.45)
+        speaker_ratio = min(len(speaker_matches) * SPEAKER_RELATIVE_BOOST, SPEAKER_RELATIVE_BOOST_CAP)
+        speaker_boost = speaker_ratio * relevance
 
-        final_score = base_score + keyword_boost + current_chat_boost + speaker_boost
+        boost = keyword_boost + chat_boost + speaker_boost
+        decay = MemoryRAG._recency_decay(doc, meta, now=now)
+        final_score = (relevance + boost) * decay
+
         return {
             "content": doc,
             "metadata": meta,
             "score": final_score,
+            "relevance": relevance,
+            "decay": decay,
             "debug": (
-                f"基准:{base_score:.2f} + 关键词补偿:{keyword_boost:.2f} "
-                f"+ 当前群聊:{current_chat_boost:.2f} + 发言者:{speaker_boost:.2f} "
+                f"语义:{relevance:.2f} + 关键词(+{keyword_boost:.2f})"
+                f" + 当前群聊(+{chat_boost:.2f}) + 发言者(+{speaker_boost:.2f})"
+                f" × 时间衰减:{decay:.2f} = {final_score:.2f} "
                 f"(匹配:{matched_words}, 发言者匹配:{speaker_matches})"
             )
         }

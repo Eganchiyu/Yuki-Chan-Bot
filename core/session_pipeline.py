@@ -438,11 +438,14 @@ class SessionPipeline:
         mode = context["mode"]
         session = context["session"]
 
-        # 从已检索的 RAG 结果中计算话题兴趣度
+        # 从已检索的 RAG 结果中计算话题兴趣度：只取未加权重的纯语义分，避免重排加成污染决策
         rag_interest = 0.0
         relevant_diaries = context.get("relevant_diaries", [])
         if relevant_diaries:
-            rag_interest = sum(d.get("score", 0) for d in relevant_diaries) / len(relevant_diaries)
+            rag_interest = sum(
+                d.get("relevance", d.get("score", 0)) for d in relevant_diaries
+            ) / len(relevant_diaries)
+            rag_interest = min(1.0, max(0.0, rag_interest))
 
         if mode == "group" and not await self.engine.decide_to_reply(
             session,

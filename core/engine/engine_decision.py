@@ -4,6 +4,10 @@ from utils.logger import get_logger
 
 logger = get_logger("engine")
 
+# 话题兴趣度(0~1) → 话题激素的倍率；折中档：relevance=0.5 时激素稳态≈40
+RAG_HORMONE_GAIN = 80.0
+REPLY_THRESHOLD = 50.0
+
 
 class EngineDecisionService:
     """负责群聊回复意愿判定。"""
@@ -26,7 +30,7 @@ class EngineDecisionService:
             self.yuki.topic_hormone = {}
 
         current_hormone = self.yuki.topic_hormone.get(cid, 0.0)
-        new_hormone = current_hormone * 0.60 + (rag_interest * 10)
+        new_hormone = current_hormone * 0.60 + min(max(rag_interest, 0.0), 1.0) * RAG_HORMONE_GAIN
         new_hormone = min(new_hormone, 100.0)
         self.yuki.topic_hormone[cid] = new_hormone
 
@@ -86,7 +90,7 @@ class EngineDecisionService:
             reply_score += 20
             logger.debug(f"[Decision] 检测到哥哥大人发言，触发中等依赖修正 +15")
 
-        threshold = 55.0
+        threshold = REPLY_THRESHOLD
         will_reply = reply_score >= threshold
 
         logger.info(

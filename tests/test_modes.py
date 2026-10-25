@@ -179,7 +179,7 @@ def test_tool_registry_provider_uses_browser_tool_group_only_in_browser_mode():
     assert "enter_browser_interaction" not in browser_tools
 
 
-def test_rag_current_chat_and_speaker_boosts_are_applied():
+def test_rag_relative_boosts_do_not_dominate_semantic_score():
     local_item = MemoryRAG._calculate_final_item(
         "Alice 和 Yuki 在本群聊讨论浏览器模式",
         {"chat_id": "10001"},
@@ -197,6 +197,8 @@ def test_rag_current_chat_and_speaker_boosts_are_applied():
         speaker_names=["Alice"],
     )
 
-    assert local_item["score"] > other_item["score"]
-    assert "当前群聊:10.00" in local_item["debug"]
-    assert "发言者:0.15" in local_item["debug"]
+    # 同群/发言者只按语义分比例提升，不能反超语义高相关的其他群回忆
+    assert other_item["score"] > local_item["score"]
+    assert local_item["score"] < 0.2 * 1.25
+    assert local_item["relevance"] == 0.2
+    assert other_item["relevance"] == 0.9

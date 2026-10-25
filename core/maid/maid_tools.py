@@ -36,9 +36,15 @@ def search_diary_fast(date_str=None, keyword=None):
             # 日记正文固定以 【日记(YYYY-MM-DD HH:MM)】 开头，日期前缀可直接用 $contains 粗筛
             conditions.append({"$contains": f"【日记({date_str}"})
         if keyword:
-            keyword_variants = {keyword}
-            if keyword.lower() != keyword or keyword.upper() != keyword:
-                keyword_variants.update({keyword.lower(), keyword.upper()})
+            # Chroma 的 $contains 区分大小写：常见大小写形态各查一次取并集，
+            # 最终精确判定仍由下面的 lower() 比对负责。
+            keyword_variants = {
+                keyword,
+                keyword.lower(),
+                keyword.upper(),
+                keyword.title(),
+                keyword.capitalize(),
+            }
             keyword_conditions = [{"$contains": kw} for kw in sorted(keyword_variants)]
             conditions.append(
                 keyword_conditions[0] if len(keyword_conditions) == 1 else {"$or": keyword_conditions}

@@ -175,3 +175,13 @@
 - `core/tools/tools_search.py`、`core/maid/maid_tools.py` 由 `os.getenv("AMAP_API_KEY"/"TAVILY_API_KEY")` 改为读配置；未配置时的提示文案指向 yaml 字段。
 - `configs/config.yaml` 已补 `search` 段（值留空待填）。其余 Token（LLM/图像生成、GitHub PAT、NapCat ws token）此前已在 yaml；网易云用 cookie 文件、邮件走 agently-cli OAuth，无需 token。
 - 状态：语法检查通过；本机无 pyyaml 环境，未跑 config.py sync 与测试。
+
+## 2026-10-25 日记召回（RAG）重排与打分重构
+- `modules/memory/rag.py`：同群/发言者/关键词加成从绝对分改为「相对语义分的比例提升」（同群 +15%、发言者每个 +5% 上限 15%、关键词按词权上限 +30%），`current_chat_boost=10` 绝对压制取消。
+- 新增时间衰减：`_diary_timestamp()` 优先解析正文 `【日记(YYYY-MM-DD HH:MM)】`，无则退回 metadata.timestamp；`_recency_decay()` 半衰期 180 天、下限 0.55。
+- 关键词池保底分由 `0.85×最高语义分` 改为「词权覆盖率 × 最高语义分」，并新增 `KEYWORD_STOPWORDS` + 单字过滤，「今天/什么/一起」不再参与召回。实测同一 query 从「8 条全是只命中今天的同群日记」变为语义池主导。
+- 返回结构新增 `relevance`（纯语义分，0~1）与 `decay`；`core/session_pipeline.py` 的 rag_interest 改用 `relevance` 并裁剪到 0~1。
+- `core/engine/engine_decision.py`：`RAG_HORMONE_GAIN=80`（relevance 0.5 → 激素稳态≈40）、`REPLY_THRESHOLD=50`（原 55）。
+- `core/maid/maid_tools.py`：`search_diary_fast` 关键词大小写变体补 title/capitalize（$contains 区分大小写）。
+- 新增 `tests/test_rag_recall.py`（7 例），更新 `tests/test_modes.py` 的旧绝对加分断言；全量 `tests/run_tests.py` 失败数与 HEAD 基线一致（18 个 logger/modes/engine 历史失败）。
+- 环境备注：本机可用 python 为 `~/miniconda3/envs/yuki/bin/python`（有 chromadb 1.5.9 + jieba），`maid_venv` 缺 libpython3.11 不可用。
