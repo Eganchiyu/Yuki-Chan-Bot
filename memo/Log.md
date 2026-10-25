@@ -168,3 +168,10 @@
 - 项目结构树：`core/tools/` 包、`core/maid/` 新文件、`deploy/`、`utils/health_server.py`、`reply_format.py`、`reply_watch.py`、`ncm_login.py`、tests 22 个文件、docs 新增文档、数据目录（yuki_memory/memo/staging 等）。
 - 快速开始补「自进化底座（可选，需 Docker）」与环境变量（`YUKI_DRY_RUN` / `YUKI_HEALTH_PORT` / `YUKI_MAID_BACKEND`）；文档表、技术栈、开发计划、测试命令、最后更新日期同步。
 - 状态：仅文档改动，未跑测试。
+- 2026-?? search_diary 优化：命中结果从「按写入顺序取前8」改为 random.sample 随机抽 8；新增无參数模式（date_str/keyword 都为空时随机翻看日记本 8 条）。改动：core/maid/maid_tools.py、core/tools/tools_diary.py（移除 missing_date_or_keyword 拦截）、core/tools/tools.py（spec 描述）、core/maid/maid_prompt.py、docs/toolchain-usage.md。状态：已提交 3c793cd；本机无可用 chromadb 环境，仅用 stub 验证逻辑。
+
+## 2026-10-25 检索类 Token 收拢到 config.yaml
+- 新增 `search` 配置组（SearchConfig）：`search.amap_api_key`、`search.tavily_api_key`，并在 Config 暴露 `cfg.AMAP_API_KEY` / `cfg.TAVILY_API_KEY`；`_SECTION_HEADERS` 补 section 注释。
+- `core/tools/tools_search.py`、`core/maid/maid_tools.py` 由 `os.getenv("AMAP_API_KEY"/"TAVILY_API_KEY")` 改为读配置；未配置时的提示文案指向 yaml 字段。
+- `configs/config.yaml` 已补 `search` 段（值留空待填）。其余 Token（LLM/图像生成、GitHub PAT、NapCat ws token）此前已在 yaml；网易云用 cookie 文件、邮件走 agently-cli OAuth，无需 token。
+- 状态：语法检查通过；本机无 pyyaml 环境，未跑 config.py sync 与测试。

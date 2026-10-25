@@ -142,6 +142,21 @@ class APIConfig:
 
 
 @dataclass
+class SearchConfig:
+    """外部检索服务配置（高德地图 / Tavily 搜索）"""
+    amap_api_key: str = config_field(
+        "",
+        comment="高德地图 Web服务 Key（https://console.amap.com/dev/key/app）",
+        section="search"
+    )
+    tavily_api_key: str = config_field(
+        "",
+        comment="Tavily 搜索 API Key（https://app.tavily.com/home）",
+        section="search"
+    )
+
+
+@dataclass
 class ModelConfig:
     """模型配置"""
     llm: str = config_field(
@@ -575,6 +590,11 @@ class Config:
         comment="日记触发配置",
         section="diary"
     )
+    search: SearchConfig = config_field_factory(
+        SearchConfig,
+        comment="外部检索服务配置",
+        section="search"
+    )
     rag: RAGConfig = config_field_factory(
         RAGConfig,
         comment="RAG 记忆配置",
@@ -674,6 +694,16 @@ class Config:
     def IMAGE_GEN_API_KEY(self) -> str:
         """图像生成 API Key"""
         return self.api.image_gen_api_key
+
+    @property
+    def AMAP_API_KEY(self) -> str:
+        """高德地图 Web服务 Key"""
+        return self.search.amap_api_key
+
+    @property
+    def TAVILY_API_KEY(self) -> str:
+        """Tavily 搜索 API Key"""
+        return self.search.tavily_api_key
 
     @property
     def LLM_MODEL(self) -> str:
@@ -1090,6 +1120,7 @@ _SECTION_HEADERS = {
     "identity": "# ================= 机器人身份 =================",
     "security": "# ================= 安全配置 =================",
     "api": "# ================= API 配置 =================",
+    "search": "# ================= 外部检索服务配置（高德地图 / Tavily） =================",
     "model": "# ================= 模型配置 =================",
     "connection": "# ================= 连接配置 =================",
     "target": "# ================= 目标配置 =================",

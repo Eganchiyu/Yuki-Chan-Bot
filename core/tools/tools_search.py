@@ -1,10 +1,10 @@
 # core/tools/tools_search.py
 """外部信息检索工具：高德地图与 Tavily 网页搜索。"""
-import os
 from urllib.parse import quote_plus
 
 import aiohttp
 
+from config import cfg
 from core.toolchain import ToolResult
 from utils.http_client import create_tcp_connector
 
@@ -16,9 +16,9 @@ _AMAP_GEOCODE_URL = "https://restapi.amap.com/v3/geocode/geo"
 
 async def amap_search_tool(context, keywords, search_type="text", location=None, address=None, city=None, radius=3000, page_size=10):
     """高德地图统一搜索：text=关键词搜索, around=周边搜索(需坐标), geocode=地名转坐标。"""
-    api_key = os.getenv("AMAP_API_KEY")
+    api_key = cfg.AMAP_API_KEY
     if not api_key:
-        return ToolResult(success=False, content="未配置 AMAP_API_KEY，无法调用高德地图服务。", error="missing_amap_api_key")
+        return ToolResult(success=False, content="未配置 search.amap_api_key（高德地图 Key），无法调用高德地图服务。", error="missing_amap_api_key")
 
     timeout = aiohttp.ClientTimeout(total=15)
 
@@ -90,12 +90,12 @@ async def browser_search_tool(context, query, max_results=5, search_depth="basic
     if not query:
         return ToolResult(success=False, content="缺少搜索关键词", error="missing_query")
 
-    api_key = os.getenv("TAVILY_API_KEY")
+    api_key = cfg.TAVILY_API_KEY
     if not api_key:
         url = f"https://www.bing.com/search?q={quote_plus(query)}"
         return ToolResult(
             success=False,
-            content="未配置 TAVILY_API_KEY，暂时只能返回浏览器搜索地址。",
+            content="未配置 search.tavily_api_key（Tavily Key），暂时只能返回浏览器搜索地址。",
             data={"url": url},
             error="missing_tavily_api_key",
         )
