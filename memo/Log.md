@@ -153,3 +153,9 @@
 - 参数定稿：QUESTION 0.40 / TRIGGER 0.15 / ENERGY 0.05 / BIOCLOCK 0.15 / ACTIVITY 0.15，
   抖动 0.10、门槛 0.55；触发词去掉 呢/嘛（口癖不算求回应）。真实日志回放：订阅率 10~16%，
   追击消息 ≤11%（最坏热度），符合「≤20%」目标。
+
+## 2026-10-25 仓库同步
+- 忽略 DSH 运行时数据：deploy/dsh-home/attachments/、deploy/dsh-home/llm-deepseek/；删除实验用临时头像 temp/qq_avatar_now.png、temp/yuki_avatar_square.png
+- 提交 618c69f（.gitignore + 女仆提示词微调），推送 fix/maid-env-vision-prefetch
+- 推送 main 原有 5 个提交，再合并特性分支（--no-ff，7ea5298）并推送
+- 当前：main == origin/main，工作区干净
