@@ -9,8 +9,9 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from config import cfg
+from core.brain import YukiState
 from core.reply_format import clean_visible_reply
-from core.reply_watch import is_human_incoming, resolve
+from core.reply_watch import auto_subscribe, is_human_incoming, resolve
 from modules.debug.context_snapshot import PIPELINE_STAGES, context_snapshot_store
 from modules.vision.prefetch import prefetch_images, resolve_image
 from utils.logger import get_logger
@@ -89,6 +90,8 @@ class SessionPipeline:
 
         self.last_process_end_time: dict = {}
         self.last_msg_time = {}
+        # chat_id -> 最近真人消息时间戳，用于估算「等多久算没回应」
+        self._recent_msg_times: dict = {}
 
         self.stages = [
             self.prepare_message_batch,
@@ -179,6 +182,7 @@ class SessionPipeline:
             # 有人来了就算等到了：解除回复订阅，避免 Yuki 继续追击
             if is_human_incoming(incoming_message):
                 resolve(chat_id_str, "human_message")
+                self._record_human_timestamp(chat_id_str)
             # 消息一到就后台预取图片，把下载与图像理解挪出回复关键路径
             self._schedule_image_prefetch(incoming_message.content)
 
@@ -645,10 +649,64 @@ class SessionPipeline:
         logger.info(f"[Pipeline] 发送完成，内容: {answer_text[:80]}")
         return context
 
+    def _record_human_timestamp(self, chat_id: str):
+        """记录真人消息时间，保留最近若干条用于估算平均间隔。"""
+        store = getattr(self, "_recent_msg_times", None)
+        if store is None:
+            store = self._recent_msg_times = {}
+        stamps = store.setdefault(chat_id, [])
+        stamps.append(time.time())
+        if len(stamps) > 16:
+            del stamps[:-16]
+
+    def _maybe_subscribe_reply(self, context):
+        """回复发出后，若像在等人回答，就静默订阅一段时间。"""
+        answer_text = context.get("answer_text") or ""
+        if not answer_text.strip():
+            return None
+        # 破冰和注入事件不订阅，避免自己套自己
+        if context.get("ice_break"):
+            return None
+        message_objs = context.get("message_objs") or []
+        if any(m.get("is_reply_watch_event") or m.get("is_timer_event") for m in message_objs):
+            return None
+        # 只有真正发给人的模式才订阅
+        if context.get("mode") not in {"group", "private", "master_private"}:
+            return None
+
+        callback = getattr(self.engine, "process_callback", None)
+        if callback is None:
+            return None
+
+        chat_id = str(context["chat_id"])
+        energy = float(getattr(self.yuki, "energy", {}).get(chat_id, 0.0))
+        activity = float(getattr(self.yuki, "group_activity", {}).get(chat_id, 0.0))
+        try:
+            bioclock = YukiState.get_smooth_time_weight()
+        except Exception:
+            bioclock = 1.0
+
+        return auto_subscribe(
+            chat_id,
+            context["mode"],
+            callback,
+            answer_text,
+            energy_ratio=energy / max(1.0, float(cfg.MAX_ENERGY)),
+            bioclock_ratio=(bioclock - 0.2) / 1.3,
+            activity_ratio=min(activity / 5.0, 1.0),
+            recent_times=list(getattr(self, "_recent_msg_times", {}).get(chat_id, [])),
+        )
+
     async def finalize_conversation(self, context):
         """保存回复上下文，并在历史过长时触发总结。"""
         chat_id = context["chat_id"]
         answer_text = context["answer_text"]
+
+        # 她刚才那句话像在等人回答，就静默等她一会儿
+        try:
+            self._maybe_subscribe_reply(context)
+        except Exception as exc:
+            logger.warning(f"[Pipeline] 自动订阅判定失败 {chat_id}: {exc}")
 
         logger.debug(f"[Pipeline] {cfg.ROBOT_NAME.title()} 正在保存上下文")
         self.history_manager.append_to_log(chat_id, cfg.ROBOT_NAME.title(), answer_text)

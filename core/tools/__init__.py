@@ -12,7 +12,6 @@ from .tools_rich import parse_rich_message_tool
 from .tools_search import amap_search_tool, browser_search_tool
 from .tools_snapshot import capture_group_snapshot_tool, search_group_snapshots_tool
 from .tools_status import get_master_status_tool
-from .tools_subscribe import subscribe_reply_tool
 from .tools_timer import manage_timer_task_tool
 
 __all__ = [
@@ -36,6 +35,5 @@ __all__ = [
     "capture_group_snapshot_tool",
     "search_group_snapshots_tool",
     "get_master_status_tool",
-    "subscribe_reply_tool",
     "manage_timer_task_tool",
 ]

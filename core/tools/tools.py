@@ -13,7 +13,6 @@ from .tools_rich import parse_rich_message_tool
 from .tools_search import amap_search_tool, browser_search_tool
 from .tools_snapshot import capture_group_snapshot_tool, search_group_snapshots_tool
 from .tools_status import get_master_status_tool
-from .tools_subscribe import subscribe_reply_tool
 from .tools_timer import manage_timer_task_tool
 
 TOOL_SPECS = [
@@ -237,25 +236,6 @@ TOOL_SPECS = [
             "required": ["prompt"],
         },
         handler=generate_image_tool,
-    ),
-    ToolSpec(
-        name="subscribe_reply",
-        description=(
-            "订阅接下来这段时间的回应。很期待答复、想紧迫追击时使用："
-            "在 time 秒内没人回复，系统会提醒你，让你自己补一句或追问；"
-            "期间有人回复则订阅自动取消，最多自动提醒两次，时间不能低于 30 秒。"
-        ),
-        parameters={
-            "type": "object",
-            "properties": {
-                "time": {
-                    "type": "number",
-                    "description": "希望多久内得到回复（秒），最小 30，无上限",
-                    "default": 60,
-                },
-            },
-        },
-        handler=subscribe_reply_tool,
     ),
 ]
 

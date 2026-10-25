@@ -1,13 +1,16 @@
 # core/reply_watch.py
 """回复订阅：Yuki 期待回音时，到点没等到就由系统替她补一句。
 
-1. 工具 `subscribe_reply(time)` 为当前会话登记一个「待回执」，下限 30 秒。
+1. 回复发出后按「像在等回答的程度」自动评分，够高就静默登记一个待回执（下限 30 秒），
+   时长 = 最近一小段时间的平均消息间隔 + 20 秒。Yuki 完全无感，不需要工具、不会多说话。
 2. 期间任何真人新消息进会话即视为得到回应，订阅直接取消，走正常流程。
 3. 到点还没人说话，就注入一条「XX 秒到啦～没有人回复」，按正常 enqueue 让 Yuki 回答；
    最多自动提醒两次，之后订阅自然结束。
 """
 import asyncio
 import datetime
+import random
+import re
 import time
 
 from utils.logger import get_logger
@@ -17,6 +20,29 @@ logger = get_logger("reply_watch")
 MIN_TIMEOUT_SECONDS = 30.0
 MAX_FOLLOWUPS = 2
 EVENT_SOURCE = "yuki.reply_watch"
+
+# --- 自动订阅判定 ---
+ENABLED = True
+# 评分权重：结尾问句 + 触发词 + 精力 + 生物钟 + 活跃度
+QUESTION_WEIGHT = 0.45
+TRIGGER_WORD_WEIGHT = 0.15
+ENERGY_WEIGHT = 0.20
+BIOCLOCK_WEIGHT = 0.15
+ACTIVITY_WEIGHT = 0.15
+# 随机化幅度与门槛：分数加一点抖动后过线才订阅
+SCORE_JITTER = 0.15
+SCORE_THRESHOLD = 0.55
+
+# 等待时长 = 最近平均消息间隔 + 20 秒，数据不足时用默认值
+WAIT_EXTRA_SECONDS = 20.0
+DEFAULT_WAIT_SECONDS = 60.0
+RECENT_INTERVAL_SAMPLES = 8
+
+TRIGGER_WORDS = (
+    "吗", "呢", "嘛", "好不好", "对不对", "是不是", "行不行", "在吗",
+    "有人", "理我", "回我", "回答我", "要不要", "你猜",
+)
+_MEME_TAG_RE = re.compile(r"\[MEME:[^\]]*\]")
 
 _watches: dict[str, dict] = {}
 _tasks: dict[str, asyncio.Task] = {}
@@ -143,6 +169,68 @@ async def _dispatch(callback, chat_id, mode, event):
         await callback(chat_id, mode, message_obj=event, debounce_flag=False, force_reply=True)
     except Exception as exc:
         logger.error(f"[ReplyWatch] 到点提醒注入失败 chat_id={chat_id}: {exc}")
+
+
+def _visible_text(text: str) -> str:
+    """去掉表情包标记，只看真正发出去的字。"""
+    return _MEME_TAG_RE.sub("", text or "").strip()
+
+
+def is_question(text: str) -> bool:
+    """是否以问号收尾（半个问号也算）。"""
+    clean = _visible_text(text).rstrip("～~ 　\n")
+    return clean.endswith("?") or clean.endswith("？")
+
+
+def hit_trigger_word(text: str) -> bool:
+    clean = _visible_text(text)
+    return any(word in clean for word in TRIGGER_WORDS)
+
+
+def expectation_score(text, energy_ratio=0.0, bioclock_ratio=0.5, activity_ratio=0.0) -> float:
+    """合成一个 0~1.1 的「像在等人回答」评分。"""
+    score = 0.0
+    if is_question(text):
+        score += QUESTION_WEIGHT
+    if hit_trigger_word(text):
+        score += TRIGGER_WORD_WEIGHT
+    score += ENERGY_WEIGHT * max(0.0, min(1.0, float(energy_ratio)))
+    score += BIOCLOCK_WEIGHT * max(0.0, min(1.0, float(bioclock_ratio)))
+    score += ACTIVITY_WEIGHT * max(0.0, min(1.0, float(activity_ratio)))
+    return score
+
+
+def estimate_wait_seconds(timestamps) -> float:
+    """最近平均消息间隔 + 20 秒；样本不足时回落到默认等待。"""
+    times = sorted(float(ts) for ts in (timestamps or []))[-RECENT_INTERVAL_SAMPLES:]
+    if len(times) < 2:
+        return DEFAULT_WAIT_SECONDS
+    gaps = [later - earlier for earlier, later in zip(times, times[1:]) if later > earlier]
+    if not gaps:
+        return DEFAULT_WAIT_SECONDS
+    return sum(gaps) / len(gaps) + WAIT_EXTRA_SECONDS
+
+
+def auto_subscribe(chat_id, mode, callback, text, energy_ratio=0.0, bioclock_ratio=0.5,
+                   activity_ratio=0.0, recent_times=None) -> dict | None:
+    """回复发出后自动判定是否该等她一句回应，返回订阅状态或 None。"""
+    if not ENABLED or not _visible_text(text) or callback is None:
+        return None
+    if get_watch(chat_id) is not None:
+        return None
+
+    score = expectation_score(text, energy_ratio, bioclock_ratio, activity_ratio)
+    rolled = score + random.uniform(-SCORE_JITTER, SCORE_JITTER)
+    if rolled < SCORE_THRESHOLD:
+        logger.debug(f"[ReplyWatch] 不订阅 chat_id={chat_id} score={score:.2f} rolled={rolled:.2f}")
+        return None
+
+    wait = estimate_wait_seconds(recent_times)
+    watch = subscribe(chat_id, mode, callback, timeout_seconds=wait)
+    logger.info(
+        f"[ReplyWatch] 自动订阅 chat_id={chat_id} score={score:.2f} rolled={rolled:.2f} wait={watch['timeout_seconds']:.0f}s"
+    )
+    return watch
 
 
 def reset_reply_watch():
