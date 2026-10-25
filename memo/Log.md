@@ -185,3 +185,4 @@
 - `core/maid/maid_tools.py`：`search_diary_fast` 关键词大小写变体补 title/capitalize（$contains 区分大小写）。
 - 新增 `tests/test_rag_recall.py`（7 例），更新 `tests/test_modes.py` 的旧绝对加分断言；全量 `tests/run_tests.py` 失败数与 HEAD 基线一致（18 个 logger/modes/engine 历史失败）。
 - 环境备注：本机可用 python 为 `~/miniconda3/envs/yuki/bin/python`（有 chromadb 1.5.9 + jieba），`maid_venv` 缺 libpython3.11 不可用。
+- 同日：填入 search.amap_api_key / search.tavily_api_key，实测高德 geocode 与 Tavily search 均 200 正常。
