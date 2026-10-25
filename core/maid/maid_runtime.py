@@ -8,6 +8,7 @@ import subprocess
 import sys
 import venv
 
+from core.maid.maid_approval import classify_command
 from core.maid.maid_common import (
     MAID_VENV_DIR,
     SKILLS_DIR,
@@ -18,6 +19,25 @@ from core.maid.maid_common import (
     _truncate_text,
     logger,
 )
+
+
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+SKILL_DEFAULT_TIMEOUT = 120
+SKILL_MAX_TIMEOUT = 600
+
+
+def _normalize_skill_timeout(timeout) -> int:
+    try:
+        timeout = int(timeout or SKILL_DEFAULT_TIMEOUT)
+    except Exception:
+        timeout = SKILL_DEFAULT_TIMEOUT
+    return max(5, min(timeout, SKILL_MAX_TIMEOUT))
+
+
+def _normalize_interpreter(interpreter) -> str:
+    """yuki：用主进程解释器（项目依赖齐全）；maid：用隔离的 maid_venv。"""
+    return "yuki" if str(interpreter or "").strip().lower() in {"yuki", "main", "system"} else "maid"
 
 
 def _get_maid_python_exec() -> str:
@@ -197,9 +217,17 @@ async def _upgrade_maid_env(reason: str) -> bool:
     return True
 
 
+_maid_env_ready = False
+
+
 async def _ensure_maid_env() -> str:
     """获取小女仆专属虚拟环境的 Python 执行路径。如果不存在或损坏则自动创建。"""
+    global _maid_env_ready
     python_exec = _get_maid_python_exec()
+
+    # 本次进程内已确认可用就不再重复起子进程自检（每次约 1s）
+    if _maid_env_ready and os.path.exists(python_exec):
+        return python_exec
 
     if not os.path.exists(python_exec):
         logger.info("[Maid] 检测到无虚拟环境。")
@@ -212,7 +240,28 @@ async def _ensure_maid_env() -> str:
         elif not await _repair_maid_pip(python_exec):
             await _rebuild_maid_env("环境中没有可用的 pip")
 
+    _maid_env_ready = True
     return python_exec
+
+
+_pip_list_cache = {}
+
+
+async def _get_installed_packages(python_exec: str) -> set:
+    """缓存已安装包列表，避免每次跑脚本都花 0.7s 调 pip list。"""
+    cached = _pip_list_cache.get(python_exec)
+    if cached is not None:
+        return cached
+
+    pip_list_out, pip_list_err = await _run_pip(python_exec, ["list", "--format=json"])
+    try:
+        installed = {item["name"].lower() for item in json.loads(pip_list_out or "[]")}
+    except Exception:
+        installed = set()
+        if pip_list_err.strip():
+            logger.warning(f"[Maid] 无法读取环境已安装包列表: {pip_list_err.strip().splitlines()[-1]}")
+    _pip_list_cache[python_exec] = installed
+    return installed
 
 
 async def _ensure_skill_deps(script_path: str, python_exec: str):
@@ -243,13 +292,7 @@ async def _ensure_skill_deps(script_path: str, python_exec: str):
     if not third_party:
         return
 
-    pip_list_out, pip_list_err = await _run_pip(python_exec, ["list", "--format=json"])
-    try:
-        installed_pkgs = {item["name"].lower() for item in json.loads(pip_list_out or "[]")}
-    except Exception:
-        installed_pkgs = set()
-        if pip_list_err.strip():
-            logger.warning(f"[Maid] 无法读取环境已安装包列表: {pip_list_err.strip().splitlines()[-1]}")
+    installed_pkgs = set(await _get_installed_packages(python_exec))
 
     aliases = {"cv2": "opencv-python", "bs4": "beautifulsoup4", "pil": "pillow", "yaml": "pyyaml"}
 
@@ -263,9 +306,16 @@ async def _ensure_skill_deps(script_path: str, python_exec: str):
     if to_install:
         logger.info(f"[Maid] 自动为脚本补充安装环境依赖: {to_install}")
         try:
-            _, install_err = await _run_pip(python_exec, ["install", *to_install])
+            _, install_err = await asyncio.wait_for(
+                _run_pip(python_exec, ["install", *to_install]), timeout=180
+            )
             if "error" in install_err.lower():
                 logger.warning(f"[Maid] 依赖安装可能失败: {install_err.strip().splitlines()[-1]}")
+            else:
+                installed_pkgs.update(name.lower() for name in to_install)
+                _pip_list_cache[python_exec] = installed_pkgs
+        except asyncio.TimeoutError:
+            logger.warning("[Maid] 自动安装依赖超时（180s），跳过")
         except Exception as e:
             logger.error(f"[Maid] 自动安装依赖异常: {e}")
 
@@ -298,45 +348,30 @@ async def _kill_process_tree(process) -> None:
         pass
 
 
-def _is_terminal_command_allowed(command: str, allow_write: bool = False) -> tuple[bool, str]:
-    """小女仆终端的轻量安全网。外层还有 LLM 把关，这里只拦明显危险命令。"""
-    cmd = (command or "").strip()
-    if not cmd:
-        return False, "命令为空"
-    lowered = cmd.lower()
-
-    blocked_keywords = [
-        "format ", "format.com", "shutdown", "restart-computer", "stop-computer",
-        "bcdedit", "diskpart", "reg delete", "reg add", "takeown", "icacls",
-        "cipher /w", "taskkill /f", "del /f /s /q c:", "rmdir /s /q c:",
-        "rm -rf /", "rm -rf /*", ":(){:|:&};:",
-    ]
-    for keyword in blocked_keywords:
-        if keyword in lowered:
-            return False, f"命令包含高风险片段：{keyword}"
-
-    if not allow_write:
-        write_patterns = [
-            ">", ">>", " del ", " erase ", " rmdir ", " rd ", "rm ", "mv ", "move ",
-            "copy ", "xcopy ", "robocopy ", "mkdir ", "md ", "ren ", "rename ",
-            "pip install", "npm install", "pnpm install", "yarn add", "cargo install",
-            "git commit", "git push", "git reset", "git clean",
-        ]
-        padded = f" {lowered} "
-        for pattern in write_patterns:
-            if pattern in padded or pattern in lowered:
-                return False, f"该命令疑似会修改系统/文件/依赖：{pattern.strip()}。如任务确实需要，请用 allow_write=true。"
-
+def _is_terminal_command_allowed(command: str, allow_write: bool = True) -> tuple[bool, str]:
+    """兼容旧接口的判定：只返回硬拦截结果；可疑命令交由 approver 静默判定。"""
+    verdict, reason = classify_command(command)
+    if verdict == "block":
+        return False, f"命令被硬拦截：{reason}"
     return True, ""
 
 
-async def terminal_command_maid(command: str, cwd: str = None, timeout: int = TERMINAL_DEFAULT_TIMEOUT, allow_write: bool = True) -> str:
+async def terminal_command_maid(
+    command: str,
+    cwd: str = None,
+    timeout: int = TERMINAL_DEFAULT_TIMEOUT,
+    allow_write: bool = True,
+    approver=None,
+    thought: str = "",
+) -> str:
     """
-    受限终端工具：用于查看环境、运行短命令、执行项目脚本。
-    默认允许常规文件写入、依赖安装和 git 操作；仍会拦截明显危险命令。
+    终端工具：用于查看环境、运行短命令、执行项目脚本。
+
+    硬拦截只针对不可逆命令；命中启发式可疑规则时先交给 approver（Yuki）静默判定，
+    没有 approver 的调用路径直接放行，避免 CLI 调试被卡住。
     """
-    allowed, reason = _is_terminal_command_allowed(command, allow_write=allow_write)
-    if not allowed:
+    verdict, reason = classify_command(command)
+    if verdict == "block":
         return json.dumps({"ok": False, "error": f"终端命令被安全网拦截：{reason}", "command": command}, ensure_ascii=False)
 
     try:
@@ -348,6 +383,24 @@ async def terminal_command_maid(command: str, cwd: str = None, timeout: int = TE
     workdir = os.path.abspath(cwd or os.getcwd())
     if not os.path.exists(workdir) or not os.path.isdir(workdir):
         return json.dumps({"ok": False, "error": f"cwd 不存在或不是目录：{workdir}"}, ensure_ascii=False)
+
+    if verdict == "ask":
+        if approver is None:
+            logger.info(f"[Maid] 可疑命令无 approver，直接放行：{command}")
+        else:
+            try:
+                approved, why = await approver(command, workdir, thought)
+            except Exception as e:
+                approved, why = False, f"授权判定异常：{e}"
+            if not approved:
+                logger.warning(f"[Maid] 命令未获授权：{command}（{why}）")
+                return json.dumps({
+                    "ok": False,
+                    "error": f"命令未获授权，未执行：{why}",
+                    "command": command,
+                    "approval": "denied",
+                }, ensure_ascii=False)
+            logger.info(f"[Maid] 命令获授权：{command}（{why}）")
 
     try:
         process = await asyncio.create_subprocess_shell(
@@ -375,6 +428,76 @@ async def terminal_command_maid(command: str, cwd: str = None, timeout: int = TE
         }, ensure_ascii=False)
     except Exception as e:
         return json.dumps({"ok": False, "error": f"终端执行异常：{str(e)}", "command": command}, ensure_ascii=False)
+
+
+IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"}
+IMAGE_MAX_BYTES = 15 * 1024 * 1024
+IMAGE_MAX_SIDE = 768
+IMAGE_JPEG_QUALITY = 70
+
+
+def _read_image_bytes(path: str) -> bytes:
+    with open(path, "rb") as f:
+        return f.read()
+
+
+def _compress_image_b64(data: bytes) -> str:
+    """复用视觉管线的压缩逻辑；依赖缺失或解析失败时返回空串。"""
+    try:
+        from modules.vision.processor import MemeProcessor
+    except Exception as e:
+        logger.warning(f"[Maid] 无法加载图片压缩器: {e}")
+        return ""
+    try:
+        return MemeProcessor.compress_image(data, max_size=IMAGE_MAX_SIDE, quality=IMAGE_JPEG_QUALITY) or ""
+    except Exception as e:
+        logger.warning(f"[Maid] 图片压缩失败: {e}")
+        return ""
+
+
+async def prepare_image_message(path, question=None):
+    """读取本地图片并压成原生图块，返回 (工具结果文本, 带图消息)。"""
+    if not path:
+        return "错误：未提供图片路径", None
+
+    abs_path = os.path.abspath(path)
+    if not os.path.exists(abs_path):
+        return f"错误：图片不存在 '{abs_path}'", None
+    if os.path.isdir(abs_path):
+        return f"错误：'{abs_path}' 是目录", None
+
+    ext = os.path.splitext(abs_path)[1].lower()
+    if ext not in IMAGE_EXTENSIONS:
+        return f"错误：'{ext or '(无扩展名)'}' 不是支持的图片格式（支持 {', '.join(sorted(IMAGE_EXTENSIONS))}）", None
+
+    file_size = os.path.getsize(abs_path)
+    if file_size > IMAGE_MAX_BYTES:
+        return f"错误：图片过大（{file_size / 1024 / 1024:.1f} MB），上限 {IMAGE_MAX_BYTES // 1024 // 1024} MB", None
+    if file_size == 0:
+        return f"错误：图片 '{abs_path}' 是空文件", None
+
+    try:
+        data = await asyncio.to_thread(_read_image_bytes, abs_path)
+        b64_data = await asyncio.to_thread(_compress_image_b64, data)
+    except Exception as e:
+        return f"错误：读取图片失败 - {e}", None
+
+    if not b64_data:
+        return f"错误：无法解析图片 '{abs_path}'（压缩失败，可能不是有效图片）", None
+
+    prompt = (question or "").strip() or "请查看这张图片，说明画面内容；如有文字请转写。"
+    image_message = {
+        "role": "user",
+        "content": [
+            {"type": "text", "text": f"[图片 {os.path.basename(abs_path)}] {prompt}"},
+            {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64_data}"}},
+        ],
+    }
+    return (
+        f"已读取图片 {os.path.basename(abs_path)}（{file_size / 1024:.1f} KB），"
+        f"图片已附在这条消息里，请直接查看后再回答。",
+        image_message,
+    )
 
 
 def _clean_workspace():
@@ -408,16 +531,16 @@ def write_temp_skill(name, code):
     return f"草稿 {name} 已保存至临时工作区。若要立即验证，优先使用 write_and_run_temp_skill 一步完成。"
 
 
-async def write_and_run_temp_skill(name, code):
+async def write_and_run_temp_skill(name, code, timeout=SKILL_DEFAULT_TIMEOUT, interpreter="maid"):
     """写入临时技能并立即执行，减少 write_temp_skill -> run_skill 两轮决策浪费。"""
     write_res = write_temp_skill(name, code)
     if write_res.startswith("错误"):
         return write_res
-    run_res = await run_skill(name)
+    run_res = await run_skill(name, timeout=timeout, interpreter=interpreter)
     return f"{write_res}\n\n=== 立即执行结果 ===\n{run_res}"
 
 
-async def run_skill(name):
+async def run_skill(name, timeout=SKILL_DEFAULT_TIMEOUT, interpreter="maid"):
     # (修改一处逻辑) 优先去工作区找草稿，找不到再去技能区找固化技能
     temp_path = os.path.join(WORKSPACE_DIR, f"{name}.py")
     perm_path = os.path.join(SKILLS_DIR, f"{name}.py")
@@ -426,36 +549,59 @@ async def run_skill(name):
     if not os.path.exists(path):
         return f"找不到技能 '{name}'。"
 
+    timeout = _normalize_skill_timeout(timeout)
+    interpreter = _normalize_interpreter(interpreter)
+
     try:
-        import sys
-        python_exec = await _ensure_maid_env()
-        await _ensure_skill_deps(path, python_exec)
+        if interpreter == "yuki":
+            python_exec = sys.executable or "python"
+        else:
+            python_exec = await _ensure_maid_env()
+            await _ensure_skill_deps(path, python_exec)
 
         # 2. 使用异步子进程创建，避免阻塞整个事件循环
+        # 草稿脚本位于 workspace/，sys.path[0] 是它自己所在目录；把项目根塞进
+        # PYTHONPATH，模型才能直接 import config / utils / core 这些项目模块。
+        child_env = os.environ.copy()
+        existing = child_env.get("PYTHONPATH", "")
+        child_env["PYTHONPATH"] = PROJECT_ROOT + (os.pathsep + existing if existing else "")
+
         process = await asyncio.create_subprocess_exec(
             python_exec, path,
+            cwd=PROJECT_ROOT,
+            env=child_env,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             **(_new_session_kwargs()),
         )
 
         try:
-            stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=60)
+            stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=timeout)
         except (asyncio.TimeoutError, asyncio.exceptions.TimeoutError):
             # 超时则物理抹除整个进程树
             await _kill_process_tree(process)
-            return "错误：执行超时（60s）。物理进程已被强制终止。请检查代码是否出现阻塞等问题"
+            return (
+                f"错误：执行超时（{timeout}s）。物理进程已被强制终止。"
+                f"若任务本身更慢，请在 args 里提高 'timeout'（上限 {SKILL_MAX_TIMEOUT}s）。"
+            )
 
         stdout_res = _decode_process_output(stdout).strip()
         stderr_res = _decode_process_output(stderr).strip()
 
         if process.returncode == 0:
-            if not stdout_res:
+            if not stdout_res and not stderr_res:
                 return "执行成功，但没有任何输出（请确保代码内有 print 语句输出结果），且包含运行代码的主程序，如果没有请重写代码"
-            return f"执行成功！输出：\n{stdout_res}"
+            parts = [f"执行成功！输出：\n{stdout_res or '(无 stdout)'}"]
+            if stderr_res:
+                parts.append(f"[stderr]\n{stderr_res}")
+            return "\n\n".join(parts)
         else:
             error_msg = stderr_res if stderr_res else stdout_res
-            return f"代码执行失败 (ReturnCode: {process.returncode})\n报错详情：\n{error_msg}"
+            tail_lines = error_msg.splitlines()[-40:]
+            return (
+                f"代码执行失败 (ReturnCode: {process.returncode})\n"
+                f"报错详情（末 {len(tail_lines)} 行）：\n" + "\n".join(tail_lines)
+            )
 
     except Exception as e:
         # 这里会捕获到类似 'NoneType' 的报错并返回给 AI

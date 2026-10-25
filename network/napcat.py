@@ -183,6 +183,11 @@ class NapCatGateway:
             return bool(getattr(ws, "open", False))
         return getattr(ws, "state", None) == State.OPEN
 
+    @property
+    def connected(self) -> bool:
+        """真实连接状态。探针用它判断 NapCat 是否在线（不要用 engine.napcat_online，那是乐观默认值）。"""
+        return self._is_open(self.websocket)
+
     async def _connect(self):
         """返回一个真正 OPEN 的连接；失效则重建。"""
         async with self._connect_lock:

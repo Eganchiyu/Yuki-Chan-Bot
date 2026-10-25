@@ -143,10 +143,183 @@ async def download_file_tool(context, file_id=None, filename=None):
         return ToolResult(success=False, content=f"下载文件失败: {str(e)}", error=str(e))
 
 
-async def generate_image_tool(context, prompt, size="1024*1024"):
-    """调用图像生成模型生成图片，保存到 output 目录并返回路径。"""
+# ---------------------------------------------------------------- 参考图支持
+# 单次最多 4 张，单张 5MB、总计 15MB；仅接受常见位图格式并做魔数校验。
+MAX_REFERENCE_IMAGES = 4
+MAX_REFERENCE_IMAGE_BYTES = 5 * 1024 * 1024
+MAX_REFERENCE_TOTAL_BYTES = 15 * 1024 * 1024
+_REFERENCE_IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp"}
+_REFERENCE_DIRS = (
+    os.path.join(BASE_DIR, "output"),
+    os.path.join(BASE_DIR, "workspace"),
+    os.path.join(BASE_DIR, "temp_images"),
+    os.path.join(BASE_DIR, "data", "image_store"),
+)
+
+
+def _reference_dir_allowed(path):
+    """参考图必须来自会话图片目录或 Yuki 自己的工作目录，避免任意本地文件外发。"""
+    real_path = os.path.realpath(path)
+    for root in _REFERENCE_DIRS:
+        root_real = os.path.realpath(root)
+        try:
+            if os.path.commonpath([real_path, root_real]) == root_real:
+                return True
+        except ValueError:
+            continue
+    return False
+
+
+def _sniff_image_mime(path):
+    """按文件头识别 png/jpeg/webp，防止把非图片文件发给图像接口。"""
+    try:
+        with open(path, "rb") as f:
+            head = f.read(12)
+    except OSError:
+        return ""
+    if head.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if head.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if len(head) >= 12 and head[:4] == b"RIFF" and head[8:12] == b"WEBP":
+        return "image/webp"
+    return ""
+
+
+def _resolve_reference_image(context, ref):
+    """把 [img:XXX] 索引或本地路径解析成可校验的参考图信息。
+
+    索引解析复用 context.image_store.resolve（与 tools_common._resolve_image_path 同一机制）。
+    返回 (info, error)，任一项失败即返回错误文案。
+    """
+    text = _clean_file_reference(ref)
+    if not text:
+        return None, "参考图路径为空"
+
+    index_match = re.match(r'^\[img:(\d{1,3})\]$', text)
+    if index_match:
+        idx = f"{int(index_match.group(1)):03d}"
+        image_store = getattr(context, "image_store", None)
+        if not image_store:
+            return None, f"当前会话没有图片索引，无法解析 {text}"
+        resolved = image_store.resolve(idx)
+        if not resolved:
+            return None, f"图片索引 {text} 不存在或已过期（索引只保留近期图片）"
+        path = resolved
+        source = text
+    elif re.match(r'^\[shot:\d+\]$', text):
+        return None, "截屏记忆 [shot:N] 不支持作为参考图，请改用 [img:XXX] 或本地图片路径"
+    else:
+        path = os.path.expanduser(text)
+        if not os.path.isabs(path):
+            path = os.path.join(BASE_DIR, path)
+        source = text
+
+    path = os.path.realpath(path)
+    if not os.path.isfile(path):
+        return None, f"参考图不存在: {source}"
+    if not _reference_dir_allowed(path):
+        return None, (
+            "参考图必须位于 output/workspace/temp_images 或会话图片目录: "
+            f"{source}"
+        )
+
+    ext = os.path.splitext(path)[1].lower()
+    if ext not in _REFERENCE_IMAGE_EXTS:
+        return None, f"参考图格式不支持（仅 png/jpg/jpeg/webp）: {source}"
+
+    try:
+        size = os.path.getsize(path)
+    except OSError as e:
+        return None, f"读取参考图失败: {source} ({e})"
+    if size <= 0:
+        return None, f"参考图是空文件: {source}"
+    if size > MAX_REFERENCE_IMAGE_BYTES:
+        return None, f"单张参考图不能超过 {MAX_REFERENCE_IMAGE_BYTES // (1024 * 1024)}MB: {source}"
+
+    mime = _sniff_image_mime(path)
+    if not mime:
+        return None, f"文件内容不是有效的 PNG/JPEG/WEBP 图片: {source}"
+
+    return {
+        "path": path,
+        "size": size,
+        "mime": mime,
+        "source": source,
+    }, ""
+
+
+def _collect_reference_images(context, image_paths):
+    """校验参考图列表：数量、索引/路径解析、目录、格式、体积。返回 (infos, error)。"""
+    if image_paths is None or image_paths == "":
+        return [], ""
+    if isinstance(image_paths, str):
+        refs = [image_paths]
+    elif isinstance(image_paths, (list, tuple)):
+        refs = list(image_paths)
+    else:
+        return [], "image_paths 必须是字符串数组"
+
+    refs = [_clean_file_reference(r) for r in refs]
+    refs = [r for r in refs if r]
+    if not refs:
+        return [], ""
+    if len(refs) > MAX_REFERENCE_IMAGES:
+        return [], f"参考图最多 {MAX_REFERENCE_IMAGES} 张，当前传入 {len(refs)} 张"
+
+    images = []
+    seen = set()
+    total = 0
+    for ref in refs:
+        info, error = _resolve_reference_image(context, ref)
+        if error:
+            return [], error
+        if info["path"] in seen:
+            logger.info(f"[ImageGen] 跳过重复参考图: {info['source']}")
+            continue
+        seen.add(info["path"])
+        total += info["size"]
+        if total > MAX_REFERENCE_TOTAL_BYTES:
+            return [], f"参考图总大小不能超过 {MAX_REFERENCE_TOTAL_BYTES // (1024 * 1024)}MB"
+        images.append(info)
+    return images, ""
+
+
+def _encode_reference_data_uris(images):
+    """把参考图编码成 DashScope 接受的 data URI（base64）。"""
+    uris = []
+    for info in images:
+        with open(info["path"], "rb") as f:
+            data = f.read(MAX_REFERENCE_IMAGE_BYTES + 1)
+        if not data:
+            raise ValueError(f"参考图在读取时变为空文件: {info['source']}")
+        if len(data) > MAX_REFERENCE_IMAGE_BYTES:
+            raise ValueError(f"参考图在读取时超过大小上限: {info['source']}")
+        uris.append(f"data:{info['mime']};base64,{base64.b64encode(data).decode('ascii')}")
+    return uris
+
+
+async def generate_image_tool(context, prompt, size="1024*1024", image_paths=None):
+    """调用图像生成模型生成图片，保存到 output 目录并返回路径。
+
+    image_paths 可选：参考图列表，元素为 [img:XXX] 索引或本地图片路径，
+    用于让生成结果参考这些图片（图生图/图像编辑）。
+    """
     if not prompt:
         return ToolResult(success=False, content="缺少图像描述", error="missing_prompt")
+
+    reference_images, reference_error = _collect_reference_images(context, image_paths)
+    if reference_error:
+        return ToolResult(
+            success=False,
+            content=reference_error,
+            error="invalid_reference_image",
+        )
+    for info in reference_images:
+        logger.info(
+            f"[ImageGen] 参考图: {info['source']} -> {info['path']} "
+            f"({info['size']} bytes, {info['mime']})"
+        )
 
     api_key = cfg.IMAGE_GEN_API_KEY
     if not api_key:
@@ -167,11 +340,27 @@ async def generate_image_tool(context, prompt, size="1024*1024"):
         else:
             api_endpoint = f"{base_url.rstrip('/')}/api/v1/services/aigc/multimodal-generation/generation"
 
+        reference_data_uris = []
+        if reference_images:
+            try:
+                reference_data_uris = await asyncio.to_thread(
+                    _encode_reference_data_uris, reference_images
+                )
+            except Exception as e:
+                logger.error(f"[ImageGen] 读取参考图失败: {e}")
+                return ToolResult(
+                    success=False,
+                    content=f"读取参考图失败: {e}",
+                    error="reference_image_read_failed",
+                )
+
+        # DashScope 多模态接口：参考图以 image 条目放在 content 里，文本放最后
+        content = [{"image": uri} for uri in reference_data_uris] + [{"text": prompt}]
         payload = {
             "model": model,
             "input": {
                 "messages": [
-                    {"role": "user", "content": [{"text": prompt}]}
+                    {"role": "user", "content": content}
                 ]
             },
             "parameters": {"size": size, "n": 1},
@@ -228,13 +417,39 @@ async def generate_image_tool(context, prompt, size="1024*1024"):
 
     else:
         # OpenAI 兼容接口（如 gpt-image 等）
+        if reference_images and model.startswith("dall-e-3"):
+            return ToolResult(
+                success=False,
+                content="当前图像模型 dall-e-3 不支持参考图，请改用 gpt-image 系列或 wan 系列",
+                error="reference_not_supported",
+            )
+
+        reference_paths = [info["path"] for info in reference_images]
+
         def _do_generate():
             from openai import OpenAI
             client = OpenAI(api_key=api_key, base_url=base_url)
-            return client.images.generate(
-                model=model, prompt=prompt, n=1,
-                size=size, response_format="b64_json",
-            )
+            if not reference_paths:
+                return client.images.generate(
+                    model=model, prompt=prompt, n=1,
+                    size=size, response_format="b64_json",
+                )
+
+            # 有参考图时走 images.edit（multipart，image 传文件列表，最多 4 张）
+            handles = []
+            try:
+                for path in reference_paths:
+                    handles.append(open(path, "rb"))
+                return client.images.edit(
+                    model=model, prompt=prompt, image=handles, n=1,
+                    size=size, response_format="b64_json",
+                )
+            finally:
+                for handle in handles:
+                    try:
+                        handle.close()
+                    except OSError:
+                        pass
 
         try:
             response = await asyncio.to_thread(_do_generate)

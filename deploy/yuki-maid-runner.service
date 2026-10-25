@@ -1,0 +1,21 @@
+[Unit]
+Description=Yuki 小女仆执行器（宿主侧 DeepSeek Harness 后端）
+Documentation=file:///home/asumi/Yuki/deploy/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=asumi
+Group=asumi
+WorkingDirectory=/home/asumi/Yuki
+ExecStart=/usr/bin/python3 /home/asumi/Yuki/deploy/maid_runner.py
+Restart=always
+RestartSec=10
+# 执行器只读写项目目录、拉起 dsh 子进程，不需要任何特权提升
+NoNewPrivileges=yes
+StandardOutput=append:/home/asumi/Yuki/logs/maid_runner.out
+StandardError=append:/home/asumi/Yuki/logs/maid_runner.out
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,8 @@
+{
+  "name": "yuki-maid-dsh-runtime",
+  "private": true,
+  "description": "宿主侧 dsh 运行时（小女仆后端）。版本固定，勿随上游漂移。",
+  "dependencies": {
+    "@deepseek-ai/dsh": "0.2.1-rc.2"
+  }
+}

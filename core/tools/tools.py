@@ -18,12 +18,18 @@ from .tools_timer import manage_timer_task_tool
 TOOL_SPECS = [
     ToolSpec(
         name="delegate_to_maid",
-        description="将工作任务委托给电脑上的小女仆处理。使用小女仆完成你自己不能完成的任务。",
+        description=(
+            "将工作任务委托给电脑上的小女仆处理。使用小女仆完成你自己不能完成的任务。"
+            "委托后立即返回，她在后台干活，完成后会主动把结果汇报给你——"
+            "不要等待结果，也不需要反复询问进度。"
+        ),
         parameters={
             "type": "object",
             "properties": {
-                "goal": {"type": "string", "description": "要完成的任务描述"},
-                "run_inline": {"type": "boolean"},
+                "goal": {
+                    "type": "string",
+                    "description": "要完成的任务描述，写清目标和验收标准",
+                },
             },
             "required": ["goal"],
         },
@@ -206,6 +212,7 @@ TOOL_SPECS = [
         name="generate_image",
         description=(
             "根据文字描述生成图片。生成后保存到本地 output 目录，返回文件路径。"
+            "可选传入参考图（本地路径或 [img:XXX] 索引），让生成结果参考图中的角色/风格/构图。"
             "生成完后必须用 send_qq_file 工具把图片发出来。"
             "重要：prompt 必须完整详细，包含主体、场景、风格、光影、构图等细节，"
             "融入 Yuki 的二次元少女特色（白色长发蓝瞳少女，雪花发饰）"
@@ -215,6 +222,16 @@ TOOL_SPECS = [
             "properties": {
                 "prompt": {"type": "string", "description": "图像描述（使用中文描述）"},
                 "size": {"type": "string", "description": "图片尺寸，如 1024*1024、512*512", "default": "1024*1024"},
+                "image_paths": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": (
+                        "参考图列表（可选，最多4张）。每项是本地图片路径或 [img:XXX] 索引。"
+                        "仅支持 png/jpg/jpeg/webp，单张≤5MB、总计≤15MB；"
+                        "本地路径需位于 output/workspace/temp_images 或会话图片目录。"
+                        "传入后走图像编辑接口，让生成结果参考这些图片。"
+                    ),
+                },
             },
             "required": ["prompt"],
         },

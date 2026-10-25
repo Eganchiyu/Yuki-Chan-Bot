@@ -62,7 +62,22 @@ data/
 # 6. 项目运行时目录和日志
 # ============================================
 /yuki_memory/
-skills/
+# 自改候选区与守护进程运行时状态不进 git（只由 supervisor 管理）
+staging/
+deploy/state.json
+# 小女仆 harness 运行期产物（profile 定义与 AGENTS.md 要进 git，会话/缓存不进）
+deploy/dsh-home/sessions/
+deploy/dsh-home/cache/
+deploy/dsh-home/logs/
+deploy/dsh-home/storages/
+deploy/dsh-home/.dshw-*.json
+deploy/dsh-home/.anonymous-user-id
+deploy/dsh-home/AGENTS.local.md
+tasks/dsh/
+workspace/dsh_*/
+# 技能是自进化的产物，必须进 git 才能追溯（准则第 10 条）。
+# 只忽略缓存，不忽略 .py/.md。
+skills/__pycache__/
 core/skills
 logs/
 core/tasks
@@ -114,6 +129,7 @@ temp_expression.png
 window_list.txt
 output/
 workspace/
+tasks/state/
 
 # ============================================
 # 12. 操作系统文件
@@ -134,3 +150,9 @@ Desktop.ini
 # 14. 第三方站点分析产物（含他人站点资源副本，不入公开仓库）
 # ============================================
 amtech_analysis/
+
+# ============================================
+# 15. 运行时附件与缓存（DSH 本地数据，不入库）
+# ============================================
+deploy/dsh-home/attachments/
+deploy/dsh-home/llm-deepseek/

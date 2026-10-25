@@ -8,6 +8,10 @@ import aiohttp
 
 from utils.http_client import create_tcp_connector
 
+# 读文件三重防爆：单次字节上限、单行字符上限（base64/压缩包伪装成 .txt 时的主要闸门）
+READ_FILE_MAX_BYTES = 64 * 1024
+READ_FILE_MAX_LINE_CHARS = 2000
+
 
 def search_diary_fast(date_str=None, keyword=None):
     if not date_str and not keyword:
@@ -58,23 +62,37 @@ def search_diary_fast(date_str=None, keyword=None):
         return f"搜索异常: {str(e)}"
 
 
-def read_file_content(file_path: str, max_lines: int = 500) -> str:
+def read_file_content(
+    file_path: str,
+    max_lines: int = 500,
+    offset: int = 0,
+    max_bytes: int = READ_FILE_MAX_BYTES,
+) -> str:
     """
     通用文件读取工具 - 供小女仆使用。
     支持 txt, md, json, csv, py, yaml 等文本文件。
 
+    三重防爆：行数上限、字节上限、单行字符上限。任何一项命中都只截断不报错，
+    并给出续读需要的 offset，避免把 base64/压缩包伪装成 .txt 的文件整份喂进上下文。
+
     Args:
         file_path: 文件绝对路径或相对路径
-        max_lines: 最大读取行数（防止大文件撑爆上下文）
+        max_lines: 最大读取行数
+        offset: 从第几行开始读（0 基），用于分段续读
+        max_bytes: 本次最多返回的字节数
 
     Returns:
         文件内容字符串，或错误信息
     """
     # 处理路径
+    if not file_path:
+        return "错误：未提供文件路径"
     abs_path = os.path.abspath(file_path)
 
     if not os.path.exists(abs_path):
         return f"错误：文件不存在 '{abs_path}'"
+    if os.path.isdir(abs_path):
+        return f"错误：'{abs_path}' 是目录，请用 list_directory 查看"
 
     # 检查文件大小（限制 10MB）
     file_size = os.path.getsize(abs_path)
@@ -92,22 +110,90 @@ def read_file_content(file_path: str, max_lines: int = 500) -> str:
     if ext in binary_extensions:
         return f"错误：'{abs_path}' 是二进制文件 ({ext})，无法直接读取。建议使用 OCR 或专门的解析工具。"
 
-    # 读取文件
     try:
-        with open(abs_path, "r", encoding="utf-8") as f:
-            lines = f.readlines()
+        max_lines = max(1, int(max_lines or 500))
+    except Exception:
+        max_lines = 500
+    try:
+        offset = max(0, int(offset or 0))
+    except Exception:
+        offset = 0
+    try:
+        max_bytes = max(1024, int(max_bytes or READ_FILE_MAX_BYTES))
+    except Exception:
+        max_bytes = READ_FILE_MAX_BYTES
 
-        total_lines = len(lines)
-        if total_lines > max_lines:
-            content = "".join(lines[:max_lines])
-            content += f"\n\n... [截断] 共 {total_lines} 行，只显示前 {max_lines} 行"
-        else:
-            content = "".join(lines)
+    try:
+        with open(abs_path, "rb") as f:
+            head = f.read(8192)
+            if b"\x00" in head:
+                return f"错误：'{abs_path}' 看起来是二进制文件，无法直接读取。建议使用 OCR 或专门的解析工具。"
+            f.seek(0)
 
-        return f"=== 文件: {os.path.basename(abs_path)} ({total_lines} 行) ===\n{content}"
+            total_lines = 0
+            collected = []
+            used_bytes = 0
+            long_lines_cut = 0
+            stopped_by = ""
 
-    except UnicodeDecodeError:
-        return f"错误：'{abs_path}' 编码不是 UTF-8，无法读取"
+            for index, raw_line in enumerate(f):
+                total_lines = index + 1
+                if index < offset:
+                    continue
+                if stopped_by:
+                    continue  # 已经截断，只继续数总行数
+                if len(collected) >= max_lines:
+                    stopped_by = "lines"
+                    continue
+
+                try:
+                    text = raw_line.decode("utf-8")
+                except UnicodeDecodeError:
+                    return f"错误：'{abs_path}' 编码不是 UTF-8，无法读取"
+
+                if len(text) > READ_FILE_MAX_LINE_CHARS:
+                    kept = text[:READ_FILE_MAX_LINE_CHARS]
+                    dropped = len(text) - READ_FILE_MAX_LINE_CHARS
+                    text = f"{kept}…[本行过长，已截断 {dropped} 字符]\n"
+                    long_lines_cut += 1
+
+                size = len(text.encode("utf-8"))
+                if used_bytes + size > max_bytes:
+                    stopped_by = "bytes"
+                    continue
+                collected.append(text)
+                used_bytes += size
+
+        if offset >= total_lines:
+            return f"错误：offset={offset} 超出文件行数（共 {total_lines} 行）"
+
+        start = offset + 1
+        end = offset + len(collected)
+        content = "".join(collected)
+
+        footer = []
+        if stopped_by == "lines" and end < total_lines:
+            footer.append(f"已达单次 {max_lines} 行上限")
+        if stopped_by == "bytes" and end < total_lines:
+            footer.append(f"已达单次 {max_bytes // 1024}KB 上限")
+        if long_lines_cut:
+            footer.append(f"{long_lines_cut} 行因超长被截到 {READ_FILE_MAX_LINE_CHARS} 字符")
+
+        notice = ""
+        if footer:
+            notice = (
+                f"\n\n... [截断] 已显示第 {start}-{end} 行（共 {total_lines} 行，"
+                f"文件 {file_size / 1024:.1f} KB）：{'；'.join(footer)}。"
+            )
+            if end < total_lines:
+                notice += f"继续读取请用 offset={end}"
+            elif long_lines_cut:
+                notice += "超长行只返回开头部分，若需要其余内容请用 terminal（如 head/cut/grep）。"
+        elif end < total_lines:
+            notice = f"\n\n... [还有 {total_lines - end} 行] 继续读取请用 offset={end}"
+
+        return f"=== 文件: {os.path.basename(abs_path)} ({total_lines} 行, {file_size / 1024:.1f} KB) ===\n{content}{notice}"
+
     except Exception as e:
         return f"错误：读取文件失败 - {str(e)}"
 

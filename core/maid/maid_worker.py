@@ -1,8 +1,10 @@
 import asyncio
 
+from core.maid.maid_approval import build_approver
 from core.maid.maid_boundary import build_maid_report
 from core.maid.maid_common import logger
-from core.maid.maid_loop import maid_evolution_loop
+from core.maid.maid_backend import maid_evolution_loop
+from core.maid.maid_resume import mark_reported
 
 
 async def maid_worker(engine, yuki_state, sender, history_manager):
@@ -13,10 +15,23 @@ async def maid_worker(engine, yuki_state, sender, history_manager):
         chat_id = str(task["chat_id"])
         mode = task.get("mode", "group")
         yuki_state.maid_current_tasks[chat_id] = goal
+        if hasattr(yuki_state, "maid_active_chats"):
+            yuki_state.maid_active_chats[chat_id] = mode
         try:
-            result_dict = await maid_evolution_loop(user_goal=goal, chat_id=chat_id)
+            approver = build_approver(
+                yuki_state=yuki_state,
+                history_manager=history_manager,
+                chat_id=chat_id,
+                mode=mode,
+                goal=goal,
+                gateway=getattr(engine, "sender", None) or sender,
+            )
+            result_dict = await maid_evolution_loop(
+                user_goal=goal, chat_id=chat_id, approver=approver, mode=mode)
             report = build_maid_report(goal, result_dict)
             history_manager.append_session_message(chat_id, "user", report, is_maid_report=True)
+            # 打上「已汇报」标记，重启后的补报巡检不会重复说一遍
+            mark_reported(result_dict.get("task_id"))
             while not getattr(engine, "napcat_online", True):
                 await asyncio.sleep(20)
             if engine.process_callback is not None:
@@ -27,4 +42,6 @@ async def maid_worker(engine, yuki_state, sender, history_manager):
             logger.error(f"[Maid] 处理任务失败: {e}")
         finally:
             yuki_state.maid_current_tasks.pop(chat_id, None)
+            if hasattr(yuki_state, "maid_active_chats"):
+                yuki_state.maid_active_chats.pop(chat_id, None)
             yuki_state.maid_task_queue.task_done()

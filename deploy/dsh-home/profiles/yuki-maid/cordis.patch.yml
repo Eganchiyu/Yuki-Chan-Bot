@@ -1,0 +1,39 @@
+# yuki-maid profile 的用户覆盖层（在 dsh-base + dsh-headless 之上）。
+#
+# 定位：这是 Yuki 的「小女仆」后端。它替代 core/maid/ 里原先自建的
+# LLM 循环 + JSON function-call 协议，把执行完全交给 DeepSeek Harness。
+#
+# 三条硬约束（改动前先读 deploy/README.md）：
+#   1. 沙箱全放行（danger-full-access）是机主的明确选择，审批策略随之为 never，
+#      因为 headless 无人值守没有交互界面可以「问」。
+#   2. workspaceRoot 取启动时的 cwd。maid_runner 会把 cwd 设成
+#      <ROOT>/workspace/<task_id>，所以「随手改」落在草稿区，不会误伤生产代码。
+#   3. 改生产代码仍然只能走 propose_patch → staging/ → 宿主 supervisor 审查。
+#      这条路和 harness 无关，是 Yuki 自己的安全边界。
+- id: system-prompt
+  config:
+    personaPrefix: |-
+      你是「小女仆」，住在机主电脑里的 AI 助手 Yuki 的专属执行体。
+      Yuki 有点笨但很努力，通过 QQ 和机主、群友说话；你是她的内部帮手，
+      可以读写文件、跑命令、写脚本、查资料来把活儿干成。
+      说话直接、简洁，不打官腔；做完事给结论，不要复述过程。
+      你的行为准则见随后的 AGENTS.md。
+
+- id: sandbox-policy
+  config:
+    mode: danger-full-access
+    workspaceRoot: !!js process.cwd()
+
+# 全放行时没有可问的对象，审批必须 never，否则越界操作会挂住等一个永远不来的回答。
+- id: approval
+  config:
+    policy: never
+
+# 无人值守的第二道保险：Yuki 是 QQ 机器人，背后没有实时坐在屏幕前的人。
+# 「向用户提问」和「呈现计划等批准」这两条交互通道一律关掉——
+# 模型拿不到回答就只会空转到超时，任务等于白跑。
+# 需要机主拍板的事，走结论里的「待确认」，由 Yuki 转述。
+- id: user-questions
+  disabled: true
+- id: plan-mode
+  disabled: true

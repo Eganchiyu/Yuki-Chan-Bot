@@ -1,0 +1,22 @@
+[Unit]
+Description=Yuki 自进化守护进程（自改补丁校验、切换、回滚）
+Documentation=file:///home/asumi/Yuki/deploy/README.md
+After=docker.service network-online.target
+Requires=docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=asumi
+Group=docker
+WorkingDirectory=/home/asumi/Yuki
+ExecStart=/usr/bin/python3 /home/asumi/Yuki/deploy/supervisor.py
+Restart=always
+RestartSec=10
+# 守护进程只做文件/git/docker 操作，不需要提升权限
+NoNewPrivileges=yes
+StandardOutput=append:/home/asumi/Yuki/logs/supervisor.out
+StandardError=append:/home/asumi/Yuki/logs/supervisor.out
+
+[Install]
+WantedBy=multi-user.target

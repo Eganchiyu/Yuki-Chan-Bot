@@ -37,6 +37,22 @@
 - 新增 `docs/android-bridge-plan.md`：评估 Yuki 远程访问主人手机 adb（无 root）的可行性，明确 shell 级权限边界、端口漂移补偿方案，选型 Termux 自连 + SSH 中继 + Tailscale 架构，并给出分阶段路线与安全体系
 - 新增入站图片预取 `modules/vision/prefetch.py`：`SessionPipeline.enqueue_message()` 收到带图消息时立即后台下载并做视觉处理，把下载与图像理解的耗时从「开始回复」的关键路径前置到防抖等待期间；管线 normalize 阶段与工具链待合并消息经 `resolve_image()` 复用同一结果，同一 URL（区分表情包/普通图片）只下载理解一次，结果按 `model.image_prefetch_ttl` 过期、按 `model.image_prefetch_max_entries` 限量
 - 新增图片预取配置：`model.image_prefetch_enabled`（默认开启，关闭后退回原有同步处理）、`image_prefetch_ttl`（默认 60 秒）、`image_prefetch_max_entries`（默认 64）
+- **自进化运行底座（容器化 + 受控自改）**：
+  - 新增 `deploy/Dockerfile`：镜像只装依赖不装代码，代码树以只读卷挂入，改动由宿主守护进程施加
+  - 新增 `deploy/run.sh`：容器与宿主**同绝对路径**挂载、数据目录单独读写卷、`--network host` 直连宿主 NapCat、以宿主 uid 运行（否则 staging 属主为 root，宿主无法回写结果）
+  - 新增 `utils/health_server.py` 与 `main.py` 探针接入：独立线程标准库 HTTP 服务，返回 `ready`/`napcat_online`/`maid_queued`/`maid_running`
+  - 新增 `YUKI_DRY_RUN=1` 试启动模式：完整初始化自检但跳过 NapCat 接管、配置回写与历史落盘
+  - 新增 `deploy/verify.sh`：5 道校验门（编译 / 导入 / 单测 / 试启动 / 探针），临时容器断网 + tmpfs 数据，失败输出可回灌给模型
+  - 新增 `deploy/test_gate.py` 与 `deploy/test_baseline.json`：测试门改为基线差集，只对「本次改动新增的失败」报警
+  - 新增 `deploy/supervisor.py`：宿主守护进程，串联「路径分级 → 模型审查 → 记忆快照 → 应用 → git commit → 校验 → 重启 → 健康检查 → 失败回滚」
+  - 新增 `deploy/reviewer.py`：宿主侧独立模型审查（相关性/删功能/数据安全/正确性/回滚性/副作用），驳回不写盘不重启并把意见同步回传
+  - 新增 `deploy/retention.py`：trace 保留 7 天后按周归档（总量上限 200MB）、大日志截断、staging 3 天清理、记忆快照留 7 份
+  - 新增 `deploy/yuki-supervisor.service` + `deploy/install-service.sh`：守护进程常驻（systemd）与每日保留 cron
+  - 新增 `docs/evolution-charter.md` 与 `core/maid/maid_charter.py`：自进化准则与路径分级（自由区/受限区/禁区）、限额、验证门，作为 prompt 与工具判定的单一来源
+- 小女仆新增自改工具：`propose_patch`（写 staging 候选）、`verify_patch`（容器内 AST 快检）、`request_self_reload`（提交并同步等待结果）、`read_evolution_result`（读历史结果）
+- 小女仆新增 `restart_yuki`：请求重启容器（重载配置/重连 NapCat/清内存），由守护进程执行快照→重建→探活，限 5 次/小时
+- 新增 `core/maid/maid_worklog.py`：`list_previous_work` / `read_work_trace` 支持跨任务交接，配合既有 `resume_task` 续做复杂改造
+- `logs/self_evolve.jsonl`：每次自改记录摘要、结果、commit，作为可追溯台账
 
 ### 变更
 - 日志降噪：`websockets` 纳入 `NOISY_NAMESPACES`（逐帧收发与 keepalive ping/pong 压到 WARNING，实测占单日日志一半以上）；`VERBOSE_NAMESPACES` 修正为实际 logger 名（原 `protocol`/`listener`/`modules.napcat` 与真实命名不符，等于空转）
@@ -178,6 +194,18 @@
 - 修复后台定时、破冰和小女仆回调可能绕过普通消息缓冲入口的问题，统一经 `SessionPipeline.enqueue_message()` 串行调度
 - 修复点名缩短防抖使用全局状态的问题，改为按 `chat_id` 隔离防抖时间
 - 修正生物钟与活跃度衰减注释，使说明与代码实际时间一致，并复用生物钟权重计算逻辑
+- 修复容器化后表情包/文件/语音发不出去：`send_local_image` 等使用 `file:///<绝对路径>` 交给宿主 NapCat 读取，容器内路径为 `/app/...` 而宿主无该路径，发送静默失败（`send()` 不等响应，日志仅显示「发送完成」）。改为容器与宿主挂载同一绝对路径并统一工作目录
+- 修复只读代码挂载导致 `compileall` 无法写 `.pyc` 而校验门失败：容器内改用 `PYTHONPYCACHEPREFIX` 重定向字节码缓存到 tmpfs，并排除第三方参考副本
+- 修复 `/health` 的 `napcat_online` 恒为 `true`：原读取 `engine.napcat_online` 乐观默认值，改为 `NapCatGateway.connected`（真实 WebSocket 状态）
+
+- **自进化流程改为「模型审查 + 同步接续」**：
+  - 硬限额由 3 文件 / 200 行放宽到 10 文件 / 1000 行，行数仅作防呆，放行判断交给独立模型审查
+  - `request_self_reload` 改为异步同步轮询 `result.json`（默认 ≤180s）：审查驳回、应用失败、校验失败均不重启进程，模型可在同一 session 内继续修改；通过审查后进入重启才中断（重启后用 `resume_task` 续做）
+  - 审查驳回不计入失败冷却（视为正常迭代），重启请求单独限流
+  - `supervisor` 的 git 提交只 `git add` 补丁涉及的路径，不再 `git add -A`，避免把 staging、运行时状态与人工未提交改动卷进自改提交
+  - `skills/` 从 `.gitignore` 移除并纳入跟踪（原状态为 0 个文件被跟踪，技能改动完全无法追溯）
+  - `maid_prompt` 注入自进化准则与全部自改/交接工具说明，并明确「驳回后按意见修改，不许原样重提」
+  - `maid_charter` 增加删除比例保护（单文件缩水超 50% 视为误删）与敏感改动标记（向量/记忆相关改动额外留档）
 
 ### 移除
 - 移除 `YukiEngine.break_ice()` 独立破冰方法（约 55 行）

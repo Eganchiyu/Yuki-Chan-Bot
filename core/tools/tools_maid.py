@@ -1,6 +1,7 @@
 # core/tools/tools_maid.py
 """小女仆委托工具。"""
-from core.maid.maid import MaidCapabilityBoundary, build_maid_task, maid_evolution_loop
+from core.maid.maid import MaidCapabilityBoundary, build_maid_task
+from core.maid.maid_common import logger
 from core.toolchain import ToolResult
 
 
@@ -18,13 +19,12 @@ async def delegate_to_maid_tool(context, goal, run_inline=False):
             error="capability_boundary_rejected",
         )
 
+    # 旧版允许 run_inline=True 同步等待，但工具链对单次调用只有
+    # cfg.timing.tool_call_timeout_seconds（默认 120 秒），而小女仆的任务上限是 900 秒——
+    # 同步等必然会超时，把「她已经做完了」变成「工具执行超时」。
+    # 现在一律入队后台执行，完成后由 maid_worker / 补报巡检把结果交回会话。
     if run_inline:
-        result = await maid_evolution_loop(user_goal=goal, chat_id=context.chat_id)
-        return ToolResult(
-            success=result.get("status") == "finished",
-            content=result.get("result", "小女仆未返回结果"),
-            data=result,
-        )
+        logger.warning("[Maid] delegate_to_maid 收到 run_inline=True，已忽略：改为后台执行")
 
     task = build_maid_task(goal, context.chat_id, context.mode, source="toolchain")
     await context.yuki.maid_task_queue.put(task)

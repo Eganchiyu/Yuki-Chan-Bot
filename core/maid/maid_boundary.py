@@ -31,7 +31,26 @@ def build_maid_task(goal: str, chat_id: str = None, mode: str = "group", source:
 
 
 def build_maid_report(goal: str, result_dict: dict) -> str:
-    """构造标准小女仆回调报告。"""
+    """构造标准小女仆回调报告。前缀格式固定，附加信息统一追加在末尾。"""
     status = result_dict.get("status", "unknown")
     result = result_dict.get("result", "未知结果")
-    return f"【小女仆完成! 小女仆汇报】\n任务：「{goal}」\n状态：{status}\n结果：{result}"
+    lines = [
+        "【小女仆完成! 小女仆汇报】",
+        f"任务：「{goal}」",
+        f"状态：{status}",
+        f"结果：{result}",
+    ]
+
+    meta = []
+    if result_dict.get("rounds") is not None:
+        meta.append(f"轮次：{result_dict['rounds']}")
+    if result_dict.get("elapsed") is not None:
+        meta.append(f"耗时：{result_dict['elapsed']}s")
+    if result_dict.get("trace"):
+        meta.append(f"trace：{result_dict['trace']}")
+    if result_dict.get("state"):
+        meta.append(f"快照：{result_dict['state']}")
+    if meta:
+        lines.append(" | ".join(meta))
+
+    return "\n".join(lines)

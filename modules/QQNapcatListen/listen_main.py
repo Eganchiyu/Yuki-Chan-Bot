@@ -31,6 +31,11 @@ async def start_background_tasks(gateway, pipeline, mode: str):
     from core.maid.maid_worker import maid_worker
     asyncio.create_task(maid_worker(engine, yuki, gateway, pipeline.history_manager))
 
+    # 自改会重启容器，把「等结果」的协程打断而宿主的 dsh 还在跑；
+    # 这个巡检负责把那些已完成、却没人汇报的结果捡回来交给 Yuki。
+    from core.maid.maid_resume import report_orphaned_results
+    asyncio.create_task(report_orphaned_results(engine, yuki, pipeline.history_manager))
+
     # QZone 社交监控（默认关闭，见 configs/config.yaml 的 qzone_monitor.enabled）
     # 网关的常驻 reader 已能独立完成请求-响应，监控侧不再需要自己迭代
     # listen() 或关闭连接，打开此开关不会影响主监听。

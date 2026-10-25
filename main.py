@@ -1,6 +1,7 @@
 # main.py
 # by: Eganchiyu
 import asyncio
+import json
 import os
 import sys
 import time
@@ -88,6 +89,40 @@ def warmup_groups(yuki, history_manager):
     logger.debug(f"已预载 {len(yuki.last_message_time)} 个群组到巡检名单")
 
 
+def is_dry_run() -> bool:
+    """试启动模式：只做初始化自检，不接管 NapCat，由 supervisor 看退出码判定。"""
+    return os.getenv("YUKI_DRY_RUN", "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def start_health_probe(components):
+    """启动 /health 探针并置就绪，供宿主 supervisor 判定「新代码真的活了」。"""
+    from utils.health_server import set_probe, set_ready, start_health_server
+
+    engine = components["engine"]
+    yuki = components["yuki"]
+
+    def _probe():
+        queue = getattr(yuki, "maid_task_queue", None)
+        try:
+            queued = queue.qsize() if queue is not None else 0
+        except Exception:
+            queued = 0
+        sender = getattr(engine, "sender", None)
+        return {
+            # 用 WS 真实状态，而不是 engine.napcat_online（那是乐观默认值 True）
+            "napcat_online": bool(getattr(sender, "connected", False)),
+            "maid_queued": queued,
+            "maid_running": len(getattr(yuki, "maid_current_tasks", {}) or {}),
+        }
+
+    set_probe(_probe)
+    if not start_health_server():
+        logger.warning("[Health] 探针启动失败，supervisor 只能退回看日志判定存活")
+        return
+    set_ready(True, mode="dry_run" if is_dry_run() else "serve")
+    logger.info(f"[Health] 探针就绪: /health (port={os.getenv('YUKI_HEALTH_PORT', '8778')})")
+
+
 def start_context_debug_webui_if_enabled():
     """按环境变量在主进程内启动 Context Debug WebUI。"""
     import os
@@ -143,8 +178,76 @@ def start_desktop_pet_if_enabled(pipeline, pipeline_loop):
         logger.error(f"[DesktopPet] 启动失败: {exc}")
 
 
+def _last_maid_chat():
+    """从 tasks/dsh 里找最近一次委托的 (chat_id, mode)，作为通知的兜底目标。"""
+    import glob
+
+    base = os.path.join(os.path.dirname(os.path.abspath(__file__)), "tasks", "dsh")
+    try:
+        dirs = [d for d in glob.glob(os.path.join(base, "*")) if os.path.isdir(d)]
+        dirs.sort(key=lambda d: os.path.getmtime(os.path.join(d, "request.json"))
+                  if os.path.exists(os.path.join(d, "request.json")) else 0, reverse=True)
+    except Exception:
+        return None
+    for d in dirs[:5]:
+        try:
+            with open(os.path.join(d, "request.json"), encoding="utf-8") as f:
+                req = json.load(f)
+        except Exception:
+            continue
+        chat_id = str(req.get("chat_id") or "").strip()
+        if chat_id:
+            return chat_id, str(req.get("mode") or "group")
+    return None
+
+
+async def _send_restart_notice(payload) -> tuple:
+    """容器内收到「即将重启」通知：往正在等结果的小女仆会话里喊一声。
+
+    为什么由容器自己发：supervisor 在宿主机，手里只有 HTTP 探针端口，
+    没有 NapCat 的 WS 连接。借 Yuki 自己的连接发，消息才能落到正确的会话。
+    """
+    text = str(payload.get("text") or "⚙️ Yuki 进程重启中，稍等十几秒…")
+    chats = dict(getattr(components.get("yuki"), "maid_active_chats", {}) or {})
+    if not chats:
+        # 没有正在跑的任务时（手动重启、或任务刚好做完），退回到最近一次委托的会话：
+        # 重启这件事本身也需要让人知道，不能因为队列空了就闷声不响。
+        fallback = _last_maid_chat()
+        if fallback:
+            chats = {fallback[0]: fallback[1]}
+    sender = getattr(components.get("engine"), "sender", None)
+    if not chats:
+        return True, "没有活跃或近期的小女仆会话，跳过通知"
+    if sender is None:
+        return False, "sender 不可用"
+    sent, failed = 0, 0
+    for chat_id, mode in chats.items():
+        try:
+            await sender.send(str(chat_id), text, mode=mode or "group")
+            sent += 1
+        except Exception as e:
+            failed += 1
+            logger.warning(f"[System] 重启通知发送失败 chat={chat_id}: {e}")
+    return (sent > 0 or failed == 0), f"已通知 {sent} 个会话，失败 {failed}"
+
+
+def _install_restart_notifier() -> None:
+    """把 /notify 的 HTTP 线程回调接到当前事件循环上。"""
+    from utils.health_server import set_notifier
+
+    loop = asyncio.get_running_loop()
+
+    def _notifier(payload):
+        future = asyncio.run_coroutine_threadsafe(_send_restart_notice(payload), loop)
+        return future.result(timeout=6)   # 让 supervisor 等到消息真的发出去
+
+    set_notifier(_notifier)
+    logger.info("[System] 重启通知端点已就绪：POST /notify")
+
+
 async def run_runtime() -> None:
     try:
+        _install_restart_notifier()
         # 桌宠启动包含起 aiohttp 服务（最长等 3 秒）和拉起 Electron，
         # 放到线程里跑，避免阻塞消息管线的事件循环。
         await asyncio.to_thread(
@@ -196,6 +299,10 @@ def _do_cleanup():
         stop_monitor_service()
     except Exception as e:
         logger.error(f"[Main] 停止监控服务时出错: {e}")
+    if is_dry_run():
+        # 试启动只读自检：不回写配置、不落历史，避免污染生产数据
+        logger.info("[Main] DRY_RUN 清理：跳过配置回写与历史落盘")
+        return
     try:
         save_config(cfg)
         logger.info("[Main] 配置已自动对齐保存")
@@ -251,7 +358,9 @@ if __name__ == "__main__":
     os.environ.setdefault("NO_PROXY", "127.0.0.1,localhost")
     atexit.register(_do_cleanup)
 
-    if not acquire_single_instance_lock():
+    if is_dry_run():
+        logger.info("[Main] DRY_RUN 模式：跳过单实例锁，使用独立数据目录做初始化自检")
+    elif not acquire_single_instance_lock():
         logger.critical(
             "[Main] 已有 Yuki 实例在运行（data/yuki.lock 被占用），本次启动中止。"
             "如需并行调试请设置 YUKI_ALLOW_MULTI_INSTANCE=1"
@@ -262,11 +371,19 @@ if __name__ == "__main__":
         components = initialize_components()
         session_pipeline = SessionPipeline(components, group_active_state)
         components["engine"].process_callback = main_process
-        start_context_debug_webui_if_enabled()
+        start_health_probe(components)
+        if not is_dry_run():
+            start_context_debug_webui_if_enabled()
 
         warmup_groups(components["yuki"], components["history_manager"])
 
         start_monitor_service()
+
+        if is_dry_run():
+            # 试启动门：初始化全部通过即算成功，不接管 NapCat、不消费消息
+            logger.info("[System] DRY_RUN 通过：初始化成功，跳过 NapCat 接管，退出码 0")
+            sys.exit(0)
+
         asyncio.run(run_runtime())
 
     except KeyboardInterrupt:
