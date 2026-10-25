@@ -190,3 +190,10 @@
 ## 2026-10-25 仓库同步
 
 - fetch + push：本地 main 5 个提交推到 origin（01300b0 README 同步 → ba8b969 检索 Key → 3c793cd 日记随机抽取 → 7741623 日记召回重排 → c4ac6a4 日志），`main` 已设上游 `origin/main`，之后可直接 `git push`。
+
+## 2026-10-25 清理根目录小女仆遗留产物
+
+- 删除根目录与项目无关的生成物（d19dc46 那批「归档学习示例与调研笔记」带入的）：`2api_repos_report.md`、`MiMo-V2.6_vs_DeepSeek-V4.1-Flash_对比.md`、`beamer_demo.tex`、`beamer_minimal_template.tex`、`beamer_tutorial.md`、`cloudflared_guide.md`、`gomoku.html`、`weiqi.html`、`npu_math_employment_poster.html`、`brainfuck_demo/`、`memos/`（仅一行 test）。
+- 同时清本地未跟踪目录：`amtech_analysis/`（他人站点分析副本）、空目录 `gif_images/`、`screenshots/`。
+- 保留：`blacklist.txt`/`init.py`/`setup.py`/`yuki_help.png`/`manual_stickers.json`（代码或测试引用）、`future addons/`，以及运行期目录 `logs/ workspace/ staging/ output/ temp_images/ maid_venv/` 未动。
+- 遗留：`docs/android-bridge-plan.md` 第 55、411 行仍引用已删除的 `cloudflared_guide.md`（该文档按用户要求保留，链接呈悬空）；`.gitignore` 仍保留 `amtech_analysis/` 规则（防止日后重新生成时误入库）。
