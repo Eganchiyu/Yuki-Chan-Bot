@@ -16,6 +16,7 @@ import os
 import random
 import subprocess
 import time
+from http.cookies import SimpleCookie
 from pathlib import Path
 from typing import Optional
 from urllib.parse import urlencode, urlparse
@@ -122,7 +123,11 @@ def _base_config() -> dict:
 
 
 async def _post_eapi(url: str, payload: dict, cookies: dict | None = None) -> tuple[int, dict, str]:
-    """POST eapi 接口，返回 (http状态, json, set_cookie原文)。"""
+    """POST eapi 接口，返回 (http状态, json, set_cookie原文)。
+
+    set_cookie 收集响应里的全部 Set-Cookie 头（多条用换行分隔），
+    避免只取第一条导致登录后保存的 Cookie 缺少 MUSIC_U / __csrf 等字段。
+    """
     import aiohttp
 
     params = encrypt_params(url, payload)
@@ -144,7 +149,8 @@ async def _post_eapi(url: str, payload: dict, cookies: dict | None = None) -> tu
                 data = json.loads(text)
             except json.JSONDecodeError:
                 data = {}
-            return resp.status, data, resp.headers.get("Set-Cookie", "")
+            set_cookie_headers = resp.headers.getall("Set-Cookie", [])
+            return resp.status, data, "\n".join(set_cookie_headers)
 
 
 async def generate_qr() -> dict:
@@ -171,7 +177,10 @@ async def generate_qr() -> dict:
     qr.add_data(QR_URL_TEMPLATE.format(unikey=unikey))
     qr.make(fit=True)
     img = qr.make_image(fill_color="black", back_color="white")
-    img.save(image_path)
+    try:
+        img.save(image_path)
+    except Exception as e:
+        return {"success": False, "message": f"二维码图片保存失败: {e}"}
 
     return {
         "success": True,
@@ -197,8 +206,8 @@ async def poll_login(unikey: str, timeout_seconds: int = 180, interval: float = 
 
         if code == 803:  # 登录成功
             cookie_str = _extract_cookie_from_set_cookie(set_cookie)
-            if not cookie_str:
-                return {"success": False, "message": "登录成功但未获取到 Cookie"}
+            if not cookie_str or "MUSIC_U=" not in cookie_str:
+                return {"success": False, "message": "登录成功但未获取到 MUSIC_U Cookie"}
             return {"success": True, "cookie": cookie_str, "message": "登录成功"}
 
         if code == 800:  # 二维码过期
@@ -222,20 +231,36 @@ def _extract_cookie_from_set_cookie(set_cookie: str) -> str:
     """从 Set-Cookie 响应头提取关键 cookie 为字符串。
 
     只保留对接口调用有用的字段：MUSIC_U / __csrf / NMTID / JSESSIONID-WYYY / os。
+    支持多条 Set-Cookie（按行分隔）；用 SimpleCookie 解析，避免 Expires 里的逗号
+    把 Cookie 切断。
     """
     if not set_cookie:
         return ""
-    wanted = ("MUSIC_U=", "__csrf=", "NMTID=", "JSESSIONID-WYYY=", "os=")
-    parts = []
-    for chunk in set_cookie.split(","):
+    wanted = ("MUSIC_U", "__csrf", "NMTID", "JSESSIONID-WYYY", "os")
+    values: dict[str, str] = {}
+    for header in set_cookie.splitlines():
+        header = header.strip()
+        if not header:
+            continue
+        jar = SimpleCookie()
+        try:
+            jar.load(header)
+        except Exception:
+            continue
+        for name, morsel in jar.items():
+            if name in wanted:
+                values[name] = morsel.value
+    # 兼容早期只传单条、逗号拼接的 Set-Cookie 文本
+    for chunk in set_cookie.replace("\n", ",").split(","):
         chunk = chunk.strip()
         if not chunk:
             continue
-        for w in wanted:
-            if chunk.startswith(w):
-                parts.append(chunk.split(";")[0])
+        for name in wanted:
+            prefix = f"{name}="
+            if name not in values and chunk.startswith(prefix):
+                values[name] = chunk.split(";", 1)[0][len(prefix):]
                 break
-    return "; ".join(parts)
+    return "; ".join(f"{name}={values[name]}" for name in wanted if name in values)
 
 
 def save_cookie(cookie_str: str) -> bool:
@@ -244,6 +269,9 @@ def save_cookie(cookie_str: str) -> bool:
         return False
     path = _cookie_file()
     try:
+        parent = os.path.dirname(path)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
         with open(path, "w", encoding="utf-8") as f:
             f.write(cookie_str.strip() + "\n")
         os.chmod(path, 0o600)

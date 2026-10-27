@@ -8,7 +8,15 @@ from urllib.parse import quote_plus
 import aiohttp
 
 from config import cfg
-from core.ncm_login import clear_pending, generate_qr, load_pending, poll_login, save_cookie, save_pending
+from core.ncm_login import (
+    _qr_image_path,
+    clear_pending,
+    generate_qr,
+    load_pending,
+    poll_login,
+    save_cookie,
+    save_pending,
+)
 from core.toolchain import ToolResult
 from utils.http_client import create_tcp_connector
 
@@ -51,6 +59,33 @@ def _ncm_headers(cookie_text: str) -> dict:
     }
 
 
+def _ncm_login_required(
+    action_desc: str,
+    image_path: str,
+    *,
+    error: str = "ncm_cookie_expired",
+    pending: bool = False,
+) -> ToolResult:
+    """构造「需要扫码登录」的统一返回，确保 qr_image_path 一定带回给调用方。"""
+    if pending:
+        content = (
+            f"{action_desc}需要网易云登录：二维码已生成，正在等待扫码。图片路径：{image_path}。"
+            "请用 send_qq_file 把该二维码图片发给用户扫码；扫码确认后再次调用本工具即可继续。"
+        )
+    else:
+        content = (
+            f"{action_desc}失败：缺少网易云 Cookie 或登录已过期。已生成登录二维码：{image_path}。"
+            "请用 send_qq_file 把该二维码图片发给用户扫码；扫码确认后再次调用本工具，"
+            "Cookie 会自动保存并继续。"
+        )
+    return ToolResult(
+        success=False,
+        content=content,
+        error=error,
+        data={"qr_image_path": image_path, "login_required": True},
+    )
+
+
 async def _ncm_song_title(song_id) -> str:
     """获取歌曲名称用于文件名，失败返回空字符串。"""
     try:
@@ -83,11 +118,17 @@ async def ncm_search_tool(context, keyword, limit=5):
 
     cookie_text = _ncm_cookie_text()
     if not cookie_text:
-        return ToolResult(
-            success=False,
-            content="未找到网易云 Cookie 文件（配置: cfg.paths.ncm_cookie_file）。需要先在浏览器登录 music.163.com 并复制 Cookie。",
-            error="missing_cookie",
-        )
+        # 未配置 Cookie → 触发二维码登录流程（生成图片并返回 qr_image_path）
+        login_result = await _ncm_ensure_login(context, action_desc="搜索歌曲")
+        if login_result is not None:
+            return login_result
+        cookie_text = _ncm_cookie_text() or ""
+        if not cookie_text:
+            return ToolResult(
+                success=False,
+                content="登录成功但读取 Cookie 失败，请检查 cfg.paths.ncm_cookie_file 是否可写。",
+                error="cookie_read_failed",
+            )
 
     try:
         limit = max(1, min(int(limit), 5))
@@ -173,6 +214,12 @@ async def ncm_download_tool(context, song_id, quality="320000", filename=None):
         if login_result is not None:
             return login_result
         cookie_text = _ncm_cookie_text() or ""
+        if not cookie_text:
+            return ToolResult(
+                success=False,
+                content="登录成功但读取 Cookie 失败，请检查 cfg.paths.ncm_cookie_file 是否可写。",
+                error="cookie_read_failed",
+            )
 
     try:
         timeout = aiohttp.ClientTimeout(total=60)
@@ -253,12 +300,12 @@ async def ncm_download_tool(context, song_id, quality="320000", filename=None):
 
 
 async def _ncm_ensure_login(context, action_desc="操作") -> ToolResult | None:
-    """NCM 登录保障：Cookie 无效时自动处理二维码登录。
+    """NCM 登录保障：Cookie 无效/缺失时生成二维码，并轮询扫码结果。
 
-    策略（跨调用状态机）：
-    1. 已有待扫码二维码 → 轮询登录状态；成功保存 Cookie 并返回 None（继续原操作）；
-       仍未扫码 → 返回提示（再次调用本工具即重试轮询）
-    2. 无待扫码记录 → 生成新二维码并发送图片，返回提示让用户扫码后再次调用
+    跨调用状态机：
+    1. 有待扫码二维码 → 轮询一次；扫码成功则保存 Cookie 并返回 None（继续原操作）；
+       仍未扫码 → 返回带 qr_image_path 的提示（再次调用即重试轮询）
+    2. 无待扫码记录 / 二维码图片丢失 / 已过期 → 生成新二维码并返回带 qr_image_path 的提示
 
     Returns:
         None = 登录已就绪，调用方可继续原操作
@@ -267,23 +314,31 @@ async def _ncm_ensure_login(context, action_desc="操作") -> ToolResult | None:
     # 1. 有待扫码的二维码？轮询一次
     pending = load_pending()
     if pending:
-        poll_result = await poll_login(pending["unikey"], timeout_seconds=30)
-        if poll_result.get("success"):
-            if save_cookie(poll_result.get("cookie", "")):
-                clear_pending()
-                logger.info("[NCM] 二维码登录成功，Cookie 已保存")
-                return None
-            return ToolResult(success=False, content="登录成功但 Cookie 保存失败", error="save_cookie_failed")
-        # 未成功：若二维码过期则清除并重新生成；否则提示用户继续等待
-        msg = poll_result.get("message", "尚未完成")
-        if "过期" in msg:
+        image_path = pending.get("image_path") or _qr_image_path()
+        unikey = pending.get("unikey")
+        if not unikey or not os.path.isfile(image_path):
+            # 状态文件不完整或图片丢了，重新生成，避免把不存在的路径发给用户
             clear_pending()
         else:
-            return ToolResult(
-                success=False,
-                content=f"{action_desc}需要网易云登录：二维码已生成等待扫码，请用网易云音乐 App 扫码后再次调用。",
-                error="ncm_login_pending",
-            )
+            poll_result = await poll_login(unikey, timeout_seconds=30)
+            if poll_result.get("success"):
+                if save_cookie(poll_result.get("cookie", "")):
+                    clear_pending()
+                    logger.info("[NCM] 二维码登录成功，Cookie 已保存")
+                    return None
+                return ToolResult(
+                    success=False,
+                    content="登录成功但 Cookie 保存失败，请检查 cfg.paths.ncm_cookie_file 的目录权限。",
+                    error="save_cookie_failed",
+                )
+            # 未成功：若二维码过期则清除并重新生成；否则提示用户继续等待
+            msg = poll_result.get("message", "尚未完成")
+            if "过期" in msg:
+                clear_pending()
+            else:
+                return _ncm_login_required(
+                    action_desc, image_path, error="ncm_login_pending", pending=True
+                )
 
     # 2. 生成新二维码
     qr_result = await generate_qr()
@@ -293,14 +348,6 @@ async def _ncm_ensure_login(context, action_desc="操作") -> ToolResult | None:
     unikey = qr_result["unikey"]
     image_path = qr_result["image_path"]
     save_pending(unikey)
+    logger.info(f"[NCM] 已生成登录二维码: {image_path}")
 
-    return ToolResult(
-        success=False,
-        content=(
-            f"{action_desc}失败：网易云登录已过期。二维码路径：{image_path}，"
-            "请用 send_qq_file 把二维码图片发送到群里让用户扫码；"
-            "扫码完成后再次调用本工具即可继续。"
-        ),
-        error="ncm_cookie_expired",
-        data={"qr_image_path": image_path},
-    )
+    return _ncm_login_required(action_desc, image_path)
