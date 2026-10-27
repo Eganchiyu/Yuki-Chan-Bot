@@ -254,7 +254,12 @@ class TargetConfig:
     """目标配置"""
     qq: int = config_field(
         0,
-        comment="私聊目标 QQ 号",
+        comment="私聊目标 QQ 号（主号，同时是默认收件人）",
+        section="target"
+    )
+    masters: List[int] = config_field_factory(
+        list,
+        comment="额外主人 QQ 号列表（与 qq 一并视为主人，如小号）",
         section="target"
     )
     groups: List[int] = config_field_factory(
@@ -783,8 +788,28 @@ class Config:
 
     @property
     def TARGET_QQ(self) -> int:
-        """主人 QQ 号"""
+        """主人 QQ 号（主号）"""
         return int(self.target.qq)
+
+    @property
+    def MASTER_QQS(self) -> List[int]:
+        """全部主人 QQ 号（主号 + target.masters，去重保序）"""
+        result: List[int] = []
+        for raw in [self.target.qq, *(self.target.masters or [])]:
+            try:
+                qq = int(raw)
+            except (TypeError, ValueError):
+                continue
+            if qq > 0 and qq not in result:
+                result.append(qq)
+        return result
+
+    def is_master_qq(self, user_id) -> bool:
+        """判断某个 QQ 号是否属于主人（支持多主人号）"""
+        try:
+            return int(user_id) in self.MASTER_QQS
+        except (TypeError, ValueError):
+            return False
 
     @property
     def DEBUG(self) -> bool:

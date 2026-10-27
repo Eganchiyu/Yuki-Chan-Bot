@@ -197,3 +197,11 @@
 - 同时清本地未跟踪目录：`amtech_analysis/`（他人站点分析副本）、空目录 `gif_images/`、`screenshots/`。
 - 保留：`blacklist.txt`/`init.py`/`setup.py`/`yuki_help.png`/`manual_stickers.json`（代码或测试引用）、`future addons/`，以及运行期目录 `logs/ workspace/ staging/ output/ temp_images/ maid_venv/` 未动。
 - 遗留：`docs/android-bridge-plan.md` 第 55、411 行仍引用已删除的 `cloudflared_guide.md`（该文档按用户要求保留，链接呈悬空）；`.gitignore` 仍保留 `amtech_analysis/` 规则（防止日后重新生成时误入库）。
+
+## 2026-10-27 主人 QQ 支持多号
+
+- 新增 `TargetConfig.masters: List[int]`（target.masters），与主号 `target.qq` 合并为主人集合；新增 `cfg.MASTER_QQS`（去重保序、过滤 0/非法值）与 `cfg.is_master_qq(user_id)`，`cfg.TARGET_QQ` 仍为主号（私聊通知默认收件人）。
+- 判定点统一改用 `cfg.is_master_qq()`：`/开启` `/关闭` 权限、私聊 `master_private` 模式、群内冒充主人昵称检测、决策层主人加分与 QQ 号文本识别（`core/engine/engine_decision.py`、`memory/engine_h.py`）、`core/prompts.py` 的 master_private system prompt 分配。
+- `configs/config.yaml` 已加 `target.masters: [2624538603, 7373372370]`（文件 gitignored，未入库）；注意该文件 `target.qq` 仍为 `737337230`（9 位，疑似少一位），主号需机主自行确认。
+- 文档：`docs/deployment-guide.md`、`docs/module-relationship.md` 补 masters 说明。
+- 验证：用 `~/miniconda3/envs/yuki/bin/python` 实测 `MASTER_QQS == [737337230, 2624538603, 7373372370]`，`is_master_qq` 对大小号均 True；`maid_venv` 仍缺 libpython3.11 不可用，环境无 pytest 故未跑单测。

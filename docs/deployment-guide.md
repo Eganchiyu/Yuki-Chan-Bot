@@ -119,7 +119,9 @@ connection:
 
 # 目标配置
 target:
-  qq: "your-qq-number"
+  qq: "your-qq-number"   # 主号
+  masters:               # 额外主人号（小号等，可留空）
+    - "your-second-qq"
   groups:
     - 123456789
     - 987654321
@@ -238,7 +240,9 @@ connection:
 
 ```yaml
 target:
-  qq: "737337230"  # 私聊目标 QQ 号
+  qq: "737337230"  # 私聊目标 QQ 号（主号）
+  masters:         # 额外主人 QQ 号，与 qq 一并视为主人
+    - 2624538603
   groups:  # 目标群聊列表
     - 1057020972
     - 1034986009

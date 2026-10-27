@@ -40,7 +40,7 @@ class EngineDecisionService:
         is_master = False
 
         master_identifiers = [cfg.MASTER_NAME, "池宇健"]
-        master_qq_str = str(cfg.TARGET_QQ)
+        master_qq_strs = [str(qq) for qq in cfg.MASTER_QQS]
 
         for m in message_objs:
             raw_text = m.get("raw_text", "").lower()
@@ -56,8 +56,8 @@ class EngineDecisionService:
 
             if (
                 any(mid in raw_text for mid in master_identifiers)
-                or master_qq_str in raw_text
-                or m.get("user_id") == cfg.TARGET_QQ
+                or any(qq_str in raw_text for qq_str in master_qq_strs)
+                or cfg.is_master_qq(m.get("user_id"))
             ):
                 is_master = True
 

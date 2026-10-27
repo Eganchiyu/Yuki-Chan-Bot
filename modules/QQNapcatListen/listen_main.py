@@ -103,7 +103,7 @@ def handle_group_switch(pipeline, gateway, group_id, gid_str, user_id, raw_msg):
     if msg_clean not in {"/关闭", "/开启"}:
         return False
 
-    if user_id != cfg.TARGET_QQ:
+    if not cfg.is_master_qq(user_id):
         hint = "只有哥哥大人才能关掉我哦！" if msg_clean == "/关闭" else "只有哥哥大人才能唤醒我哦！"
         asyncio.create_task(gateway.send(group_id, hint, mode="group"))
         return True
@@ -214,7 +214,7 @@ async def napcat_listen(gateway, pipeline, mode: str = "mixed"):
                         gateway,
                         user_id,
                         raw_msg,
-                        "master_private" if user_id == cfg.TARGET_QQ else "private",
+                        "master_private" if cfg.is_master_qq(user_id) else "private",
                         message_obj=_build_private_message(
                             user_id,
                             raw_msg,
@@ -237,7 +237,7 @@ async def napcat_listen(gateway, pipeline, mode: str = "mixed"):
 
                     sender_info = data.get("sender", {})
                     name = sender_info.get("card") or sender_info.get("nickname") or "路人"
-                    if name == cfg.MASTER_NAME and user_id != cfg.TARGET_QQ:
+                    if name == cfg.MASTER_NAME and not cfg.is_master_qq(user_id):
                         logger.warning(
                             f"[NapCat] 检测到疑似冒充消息，已替换发送者姓名。原始姓名: {name}, QQ: {user_id}"
                         )

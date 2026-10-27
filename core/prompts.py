@@ -140,11 +140,11 @@ def sync_system_prompts(history_mgr, yuki_state):
                 history_dict[gid].insert(0, {"role": "system", "content": group_prompt})
 
         # 逻辑 3: 对 json 内有的记录，但不在 target_groups 里的，认定为私聊注入私聊 Prompt
-        master_private_cid = str(cfg.TARGET_QQ)
+        master_private_cids = {str(qq) for qq in cfg.MASTER_QQS}
         for cid in list(history_dict.keys()): 
             if cid not in target_groups_str:
                 # 主人的私聊用 master_private prompt，其他人用代管 prompt
-                if cid == master_private_cid:
+                if cid in master_private_cids:
                     private_prompt = yuki_state.get_setting("master_private")
                 else:
                     private_prompt = yuki_state.get_setting("private")

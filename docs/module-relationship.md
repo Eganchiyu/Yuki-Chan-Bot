@@ -155,7 +155,7 @@ Config
 ├── api: APIConfig          (llm_base_url, backup_base_url, image_process_url, keys...)
 ├── model: ModelConfig      (llm, backup, vision, disable_thinking)
 ├── connection: ConnectionConfig  (napcat_ws_url, napcat_ws_token, max_retries)
-├── target: TargetConfig    (qq, groups, whitelist)
+├── target: TargetConfig    (qq, masters, groups, whitelist)
 ├── diary: DiaryConfig      (idle_seconds, min_turns, max_length)
 ├── rag: RAGConfig          (retrieval_top_k, keep_last_dialogue)
 ├── energy: EnergyConfig    (initial, max, recovery_per_min, cost_per_reply, min_active)
