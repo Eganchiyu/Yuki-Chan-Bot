@@ -331,9 +331,11 @@ async def _ncm_ensure_login(context, action_desc="操作") -> ToolResult | None:
                     content="登录成功但 Cookie 保存失败，请检查 cfg.paths.ncm_cookie_file 的目录权限。",
                     error="save_cookie_failed",
                 )
-            # 未成功：若二维码过期则清除并重新生成；否则提示用户继续等待
+            # 未成功：若二维码过期，或已确认但 Cookie 解析失败，则清除并重新生成；
+            # 其余情况（尚未扫码/等待确认）提示用户继续等待。
             msg = poll_result.get("message", "尚未完成")
-            if "过期" in msg:
+            if "过期" in msg or "登录成功" in msg:
+                logger.warning(f"[NCM] 二维码登录未完成，重新生成: {msg}")
                 clear_pending()
             else:
                 return _ncm_login_required(
