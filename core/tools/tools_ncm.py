@@ -3,7 +3,7 @@
 import json
 import os
 import re
-from urllib.parse import quote_plus
+from urllib.parse import quote_plus, urlsplit, urlunsplit
 
 import aiohttp
 
@@ -57,6 +57,66 @@ def _ncm_headers(cookie_text: str) -> dict:
         "Content-Type": "application/x-www-form-urlencoded",
         "User-Agent": _NCM_UA,
     }
+
+
+def _ncm_cdn_headers() -> dict:
+    """下载 CDN 音频文件时使用的请求头（部分节点会校验 UA/Referer）。"""
+    return {"User-Agent": _NCM_UA, "Referer": _NCM_REFERER}
+
+
+def _ncm_download_candidates(song_url: str) -> list[str]:
+    """生成下载候选链接：原链接 → 去掉 authSecret 参数 → 去掉整个查询串。
+
+    实测 m704/m804.music.126.net 等 CDN 节点只要查询串里带 authSecret 就返回
+    HTTP 403（Tengine 拒绝），而同一路径去掉该参数后可正常返回完整文件；
+    因此按「原链接 → 去 authSecret → 去查询串」依次降级重试。
+    """
+    candidates = [song_url]
+    try:
+        parts = urlsplit(song_url)
+    except ValueError:
+        return candidates
+    if parts.query:
+        pairs = [p for p in parts.query.split("&") if p]
+        stripped = [p for p in pairs if not p.startswith("authSecret=")]
+        if len(stripped) != len(pairs):
+            candidates.append(urlunsplit(parts._replace(query="&".join(stripped))))
+        candidates.append(urlunsplit(parts._replace(query="")))
+    # 去重且保持顺序
+    seen: set[str] = set()
+    unique = []
+    for url in candidates:
+        if url and url not in seen:
+            seen.add(url)
+            unique.append(url)
+    return unique
+
+
+async def _ncm_fetch_to_file(song_url: str, filepath: str) -> tuple[int, str]:
+    """按候选链接依次下载音频，成功返回 (HTTP 状态码, 实际使用的链接)。
+
+    全部失败时状态码为最后一次的 HTTP 状态；若某个链接回 200 但内容不是音频
+    （HTML/XML 错误页），记为 -1 继续降级。
+    """
+    last_status = 0
+    timeout = aiohttp.ClientTimeout(total=180)
+    async with aiohttp.ClientSession(connector=create_tcp_connector(), timeout=timeout) as session:
+        for candidate in _ncm_download_candidates(song_url):
+            async with session.get(candidate, headers=_ncm_cdn_headers()) as resp:
+                if resp.status != 200:
+                    last_status = resp.status
+                    logger.warning(f"[NCM] CDN 返回 {resp.status}，尝试降级链接: {candidate[:120]}")
+                    continue
+                ctype = (resp.headers.get("Content-Type") or "").lower()
+                if "text/html" in ctype or "xml" in ctype:
+                    last_status = -1
+                    logger.warning(f"[NCM] CDN 返回非音频内容({ctype})，尝试降级链接: {candidate[:120]}")
+                    continue
+                with open(filepath, "wb") as f:
+                    async for chunk in resp.content.iter_chunked(65536):
+                        f.write(chunk)
+                return resp.status, candidate
+    return last_status, ""
 
 
 def _ncm_login_required(
@@ -274,18 +334,16 @@ async def ncm_download_tool(context, song_id, quality="320000", filename=None):
             filename += ".mp3"
         filepath = os.path.join(output_dir, filename)
 
-        timeout = aiohttp.ClientTimeout(total=180)
-        async with aiohttp.ClientSession(connector=create_tcp_connector(), timeout=timeout) as session:
-            async with session.get(song_url) as resp:
-                if resp.status != 200:
-                    return ToolResult(
-                        success=False,
-                        content=f"下载失败: HTTP {resp.status}",
-                        error="download_failed",
-                    )
-                with open(filepath, "wb") as f:
-                    async for chunk in resp.content.iter_chunked(65536):
-                        f.write(chunk)
+        candidates = _ncm_download_candidates(song_url)
+        status, used_url = await _ncm_fetch_to_file(song_url, filepath)
+        if status != 200:
+            if status == -1:
+                content = "下载失败: CDN 返回的内容不是音频文件（可能被劫持或需要鉴权）。"
+            else:
+                content = f"下载失败: HTTP {status}（已依次尝试 {len(candidates)} 个候选链接）"
+            return ToolResult(success=False, content=content, error="download_failed")
+        if used_url != song_url:
+            logger.info(f"[NCM] 使用降级链接下载成功: {used_url[:120]}")
     except Exception as e:
         logger.error(f"[NCM] 下载失败: {e}")
         return ToolResult(success=False, content=f"下载失败: {str(e)}", error=str(e))
