@@ -218,7 +218,9 @@ TOOL_SPECS = [
             "可选传入参考图（本地路径或 [img:XXX] 索引），让生成结果参考图中的角色/风格/构图。"
             "生成完后必须用 send_qq_file 工具把图片发出来。"
             "重要：prompt 必须完整详细，包含主体、场景、风格、光影、构图等细节，"
-            "融入 Yuki 的二次元少女特色（白色长发蓝瞳少女，雪花发饰）"
+            "融入 Yuki 的二次元少女特色（白色长发蓝瞳少女，雪花发饰）。"
+            "生成 Yuki 本人的形象/自拍/立绘时，把官方形象参考图 "
+            "output/assets/character/yuki_reference.png 放进 image_paths，保持发型、瞳色、发饰和裙装一致。"
         ),
         parameters={
             "type": "object",
@@ -232,6 +234,7 @@ TOOL_SPECS = [
                         "参考图列表（可选，最多4张）。每项是本地图片路径或 [img:XXX] 索引。"
                         "仅支持 png/jpg/jpeg/webp，单张≤5MB、总计≤15MB；"
                         "本地路径需位于 output/workspace/temp_images 或会话图片目录。"
+                        "Yuki 官方形象参考图固定为 output/assets/character/yuki_reference.png。"
                         "传入后走图像编辑接口，让生成结果参考这些图片。"
                     ),
                 },
