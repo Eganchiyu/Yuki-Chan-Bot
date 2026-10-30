@@ -38,7 +38,7 @@ class EngineDiaryService:
                 top_p=0.8,
                 frequency_penalty=0.1,
                 presence_penalty=0.0,
-                max_tokens=200,
+                max_tokens=2048,
             )
             diary_content = re.sub(r'\s*FINISHED\s*$', '', diary_content, flags=re.IGNORECASE)
             diary_content = f"【日记({datetime.datetime.now().strftime('%Y-%m-%d %H:%M')})】：\n{diary_content}"
