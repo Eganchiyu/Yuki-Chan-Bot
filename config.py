@@ -212,9 +212,9 @@ class ModelConfig:
         comment="图像生成模型",
         section="model"
     )
-    disable_thinking: bool = config_field(
-        True,
-        comment="默认关闭模型的 thinking/reasoning 输出",
+    thinking_effort: str = config_field(
+        "",
+        comment="主模型思考等级（low/medium/high，留空则不传 reasoning_effort）",
         section="model"
     )
     llm_max_retries: int = config_field(
@@ -761,10 +761,9 @@ class Config:
         return self.model.image_gen
 
     @property
-    def DISABLE_THINKING(self) -> bool:
-        """是否关闭模型 thinking/reasoning 输出"""
-        raw_value = getattr(self, "_raw", {}).get("model", {}).get("disable_thinking")
-        return self.model.disable_thinking if raw_value is None else bool(raw_value)
+    def THINKING_EFFORT(self) -> str:
+        """主模型思考等级，空串表示不传 reasoning_effort"""
+        return str(self.model.thinking_effort or "").strip()
 
     @property
     def NAPCAT_WS_URL(self) -> str:

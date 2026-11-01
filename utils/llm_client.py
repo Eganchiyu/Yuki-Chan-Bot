@@ -52,12 +52,6 @@ def _sanitize_payload(
 ) -> Dict[str, Any]:
     """平台参数适配：清理/转换不兼容参数。"""
     model_lower = (model or "").lower()
-    # 仅对 OpenAI 推理模型（o1/o3）添加 reasoning_effort
-    if getattr(cfg, "DISABLE_THINKING", False) and "reasoning_effort" not in payload:
-        if model_lower.startswith("o1") or model_lower.startswith("o3"):
-            payload["reasoning_effort"] = "low"
-        elif _is_gemini_endpoint(model, base_url):
-            payload["reasoning_effort"] = "none"
     # DashScope 视觉模型不支持 response_format
     if model and "vl" in model_lower and "response_format" in payload:
         del payload["response_format"]
@@ -222,6 +216,10 @@ async def _request_with_failover(
     **kwargs,
 ) -> Optional[Dict[str, Any]]:
     """执行一次主备故障转移请求，主备都失败返回 None。"""
+    # 主模型思考等级由配置决定，未配置则不传该参数
+    if cfg.THINKING_EFFORT and "reasoning_effort" not in kwargs:
+        kwargs["reasoning_effort"] = cfg.THINKING_EFFORT
+
     state = _fallback_state
 
     if state["is_degraded"] and (

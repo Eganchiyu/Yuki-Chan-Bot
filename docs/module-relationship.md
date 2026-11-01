@@ -153,7 +153,7 @@
 Config
 ├── robot_name, master_name, max_message_length, debug
 ├── api: APIConfig          (llm_base_url, backup_base_url, image_process_url, keys...)
-├── model: ModelConfig      (llm, backup, vision, disable_thinking)
+├── model: ModelConfig      (llm, backup, vision, thinking_effort)
 ├── connection: ConnectionConfig  (napcat_ws_url, napcat_ws_token, max_retries)
 ├── target: TargetConfig    (qq, masters, groups, whitelist)
 ├── diary: DiaryConfig      (idle_seconds, min_turns, max_length)

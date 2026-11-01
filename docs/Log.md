@@ -172,3 +172,27 @@
 - P1：连续失败进入安全模式（`YUKI_SAFE_MODE=1` 只读启动并通知机主）
 - P1：切换后观察窗口（如 5 分钟内 error 率超阈值自动回滚）
 - P2：审查抽检（人工复核被放行的 patch）、影子只读回放
+
+## 2026-11-01 移除 disable_thinking，视觉关思考写死，主模型思考等级可配
+
+### 背景
+`model.disable_thinking` 只在两处被读：`_sanitize_payload`（仅对 o1/o3 与 Gemini 注入
+`reasoning_effort`）与视觉 `_no_thinking_kwargs`。主对话模型是 `deepseek-flash`，
+两处都不命中，所以这个开关对主对话完全无效；想「开深度思考」把它改 false 也不会
+多发任何参数，反而会让视觉的 `reasoning_effort=none` 一起消失。
+
+### 改动
+- `config.py`：删除 `ModelConfig.disable_thinking` 与 `DISABLE_THINKING` property；
+  新增 `model.thinking_effort`（默认 `""`）与 `THINKING_EFFORT` property。
+- `utils/llm_client.py`：`_sanitize_payload` 删除 `DISABLE_THINKING` 注入分支；
+  `_request_with_failover` 中当 `THINKING_EFFORT` 非空且调用方未指定时注入
+  `reasoning_effort`（主/备线路统一生效）。
+- `modules/vision/processor.py`：`_no_thinking_kwargs()` 不再读配置，DeepSeek 视觉端点
+  一律下发 `reasoning_effort="none"`。
+- `configs/config.yaml`：`disable_thinking: true` → `thinking_effort: ''`（需重启生效）。
+- 测试与文档同步：`tests/test_config.py`、`tests/test_llm_client.py`、
+  `tests/test_vision_placeholder.py`、`docs/module-relationship.md`。
+
+### 状态
+改动仅 py_compile 校验通过。`maid_venv` 缺 `libpython3.11.so.1.0`（系统已无 3.11），
+pytest 无法运行，需机主重建虚拟环境后再跑测试。

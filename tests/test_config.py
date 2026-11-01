@@ -37,7 +37,7 @@ class TestConfigDataclasses:
         assert model.llm == "deepseek-chat"
         assert model.backup == "deepseek-chat"
         assert model.vision == "qwen3-vl-flash"
-        assert model.disable_thinking is True
+        assert model.thinking_effort == ""
 
     def test_connection_config_defaults(self):
         """测试 ConnectionConfig 默认值"""

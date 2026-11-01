@@ -24,42 +24,18 @@ def test_normalize_url():
     print("  [PASS] URL 规范化正确")
 
 
-def test_sanitize_payload_disable_thinking():
-    """测试 DISABLE_THINKING 参数注入（仅对 o1/o3 模型）"""
-    print("\n[测试 2] DISABLE_THINKING 参数注入")
+def test_sanitize_payload_no_thinking_injection():
+    """测试 _sanitize_payload 不再自动注入 reasoning_effort"""
+    print("\n[测试 2] 思考参数不再自动注入")
 
-    original_value = cfg.DISABLE_THINKING
+    payload = {"model": "o1-preview", "messages": []}
+    result = _sanitize_payload("o1-preview", payload)
+    assert "reasoning_effort" not in result
 
-    try:
-        # 模拟 DISABLE_THINKING = True
-        cfg._raw.setdefault("model", {})["disable_thinking"] = True
-        cfg._content_hash = ""  # 强制重新加载
+    payload2 = {"model": "deepseek-chat", "messages": []}
+    assert "reasoning_effort" not in _sanitize_payload("deepseek-chat", payload2)
 
-        # 普通模型不添加 reasoning_effort
-        payload1 = {"model": "deepseek-chat", "messages": []}
-        result1 = _sanitize_payload("deepseek-chat", payload1)
-        assert "reasoning_effort" not in result1
-
-        # o1/o3 模型添加 reasoning_effort
-        payload2 = {"model": "o1-preview", "messages": []}
-        result2 = _sanitize_payload("o1-preview", payload2)
-        assert "reasoning_effort" in result2
-        assert result2["reasoning_effort"] == "low"
-
-        payload3 = {"model": "o3-mini", "messages": []}
-        result3 = _sanitize_payload("o3-mini", payload3)
-        assert "reasoning_effort" in result3
-
-        print("  [PASS] DISABLE_THINKING=True 时仅对 o1/o3 模型注入 reasoning_effort")
-
-        payload4 = {"model": "gemini-3.1-flash-lite", "messages": []}
-        result4 = _sanitize_payload("gemini-3.1-flash-lite", payload4)
-        assert result4.get("reasoning_effort") == "none"
-        print("  [PASS] Gemini 在 DISABLE_THINKING=True 时注入 reasoning_effort=none")
-    finally:
-        # 恢复原始值
-        cfg._raw.setdefault("model", {})["disable_thinking"] = original_value
-        cfg._content_hash = ""
+    print("  [PASS] 思考参数由配置/调用方决定，_sanitize_payload 不注入")
 
 
 def test_sanitize_payload_vl_model():

@@ -101,15 +101,13 @@ class MemeProcessor:
 
     @staticmethod
     def _no_thinking_kwargs() -> dict:
-        """DeepSeek 系推理模型的关思考参数。
+        """DeepSeek 系推理模型的关思考参数（写死，不随全局配置变化）。
 
         描述任务只需十几个字，推理模型不关思考时 max_tokens 会被
         reasoning_content 吃光、content 返回空串（finish_reason=length），
         表现为「识别结果: 」为空。只在 DeepSeek 端点上加，避免其它
         视觉端点因未知参数报 400。
         """
-        if not getattr(cfg, "DISABLE_THINKING", False):
-            return {}
         if "deepseek" not in (cfg.IMAGE_PROCESS_API_URL or "").lower():
             return {}
         return {"reasoning_effort": "none"}

@@ -245,3 +245,15 @@
 - 验证：collections/segments/embeddings 全部对齐（6285+66=6351），FTS 6351，独有 metadata 键计数全 0，文件内 `ymem_*`/`review_status`/`legacy_diary` 字符串 0 命中，integrity ok，API 抽查 diaries/stickers 查询正常；库 63.4 MB→34.0 MB。
 - 文档：`docs/database-profile.md` 全篇重写为清理后状态（含清理记录、回滚命令、孤儿目录 f989647f 说明）。
 - 状态：任务完成。注意容器 `yuki` 于 12:13 以 exit 137 自行退出（早于本次改动），当前未运行，未擅自重启。
+
+## 2026-11-01 修复工具调用「参数截断 → 标记外泄」
+- 事故复现（logs/yuki_20261031_132313.log 02:28）：delegate_to_maid 的 goal 在 1583 字符处被切断，args 非法 JSON（`finish_reason` 实为 length，由 max_tokens=1024 造成）→ 反馈只有「工具参数不是合法 JSON」→ 模型原样重发、再次截断 → 4 轮用尽后走无 tools 的收尾请求 → 模型把调用写成 `<｜｜DSML｜｜ invoke>` 正文，被 `clean_visible_reply` 原样发给用户。
+- 修：`core/toolchain.py` 工具描述追加「单字符串参数 ≤ 500 字」提示、无效 JSON 反馈带原因/重试要求、`finish_reason=length` 明说截断并附 `arguments_tail`；新增 `core/tool_markup.py` 把 DSML / `<tool_call>` / `<function=名>` 文本调用还原成真实 tool_calls（按已注册工具名过滤）并剔除标记；`engine_reply` 无 tool_calls 时先尝试还原再执行，透传 finish_reason，收尾请求加「只输出文字」约束；`reply_format` 兜底清洗标记。
+- 测试：新增 tests/test_tool_markup.py（10 例，含端到端自纠正），更新 test_toolchain 截断用例，全量 **206 passed**。提交 50f558e。
+- 状态：任务完成。注：仓库仍有他人未提交改动（config.py / utils/llm_client.py / modules/vision/processor.py 等），未 stage。
+
+## 2026-11-01 思考开关重构
+- 删除 `model.disable_thinking`，新增 `model.thinking_effort`（low/medium/high，空=不传）。
+- 主/备对话：`_request_with_failover` 按 `THINKING_EFFORT` 注入 `reasoning_effort`。
+- 视觉：DeepSeek 端点写死 `reasoning_effort="none"`，不再依赖配置。
+- 待办：`maid_venv` 缺 libpython3.11，测试未跑，需重建环境。

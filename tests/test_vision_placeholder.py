@@ -201,21 +201,13 @@ def test_description_helpers():
 
 
 def test_no_thinking_kwargs_only_for_deepseek():
-    """只对 DeepSeek 端点下发关思考参数，避免其它视觉端点 400。"""
+    """视觉关思考写死：DeepSeek 端点上必带 reasoning_effort=none，其它端点不带。"""
     original_url = cfg.api.image_process_url
-    raw = getattr(cfg, "_raw", None)
-    original_raw_flag = None
-    if isinstance(raw, dict) and isinstance(raw.get("model"), dict):
-        original_raw_flag = raw["model"].get("disable_thinking")
-        raw["model"]["disable_thinking"] = True
     try:
         cfg.api.image_process_url = "https://api.deepseek.com/v1"
-        if cfg.DISABLE_THINKING:
-            assert MemeProcessor._no_thinking_kwargs() == {"reasoning_effort": "none"}
+        assert MemeProcessor._no_thinking_kwargs() == {"reasoning_effort": "none"}
 
         cfg.api.image_process_url = "https://dashscope.aliyuncs.com/compatible-mode/v1"
         assert MemeProcessor._no_thinking_kwargs() == {}
     finally:
         cfg.api.image_process_url = original_url
-        if isinstance(raw, dict) and isinstance(raw.get("model"), dict) and original_raw_flag is not None:
-            raw["model"]["disable_thinking"] = original_raw_flag
