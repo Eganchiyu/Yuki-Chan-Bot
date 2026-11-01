@@ -6,6 +6,7 @@ from .tools_diary import search_diary_tool
 from .tools_maid import delegate_to_maid_tool
 from .tools_media import download_file_tool, generate_image_tool
 from .tools_message import poke_tool, send_master_private_tool, send_qq_file_tool
+from .tools_notebook import update_notebook_tool
 from .tools_rich import parse_rich_message_tool
 from .tools_snapshot import capture_group_snapshot_tool, search_group_snapshots_tool
 
@@ -43,6 +44,23 @@ TOOL_SPECS = [
             },
         },
         handler=search_diary_tool,
+    ),
+    ToolSpec(
+        name="update_notebook",
+        description=(
+            "用来更新小本本。小本本可以用来记录自己的心愿、信念、不想忘记的东西，"
+            "或者一些长期目标等重要事情，不要写零碎的事情。"
+            "每次调用会覆盖小本本原有内容（最多1024字），要保留的内容请一起写进去。"
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "content": {"type": "string", "description": "小本本的完整内容（最多1024字）"},
+            },
+            "required": ["content"],
+        },
+        handler=update_notebook_tool,
+        persist_result=False,
     ),
     ToolSpec(
         name="send_master_private",

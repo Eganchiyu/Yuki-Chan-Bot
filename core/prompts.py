@@ -2,6 +2,7 @@ import datetime
 import re
 
 from config import cfg
+from core.notebook import notebook_store
 from utils.logger import get_logger
 logger = get_logger("prompts")
 
@@ -189,6 +190,19 @@ async def build_chat_context(yuki, chat_id: str, combined_text: str, history_dic
     for i, diary_obj in enumerate(relevant_diaries[:3], 1):
         # 打印加权分和匹配到的关键词信息
         logger.debug(f"[RAG-Debug] 回忆 {i} | 得分: {diary_obj['score']:.2f} | 详情: {diary_obj['debug']}")
+
+    # 2.5 插入小本本：日记回忆之后、群聊上下文之前，作为潜意识想法
+    notebook_content = notebook_store.load()
+    if notebook_content:
+        combined_API_message.append({
+            "role": "system",
+            "content": (
+                "【小本本】下面是你自己写下的小本本，只有你自己能看到，别人都看不到。"
+                "它是你的潜意识想法，不是对话素材：不要在回复中提到小本本、不要复述或引用里面的原话，"
+                "也不要让它变成聊天话题，只在心里默默作为判断和行动的底色。\n"
+                f"{notebook_content}"
+            ),
+        })
 
     # 3. 补充工具链约束：工具调用期间不要把过程性思考混入最终回复
     combined_API_message.append({"role": "system", "content": "【重要约束】如果需要查询日记、网络搜索、设置定时任务、发送本地文件或委托小女仆，请优先调用可用工具；不要先输出闲聊、思考过程、占位回复或半成品答案。工具结果返回后，再一次性输出最终要发送的内容。最终回复中不要包含内心思考、推理过程、草稿或多段候选内容。"})

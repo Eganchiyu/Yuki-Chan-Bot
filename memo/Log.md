@@ -279,3 +279,11 @@
 - 卡点：容器内缺 `qrcode`（已 `pip install --user qrcode` 落到 `data/home/.local`，并加进 `pyproject.toml`）；二维码 3 分钟有效，对话往返常超时，`code 803` 被消费成 `800`，Cookie 没落盘。
 - 依机主要求停止并归档：技能移入 `_archive/skills/`，三个扫码辅助脚本移入 `_archive/scripts/ncm_login/`，`_archive/README.md` 补索引与恢复步骤。工具侧归档见提交 66c46cc。
 - 状态：ncm 在 Yuki 与女仆两侧均未启用；`data/home/.cache/ncm_cookie.txt` 不存在。
+
+## 2026-11-01 新增「小本本」工具与提示词注入
+- 存储：`core/notebook.py` 的 `NotebookStore`（`data/notebook.json`，全局一份，上限 `NOTEBOOK_MAX_CHARS=1024`，超长截断）。
+- 工具：`core/tools/tools_notebook.py::update_notebook_tool`，注册为 `update_notebook`（覆盖写，参数 `content`）；ToolSpec 新增 `persist_result: bool = True`，该工具为 False。
+- 上下文隔离：`core/engine/engine_reply.py` 的工具结果回写历史前查 spec，`persist_result=False` 时跳过（仅本轮 messages 内可见），避免污染长期上下文；工具自身只回复「已更新小本本」。
+- 注入：`core/prompts.py::build_chat_context` 在【回忆】之后、最近对话之前插入 `【小本本】…`，并负面约束不提及/复述小本本，作为潜意识底色；小本本为空时不注入。
+- 验证：容器 yuki 内导入 OK；`tests/test_system_state.py` 4 项通过；临时目录实测存取与超长截断、注入顺序正确。
+- 状态：代码已就绪，需重启 yuki 容器后生效。

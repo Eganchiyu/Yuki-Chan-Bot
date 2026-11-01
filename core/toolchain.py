@@ -88,6 +88,8 @@ class ToolSpec:
     description: str
     parameters: dict
     handler: Callable[..., Awaitable[ToolResult]]
+    # False 表示工具结果不回写会话历史（仅本轮对话内可见），避免污染长期上下文
+    persist_result: bool = True
 
     def to_schema(self) -> dict:
         return {
@@ -125,6 +127,10 @@ class FunctionRegistry:
         """获取指定 function 的执行函数。"""
         spec = self._tools.get(name)
         return spec.handler if spec else None
+
+    def get_spec(self, name: str) -> ToolSpec | None:
+        """获取指定 function 的声明。"""
+        return self._tools.get(name)
 
     def list_functions(self) -> list:
         """列出所有已注册的 function 名称。"""

@@ -328,6 +328,10 @@ class EngineReplyService:
                     finish_reason=response_message.get("_finish_reason") or "",
                 )
                 for tool_result_message in tool_result_messages:
+                    spec = active_registry.get_spec(tool_result_message.get("name"))
+                    if spec is not None and not spec.persist_result:
+                        # 结果只在本轮对话内可见，不回写历史，避免污染长期上下文
+                        continue
                     self.history.append_session_message(
                         chat_id,
                         "tool",
