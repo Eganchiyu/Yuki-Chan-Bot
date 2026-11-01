@@ -12,6 +12,7 @@ from core.reply_format import (
     strip_meme_tags,
 )
 from core.toolchain import ToolCallManager, ToolContext, ToolRuntime
+from core.tool_markup import extract_text_tool_calls, strip_tool_call_markup
 from modules.debug.context_snapshot import context_snapshot_store
 from modules.vision.prefetch import resolve_image
 from utils.llm_client import llm_chat, llm_chat_raw
@@ -237,6 +238,11 @@ class EngineReplyService:
             else self.tool_registry
         )
         active_tool_manager = ToolCallManager(active_registry, max_rounds=self.tool_manager.max_rounds)
+        valid_tool_names = (
+            set(active_registry.list_functions())
+            if hasattr(active_registry, "list_functions")
+            else set()
+        ) or None
         self.tool_manager.start_session(str(chat_id), combined_text)
 
         async def build_backup_messages():
@@ -266,6 +272,20 @@ class EngineReplyService:
                     fallback_messages_factory=fallback_factory,
                 )
                 tool_calls = response_message.get("tool_calls") or []
+                if not tool_calls:
+                    # 模型偶尔把工具调用写成正文文本（DSML/<tool_call> 标记）：
+                    # 还原成真实调用继续执行，避免标记外泄且任务落空。
+                    text_calls, cleaned_content = extract_text_tool_calls(
+                        response_message.get("content"), valid_tool_names
+                    )
+                    if text_calls:
+                        logger.warning(
+                            f"[ToolChain] {chat_id} 工具调用被写成正文文本，已解析为真实调用: "
+                            f"{[c['function']['name'] for c in text_calls]}"
+                        )
+                        response_message["content"] = cleaned_content
+                        response_message["tool_calls"] = text_calls
+                        tool_calls = text_calls
                 if tool_calls:
                     tools_executed = True
                     tool_names = [
@@ -297,11 +317,16 @@ class EngineReplyService:
                         return "Filtered", "Filtered"
                     # 写回历史保留归一化标记；可见文本为空且已执行过工具时用工作中占位
                     return self.finalize_answer(
-                        response_message.get("content"), tools_executed
+                        strip_tool_call_markup(response_message.get("content")),
+                        tools_executed,
                     )
 
                 tool_messages.append(response_message)
-                tool_result_messages = await active_tool_manager.execute_tool_calls(tool_calls, context)
+                tool_result_messages = await active_tool_manager.execute_tool_calls(
+                    tool_calls,
+                    context,
+                    finish_reason=response_message.get("_finish_reason") or "",
+                )
                 for tool_result_message in tool_result_messages:
                     self.history.append_session_message(
                         chat_id,
@@ -319,8 +344,15 @@ class EngineReplyService:
                 )
                 await self.merge_pending_messages(chat_id, tool_messages, image_budget=remaining_budget)
 
+            logger.warning(f"[ToolChain] {chat_id} 工具调用轮次用尽，转为纯文本收尾")
+            # 收尾请求不再带 tools，必须明确要求只输出文字，否则模型会把调用写成标记
+            closing_messages = tool_messages + [{
+                "role": "user",
+                "content": "（本轮工具调用次数已用尽，请直接用文字回复用户，不要再输出任何工具调用、"
+                           "参数 JSON 或类似标记。）",
+            }]
             fallback_raw = await llm_chat(
-                messages=tool_messages,
+                messages=closing_messages,
                 model=cfg.LLM_MODEL,
                 temperature=0.8,
                 top_p=0.8,

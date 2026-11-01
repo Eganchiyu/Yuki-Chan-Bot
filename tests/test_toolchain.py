@@ -67,7 +67,9 @@ def test_tool_spec_to_schema():
     schema = spec.to_schema()
     assert schema["type"] == "function"
     assert schema["function"]["name"] == "sample"
-    assert schema["function"]["description"] == "测试工具"
+    assert schema["function"]["description"].startswith("测试工具")
+    # 参数简练提示必须下发给模型，否则长参数会被输出上限截断
+    assert "500 字以内" in schema["function"]["description"]
 
 
 def test_registry_registers_tool_specs():
@@ -115,8 +117,28 @@ def test_execute_tool_call_invalid_json():
         )
         payload = json.loads(message["content"])
         assert payload["success"] is False
-        assert payload["content"] == "工具参数不是合法 JSON"
+        assert payload["content"].startswith("工具参数不是合法 JSON")
+        assert "重新调用" in payload["content"], "必须提示模型如何自纠"
         assert payload["error"] == "invalid_json"
+
+    asyncio.run(run())
+
+
+def test_execute_tool_call_invalid_json_reports_truncation():
+    """finish_reason=length 时要说清是「被截断」，并让模型压缩参数重试。"""
+    async def run():
+        manager = ToolCallManager(build_registry())
+        message = await manager.execute_tool_call(
+            {"id": "call_long", "function": {"name": "sample", "arguments": '{"text": "很长的任务'}},
+            build_context(),
+            finish_reason="length",
+        )
+        payload = json.loads(message["content"])
+        assert payload["error"] == "invalid_json"
+        assert "截断" in payload["content"]
+        assert "500 字以内" in payload["content"]
+        assert payload["data"]["finish_reason"] == "length"
+        assert payload["data"]["arguments_tail"].endswith("很长的任务")
 
     asyncio.run(run())
 

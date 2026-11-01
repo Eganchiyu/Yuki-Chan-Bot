@@ -13,6 +13,8 @@
 """
 import re
 
+from core.tool_markup import strip_tool_call_markup
+
 # ── 布局标记（layout）─────────────────────────────────────────
 # 兼容 []、【】、［］、〈〉、<>、＜＞、｛｝、{}、（） 等中英日全半角括号组合。
 _LAYOUT_TAG_RE = re.compile(
@@ -87,7 +89,9 @@ def normalize_reply_markup(text: str) -> str:
     """
     if not text:
         return text or ""
-    normalized = normalize_layout_tags(text)
+    # 文本形式的工具调用标记不属于回复内容，写回历史前直接丢弃
+    normalized = strip_tool_call_markup(text)
+    normalized = normalize_layout_tags(normalized)
     normalized = normalize_meme_tags(normalized)
     return _FINISHED_RE.sub("", normalized)
 
@@ -100,7 +104,9 @@ def clean_visible_reply(content: str) -> str:
     """
     if not content:
         return ""
-    cleaned = normalize_meme_tags(content)
+    # 兜底：即使文本形式的工具调用没被解析执行，也不能原样发给用户
+    cleaned = strip_tool_call_markup(content)
+    cleaned = normalize_meme_tags(cleaned)
     cleaned = strip_layout_markup(cleaned)
     cleaned = _FINISHED_RE.sub("", cleaned)
     return cleaned.strip()

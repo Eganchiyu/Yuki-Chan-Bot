@@ -268,7 +268,7 @@ def test_chat_with_tools_returns_working_notice_when_cleaned_empty():
         def __init__(self, *args, **kwargs):
             self.max_rounds = 3
 
-        async def execute_tool_calls(self, tool_calls, context):
+        async def execute_tool_calls(self, tool_calls, context, finish_reason=""):
             return [{"role": "tool", "tool_call_id": "c1", "name": "poke", "content": "ok"}]
 
         def finish_session(self, *args, **kwargs):

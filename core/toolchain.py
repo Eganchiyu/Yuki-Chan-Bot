@@ -10,6 +10,12 @@ from utils.logger import get_logger
 
 logger = get_logger("toolchain")
 
+# 追加到所有工具描述末尾的参数约束：工具轮次输出上限有限，参数写太长会被截断
+ARGUMENT_BREVITY_HINT = (
+    "（调用时 arguments 务必简练：单个字符串参数控制在 500 字以内，"
+    "只写关键指令，不要复制整段聊天记录或历史内容。）"
+)
+
 
 @dataclass
 class ToolResult:
@@ -88,7 +94,7 @@ class ToolSpec:
             "type": "function",
             "function": {
                 "name": self.name,
-                "description": self.description,
+                "description": self.description + ARGUMENT_BREVITY_HINT,
                 "parameters": self.parameters,
             },
         }
@@ -178,8 +184,12 @@ class ToolCallManager:
     def _delay_seconds() -> float:
         return max(0.0, float(cfg.timing.tool_call_delay_seconds))
 
-    async def execute_tool_call(self, tool_call: dict, context: ToolContext) -> dict:
-        """执行单个 tool call，并返回 OpenAI tool 消息。"""
+    async def execute_tool_call(self, tool_call: dict, context: ToolContext, finish_reason: str = "") -> dict:
+        """执行单个 tool call，并返回 OpenAI tool 消息。
+
+        finish_reason 来自本轮模型响应，用于区分「参数写错」和「参数被输出上限截断」，
+        后者要提示模型压缩参数后重试，否则它会重复生成同样的超长参数。
+        """
         function_info = tool_call.get("function", {})
         name = function_info.get("name", "")
         arguments_text = function_info.get("arguments") or "{}"
@@ -208,8 +218,23 @@ class ToolCallManager:
                     raise TypeError("工具必须返回 ToolResult")
                 result.name = result.name or name
             except json.JSONDecodeError as e:
-                logger.warning(f"[ToolCall] {name} 参数 JSON 无效: {e}")
-                result = ToolResult.failure("工具参数不是合法 JSON", "invalid_json", name=name)
+                logger.warning(f"[ToolCall] {name} 参数 JSON 无效: {e} (finish_reason={finish_reason})")
+                if finish_reason == "length":
+                    feedback = (
+                        f"工具参数不是合法 JSON：arguments 在输出上限处被截断（{e}）。"
+                        f"请重新调用 {name}，把参数压缩到 500 字以内，只保留最关键的指令。"
+                    )
+                else:
+                    feedback = (
+                        f"工具参数不是合法 JSON（{e}）。请重新调用 {name}，"
+                        "arguments 必须是完整合法的 JSON 对象，字符串里的引号、换行要转义。"
+                    )
+                result = ToolResult.failure(
+                    feedback,
+                    "invalid_json",
+                    data={"finish_reason": finish_reason, "arguments_tail": arguments_text[-160:]},
+                    name=name,
+                )
             except TypeError as e:
                 logger.warning(f"[ToolCall] {name} 参数不符合接口要求: {e}")
                 result = ToolResult.failure("工具参数不符合接口要求", "invalid_arguments", name=name)
@@ -229,9 +254,9 @@ class ToolCallManager:
             "content": result.to_message_content(),
         }
 
-    async def execute_tool_calls(self, tool_calls: list, context: ToolContext) -> list:
+    async def execute_tool_calls(self, tool_calls: list, context: ToolContext, finish_reason: str = "") -> list:
         """按顺序执行一轮工具调用，避免共享状态并发写入。"""
         messages = []
         for tool_call in tool_calls:
-            messages.append(await self.execute_tool_call(tool_call, context))
+            messages.append(await self.execute_tool_call(tool_call, context, finish_reason))
         return messages

@@ -279,9 +279,11 @@ ToolSpec(
 | 场景 | 返回内容 |
 |------|----------|
 | 工具未注册 | `success=False`，`error="handler_not_found"` |
-| 参数不是合法 JSON | `success=False`，`content="工具参数不是合法 JSON"` |
+| 参数不是合法 JSON | `success=False`，`content` 说明解析失败原因并要求「重新调用、arguments 必须是完整合法 JSON」；若本轮 `finish_reason=length`（参数被输出上限截断）则改为提示「参数被截断，请压缩到 500 字以内重试」，`data` 附 `finish_reason` 与 `arguments_tail` |
 | 参数不符合 handler 签名 | `success=False`，`content="工具参数不符合接口要求"` |
 | handler 执行异常 | `success=False`，`content="工具执行异常"` |
+
+失败反馈必须让模型能自纠：只回一句「工具参数不是合法 JSON」会让它原样重发同样的超长参数，连续失败直到轮次耗尽。因此工具描述末尾统一追加参数简练提示（单个字符串参数 ≤ 500 字），且被截断时明确告知原因。
 
 handler 内部应优先返回结构化 `ToolResult`，不要直接抛出可预期的业务错误。例如缺少参数、能力边界拒绝、目标资源不存在等，应返回 `success=False` 和稳定的 `error` 错误码。
 
@@ -296,6 +298,7 @@ handler 内部应优先返回结构化 `ToolResult`，不要直接抛出可预�
 5. **schema 与 handler 参数保持一致**：schema 的 `required` 和 handler 必填参数不一致会导致 `TypeError`。
 6. **工具输出应简洁**：`content` 会回填给模型，避免输出过长或包含敏感信息。
 7. **配置等待时间**：如需调整工具调用前等待，可修改 `timing.tool_call_delay_seconds` 对应配置。
+8. **文本形式的工具调用**：模型偶尔把调用写进正文（`<｜｜DSML｜｜ invoke ...>`、`<tool_call>{...}</tool_call>`、`<function=名>...</function>`）。`core/tool_markup.py` 会把它还原成标准 `tool_calls` 继续执行（`extract_text_tool_calls`），无法执行时由 `clean_visible_reply()` 兜底剔除，避免标记外泄给用户。
 
 ---
 
@@ -326,8 +329,10 @@ Function Call 工具链是新的标准调用入口，但这些标签逻辑仍在
 ## 十一、关联文件
 
 - `core/toolchain.py`：工具链基础设施。
+- `core/tool_markup.py`：文本形式工具调用的解析与清洗。
 - `core/tools/`：标准工具集合（按职责拆分的子服务与 `TOOL_SPECS` 装配）。
 - `core/engine.py`：工具链接入与多轮对话流程。
 - `utils/llm_client.py`：LLM 原始 message 返回接口。
 - `config.py`：工具调用等待时间配置。
 - `tests/test_toolchain.py`：工具链最小 smoke test。
+- `tests/test_tool_markup.py`：文本工具调用解析/清洗与工具链自纠正测试。
