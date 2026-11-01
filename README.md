@@ -457,7 +457,7 @@ YukiV6/
 │   ├── test_vision_prefetch.py      # 图片预取测试
 │   ├── test_vision_placeholder.py   # 视觉占位符测试
 │   ├── test_logger.py               # 日志分级测试
-│   └── run_tests.py                 # 测试入口
+│   └── conftest.py                  # pytest 公共配置（项目根入 sys.path）
 │
 ├── skills/                          # 小女仆固化技能存储
 ├── docs/                            # 项目文档
@@ -616,15 +616,11 @@ bash deploy/verify.sh
 # 激活虚拟环境
 .\.venv\Scripts\activate   # Linux/macOS: source .venv/bin/activate
 
-# 运行全部测试
-pytest tests/
-# 或
-python tests/run_tests.py
+# 运行全部测试（唯一入口是 pytest）
+python -m pytest
 
 # 运行指定测试文件
-pytest tests/test_maid.py
-pytest tests/test_toolchain.py
-pytest tests/test_engine.py
+python -m pytest tests/test_toolchain.py
 ```
 
 ---

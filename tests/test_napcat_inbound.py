@@ -3,7 +3,6 @@
 listen_main 现在只依赖 (gateway, pipeline)，所以这里用两个轻量替身即可，
 无需真实连接、也无需改模块全局。
 """
-from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 from config import cfg

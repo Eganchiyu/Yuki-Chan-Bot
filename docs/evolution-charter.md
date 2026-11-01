@@ -58,7 +58,7 @@
 四级门，任一级失败都**不得请求切换**，直接带报错重试：
 
 1. 静态：`python -m compileall` + 关键模块 import
-2. 测试：`tests/run_tests.py`
+2. 测试：`python -m pytest`（全部离线用例必须通过）
 3. 试启动：`YUKI_DRY_RUN=1` 初始化到完成，不接管 NapCat
 4. 线上：切换后健康检查 + 观察窗口
 

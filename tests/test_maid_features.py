@@ -1,6 +1,6 @@
-"""小女仆本轮升级的功能测试：读文件防爆、预算、快照、授权、看图。
+"""小女仆功能测试：读文件防爆、预算、快照、授权、看图。
 
-runner 只收集模块级 test_* 函数，async def 会被自动 asyncio.run。
+所有落盘路径都重定向到临时目录，代码目录只读（生产容器 :ro 挂载）也能跑。
 """
 import asyncio
 import json
@@ -16,6 +16,10 @@ def _tmp_paths():
     index_file = os.path.join(root, "task_index.jsonl")
     maid_memory.TASK_STATE_DIR = state_dir
     maid_memory.TASK_INDEX_FILE = index_file
+    # 任务追踪日志默认写仓库 logs/，容器内代码只读，这里改到临时目录
+    logs_dir = os.path.join(root, "logs")
+    os.makedirs(logs_dir, exist_ok=True)
+    maid_loop.LOGS_DIR = logs_dir
     return state_dir, index_file
 
 
@@ -64,6 +68,8 @@ def test_read_file_rejects_directory_and_binary():
 async def test_wall_clock_budget_stops_task():
     saved_budget = maid_common.MAID_MAX_WALL_SECONDS
     saved_call = maid_loop.call_cloud_maid_robust
+    saved_logs = maid_loop.LOGS_DIR
+    _tmp_paths()
     calls = {"n": 0}
 
     async def fake(messages):
@@ -78,6 +84,7 @@ async def test_wall_clock_budget_stops_task():
     finally:
         maid_common.MAID_MAX_WALL_SECONDS = saved_budget
         maid_loop.call_cloud_maid_robust = saved_call
+        maid_loop.LOGS_DIR = saved_logs
 
     assert result["status"] == "timeout"
     assert calls["n"] <= 2, f"墙钟超时后仍调用了 {calls['n']} 次 LLM"
@@ -86,6 +93,7 @@ async def test_wall_clock_budget_stops_task():
 
 async def test_parse_error_does_not_consume_rounds():
     saved_call = maid_loop.call_cloud_maid_robust
+    _tmp_paths()
     replies = iter(["不是JSON", "还不是JSON"] + ['{"thought":"done","tool":"finish","args":{"reason":"ok"}}'])
 
     async def fake(messages):
@@ -142,7 +150,7 @@ async def test_finish_deletes_snapshot_and_writes_index():
         maid_loop.call_cloud_maid_robust = fake
         result = await maid_loop.maid_evolution_loop("结束清理测试", chat_id="42")
         assert result["status"] == "finished"
-        assert result["rounds"] == 1 and result["trace"].startswith("logs/")
+        assert result["rounds"] == 1 and os.path.basename(result["trace"]).startswith("trace_")
         assert os.listdir(state_dir) == [] if os.path.isdir(state_dir) else True
         with open(index_file, encoding="utf-8") as f:
             assert json.loads(f.readline())["status"] == "finished"

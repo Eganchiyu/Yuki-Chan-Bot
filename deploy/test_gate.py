@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
-"""测试门：与基线对比，只对「本次改动新增的失败」报警。
+"""测试门：用 pytest 跑 tests/ 离线用例，与基线对比，只对「本次改动新增的失败」报警。
 
-为什么需要基线：项目里有 20+ 个依赖环境/网络的既有失败（缺 NapCat、缺模型、
-Windows 专用路径等）。如果门要求全绿，自进化会被永久卡死；如果完全不看，
-回归又会漏过去。所以只比较差集。
+离线套件正常情况下应当全绿（基线为空）；基线机制保留给个别环境依赖用例，
+避免它们把自进化永久卡死。
 
 用法：
     python deploy/test_gate.py                    # 对比基线，有新增失败则退出 1
@@ -16,22 +15,29 @@ import subprocess
 import sys
 
 ROOT = os.environ.get("YUKI_ROOT") or os.getcwd()
-TESTS = os.path.join(ROOT, "tests")
 BASELINE = os.environ.get("YUKI_TEST_BASELINE", os.path.join(ROOT, "deploy", "test_baseline.json"))
 
 
 def run_tests():
-    proc = subprocess.run(
-        [sys.executable, "run_tests.py"],
-        cwd=TESTS, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=900,
-    )
+    cmd = [sys.executable, "-m", "pytest", "-q", "--tb=no", "-p", "no:cacheprovider"]
+    try:
+        proc = subprocess.run(
+            cmd, cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=900,
+        )
+    except FileNotFoundError as e:
+        return [], "", f"无法执行 pytest: {e}"
     out = proc.stdout or ""
+    if "No module named pytest" in out:
+        return [], "", "环境缺少 pytest：请 pip install pytest pytest-asyncio（镜像见 deploy/Dockerfile）"
     fails = sorted(
         line.split(" ", 1)[1].strip()
         for line in out.splitlines()
-        if line.startswith("FAIL ") and "::" in line
+        if line.startswith("FAILED ") and "::" in line
     )
-    summary = next((l for l in out.splitlines() if l.startswith("=== passed=")), "")
+    summary = next(
+        (l.strip() for l in reversed(out.splitlines()) if " passed" in l or " failed" in l or " error" in l),
+        "",
+    )
     return fails, summary, out
 
 

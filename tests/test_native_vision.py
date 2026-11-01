@@ -2,15 +2,10 @@
 """原生视觉输入回归测试：普通图片进模型、表情包仍转写、备用线路按需降级。"""
 import asyncio
 import io
-import os
 import shutil
-import sys
 
 from PIL import Image
 
-project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-if project_root not in sys.path:
-    sys.path.append(project_root)
 
 from config import cfg
 from core.engine.engine_reply import EngineReplyService
@@ -95,10 +90,9 @@ def _build_reply_service(image_store, processor):
     )
 
 
-def test_native_switch_keeps_meme_transcribed_and_plain_image_native():
+def test_native_switch_keeps_meme_transcribed_and_plain_image_native(tmp_path):
     """开关开启时，普通图片登记为附件，表情包仍走转写。"""
-    tmp_dir = "data/_test_native_vision"
-    shutil.rmtree(tmp_dir, ignore_errors=True)
+    tmp_dir = str(tmp_path / "test_native_vision")
     store = ImageStore(store_dir=tmp_dir)
     processor = _FakeMemeProcessor(store)
     pipeline = _build_pipeline(store, processor, tmp_dir)
@@ -125,10 +119,9 @@ def test_native_switch_keeps_meme_transcribed_and_plain_image_native():
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
-def test_native_switch_off_falls_back_to_transcription():
+def test_native_switch_off_falls_back_to_transcription(tmp_path):
     """开关关闭时，普通图片与表情包都沿用外挂视觉转写。"""
-    tmp_dir = "data/_test_native_vision_off"
-    shutil.rmtree(tmp_dir, ignore_errors=True)
+    tmp_dir = str(tmp_path / "test_native_vision_off")
     store = ImageStore(store_dir=tmp_dir)
     processor = _FakeMemeProcessor(store)
     pipeline = _build_pipeline(store, processor, tmp_dir)
@@ -154,10 +147,9 @@ def test_native_switch_off_falls_back_to_transcription():
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
-def test_prepare_model_messages_renders_image_blocks_without_leaking_meta():
+def test_prepare_model_messages_renders_image_blocks_without_leaking_meta(tmp_path):
     """原生模式下渲染 imageUrl 图块，且不把附件元数据泄漏给模型。"""
-    tmp_dir = "data/_test_native_vision_render"
-    shutil.rmtree(tmp_dir, ignore_errors=True)
+    tmp_dir = str(tmp_path / "test_native_vision_render")
     store = ImageStore(store_dir=tmp_dir)
     processor = MemeProcessor(image_store=store)
 
@@ -189,10 +181,9 @@ def test_prepare_model_messages_renders_image_blocks_without_leaking_meta():
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
-def test_prepare_model_messages_respects_turn_and_count_limits():
+def test_prepare_model_messages_respects_turn_and_count_limits(tmp_path):
     """超过保留轮数或张数上限的图片不再作为图块输入。"""
-    tmp_dir = "data/_test_native_vision_limit"
-    shutil.rmtree(tmp_dir, ignore_errors=True)
+    tmp_dir = str(tmp_path / "test_native_vision_limit")
     store = ImageStore(store_dir=tmp_dir)
     processor = MemeProcessor(image_store=store)
 
@@ -226,10 +217,9 @@ def test_prepare_model_messages_respects_turn_and_count_limits():
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
-def test_attachment_identity_blocks_index_reuse():
+def test_attachment_identity_blocks_index_reuse(tmp_path):
     """短索引被复用后，旧附件引用不应读到新图。"""
-    tmp_dir = "data/_test_native_vision_identity"
-    shutil.rmtree(tmp_dir, ignore_errors=True)
+    tmp_dir = str(tmp_path / "test_native_vision_identity")
     store = ImageStore(store_dir=tmp_dir)
     try:
         first_idx = store.register(_png_bytes(), ext=".png")

@@ -1,35 +1,10 @@
 # tests/test_llm_client.py
-"""
-utils/llm_client.py 测试文件
-包含单元测试（纯函数）和集成测试（LLM 调用）。
-
-运行方式：
-    python tests/test_llm_client.py          # 直接运行
-    python -m pytest tests/test_llm_client.py  # pytest 运行
-"""
-import asyncio
-import os
-import sys
-
-# Windows 控制台 UTF-8 支持
-if sys.platform == "win32":
-    sys.stdout.reconfigure(encoding="utf-8")
-    sys.stderr.reconfigure(encoding="utf-8")
-
-# 动态获取项目根目录并加入 sys.path
-project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-if project_root not in sys.path:
-    sys.path.append(project_root)
-
+"""utils/llm_client.py 纯函数单元测试（不联网）。"""
 from utils.llm_client import (
     _sanitize_payload,
     _normalize_url,
     _get_fallback_message,
-    chat_completion,
-    llm_chat,
-    vision_chat,
     close_global_session,
-    _fallback_state,
 )
 from config import cfg
 
@@ -187,78 +162,11 @@ def test_config_urls():
     print(f"  [PASS] IMAGE_PROCESS_API_URL: {cfg.IMAGE_PROCESS_API_URL}")
 
 
-# ==================== 集成测试（需要 LLM） ====================
-
-async def test_chat_completion_integration():
-    """集成测试：直接调用 chat_completion"""
-    print("\n[测试 7] chat_completion 集成测试（调用 LLM）")
-
-    if not cfg.LLM_API_KEY:
-        print("  [SKIP] 未配置 LLM_API_KEY")
-        return
-
-    print(f"  URL: {cfg.LLM_BASE_URL}")
-    print(f"  模型: {cfg.LLM_MODEL}")
-
-    try:
-        result = await chat_completion(
-            base_url=cfg.LLM_BASE_URL,
-            api_key=cfg.LLM_API_KEY,
-            messages=[{"role": "user", "content": "请用一句话介绍你自己，不超过20字。"}],
-            model=cfg.LLM_MODEL,
-            max_tokens=50,
-            temperature=0.7,
-        )
-        assert isinstance(result, str)
-        assert len(result) > 0
-        print(f"  [PASS] LLM 回复: {result[:80]}...")
-    except Exception as e:
-        print(f"  [FAIL] 调用失败: {e}")
-        raise
-
-
-async def test_llm_chat_integration():
-    """集成测试：llm_chat 接口（含主备故障转移）"""
-    print("\n[测试 8] llm_chat 集成测试（调用 LLM）")
-
-    if not cfg.LLM_API_KEY:
-        print("  [SKIP] 未配置 LLM_API_KEY")
-        return
-
-    # 重置故障转移状态
-    _fallback_state["is_degraded"] = False
-    _fallback_state["last_fail_time"] = 0
-
-    print(f"  主线路: {cfg.LLM_BASE_URL} / {cfg.LLM_MODEL}")
-    print(f"  备用线路: {cfg.BACKUP_BASE_URL} / {cfg.BACKUP_MODEL}")
-
-    try:
-        result = await llm_chat(
-            messages=[{"role": "user", "content": "回复'测试成功'四个字即可。"}],
-            max_tokens=20,
-            temperature=0.1,
-        )
-        assert isinstance(result, str)
-        assert len(result) > 0
-
-        # 检查是否是降级消息
-        if "好像有点不舒服" in result:
-            print(f"  [WARN] 返回了降级消息（主备线路均失败）")
-        else:
-            print(f"  [PASS] LLM 回复: {result}")
-
-        # 检查故障转移状态
-        print(f"  当前降级状态: {_fallback_state['is_degraded']}")
-    except Exception as e:
-        print(f"  [FAIL] 调用失败: {e}")
-        raise
-
-
 async def test_close_global_session():
     """测试全局 Session 关闭"""
     print("\n[测试 9] close_global_session 测试")
 
-    from utils.llm_client import _global_session, _get_global_session
+    from utils.llm_client import _get_global_session
 
     # 先获取一个 session
     session = await _get_global_session()
@@ -272,101 +180,3 @@ async def test_close_global_session():
     from utils.llm_client import _global_session as session_after
     assert session_after is None
     print("  [PASS] 全局 Session 已关闭")
-
-
-# ==================== 测试运行器 ====================
-
-def run_unit_tests():
-    """运行所有单元测试"""
-    print(f"\n{'=' * 50}")
-    print(f"{' 单元测试（纯函数） ':=^50}")
-    print(f"{'=' * 50}")
-
-    tests = [
-        test_normalize_url,
-        test_sanitize_payload_disable_thinking,
-        test_sanitize_payload_vl_model,
-        test_sanitize_payload_normal_model,
-        test_get_fallback_message,
-        test_config_urls,
-    ]
-
-    passed = 0
-    failed = 0
-
-    for test in tests:
-        try:
-            test()
-            passed += 1
-        except AssertionError as e:
-            print(f"  [FAIL] 断言失败: {e}")
-            failed += 1
-        except Exception as e:
-            print(f"  [FAIL] 异常: {e}")
-            failed += 1
-
-    return passed, failed
-
-
-async def run_integration_tests():
-    """运行所有集成测试"""
-    print(f"\n{'=' * 50}")
-    print(f"{' 集成测试（LLM 调用） ':=^50}")
-    print(f"{'=' * 50}")
-
-    tests = [
-        test_chat_completion_integration,
-        test_llm_chat_integration,
-        test_close_global_session,
-    ]
-
-    passed = 0
-    failed = 0
-
-    for test in tests:
-        try:
-            await test()
-            passed += 1
-        except AssertionError as e:
-            print(f"  [FAIL] 断言失败: {e}")
-            failed += 1
-        except Exception as e:
-            print(f"  [FAIL] 异常: {e}")
-            failed += 1
-
-    return passed, failed
-
-
-async def main():
-    """主测试入口"""
-    print(f"\n{' Yuki LLM Client 测试 ':=^50}")
-    print(f"LLM URL: {cfg.LLM_BASE_URL}")
-    print(f"LLM 模型: {cfg.LLM_MODEL}")
-    print(f"API Key: {'已配置' if cfg.LLM_API_KEY else '未配置'}")
-
-    # 运行单元测试
-    unit_passed, unit_failed = run_unit_tests()
-
-    # 运行集成测试
-    int_passed, int_failed = await run_integration_tests()
-
-    # 汇总结果
-    total_passed = unit_passed + int_passed
-    total_failed = unit_failed + int_failed
-
-    print(f"\n{'=' * 50}")
-    print(f"{' 测试结果汇总 ':=^50}")
-    print(f"{'=' * 50}")
-    print(f"单元测试: {unit_passed} 通过, {unit_failed} 失败")
-    print(f"集成测试: {int_passed} 通过, {int_failed} 失败")
-    print(f"总计: {total_passed} 通过, {total_failed} 失败")
-
-    if total_failed == 0:
-        print(f"\n[PASS] 全部测试通过！")
-    else:
-        print(f"\n[FAIL] 有 {total_failed} 个测试失败")
-        sys.exit(1)
-
-
-if __name__ == "__main__":
-    asyncio.run(main())

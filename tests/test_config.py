@@ -4,18 +4,15 @@
 测试新的 dataclass 配置系统的正确性和稳定性
 """
 import os
-import sys
 import tempfile
 import pytest
-from dataclasses import asdict
 
 # 添加项目根目录到 Python 路径
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from config import (
     Config, APIConfig, ModelConfig, ConnectionConfig, TargetConfig,
     DiaryConfig, RAGConfig, EnergyConfig, AttentionConfig, PathsConfig,
-    TimingConfig, RequestTimeoutConfig, QZoneMonitorConfig,
+    TimingConfig, QZoneMonitorConfig,
     load_config, save_config, _deep_merge, _dict_to_dataclass,
     generate_default_config, _ATTR_MAP, _SECTION_HEADERS
 )
@@ -487,7 +484,3 @@ class TestCompatibility:
         # reload() 方法应该存在
         assert hasattr(cfg, 'reload')
         assert callable(cfg.reload)
-
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-v"])

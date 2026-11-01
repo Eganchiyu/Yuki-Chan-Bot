@@ -1,15 +1,7 @@
 import asyncio
-import os
-import sys
 from types import SimpleNamespace
 
-if sys.platform == "win32":
-    sys.stdout.reconfigure(encoding="utf-8")
-    sys.stderr.reconfigure(encoding="utf-8")
 
-project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-if project_root not in sys.path:
-    sys.path.append(project_root)
 
 from core.tools import TOOL_SPECS
 from core.toolchain import ToolContext, ToolRuntime

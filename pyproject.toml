@@ -110,6 +110,13 @@ name = "pytorch-cpu"
 url = "https://download.pytorch.org/whl/cpu"
 explicit = true
 
+[dependency-groups]
+dev = [
+    "pytest>=9.2.0",
+    "pytest-asyncio>=1.4.1",
+]
+
 [tool.pytest.ini_options]
+# 套件必须全离线：不联网、不需要真实 API Key，随时可跑
 asyncio_mode = "auto"
 testpaths = ["tests"]

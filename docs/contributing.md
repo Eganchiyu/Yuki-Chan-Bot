@@ -51,7 +51,8 @@ python setup.py
 
 **文件命名**：
 - 使用小写字母和下划线：`history_manager.py`
-- 测试文件以 `test_` 开头：`test_maid_search_diary.py`
+- 测试文件以 `test_` 开头：`test_toolchain.py`
+- 联网/真实 API 的测试不写进套件（用 mock 替代），保证 `pytest` 默认全绿
 - 配置文件使用小写字母：`config.py`
 
 **类命名**：
@@ -287,15 +288,18 @@ def test_search_diary_with_empty_query():
 
 ### 5.3 运行测试
 
+测试统一用 pytest，解释器用 `~/miniconda3/envs/yuki/bin/python`（仓库根目录的
+`maid_venv` 缺 libpython3.11 不可用，系统 python3 没装项目依赖）。
+
 ```bash
-# 运行所有测试
-python -m pytest
+# 运行所有测试（全部离线，无需网络/API Key）
+~/miniconda3/envs/yuki/bin/python -m pytest -q
 
 # 运行特定测试文件
-python -m pytest tests/test_config.py
+~/miniconda3/envs/yuki/bin/python -m pytest tests/test_config.py
 
 # 运行并显示详细输出
-python -m pytest -v
+~/miniconda3/envs/yuki/bin/python -m pytest -v
 
 # 运行并生成覆盖率报告
 python -m pytest --cov=.

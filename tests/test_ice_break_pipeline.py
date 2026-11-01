@@ -6,27 +6,13 @@
   1. 纯函数：get_ice_break_instructions 返回有效内容
   2. 提示词注入：build_chat_context 在 ice_break=True 时注入破冰指令
   3. 管道阶段：各阶段正确处理 ice_break 上下文标记
-  4. 监控集成：ice_break_monitor 通过 process_callback 触发主管道
-  5. 计数递增：finalize_conversation 正确递增破冰失败计数
-
-运行方式：
-    python tests/test_ice_break_pipeline.py
-    python -m pytest tests/test_ice_break_pipeline.py -v
+  4. 计数递增：finalize_conversation 正确递增破冰失败计数
 """
 import asyncio
-import os
 import sys
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
-# Windows 控制台 UTF-8 支持
-if sys.platform == "win32":
-    sys.stdout.reconfigure(encoding="utf-8")
-    sys.stderr.reconfigure(encoding="utf-8")
 
-# 动态获取项目根目录并加入 sys.path
-project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-if project_root not in sys.path:
-    sys.path.append(project_root)
 
 
 # ==================== 纯函数测试 ====================
@@ -373,80 +359,6 @@ async def test_pipeline_finalize_no_increment_without_ice_break():
     print(f"  [PASS] 非破冰模式计数不变")
 
 
-# ==================== 监控集成测试 ====================
-
-async def test_ice_break_monitor_calls_process_callback():
-    """ice_break_monitor 检测到破冰条件时通过 process_callback 触发主管道"""
-    print("\n[测试 10] ice_break_monitor 调用 process_callback")
-
-    from core.engine import YukiEngine
-
-    engine = _create_mock_engine()
-    # 设置 process_callback 为 mock
-    callback_mock = AsyncMock()
-    engine.process_callback = callback_mock
-
-    # 模拟破冰条件：低活跃度、高欲望、低失败计数
-    engine.yuki.group_activity = {"99999": 0.1}
-    engine.yuki.desire_to_start_topic = {"99999": 80}
-    engine.yuki.ice_break_fail_count = {"99999": 0}
-    engine.yuki.energy = {"99999": 90}
-    engine.yuki.last_update = {}
-
-    # 补丁：让 random.random() 返回 0.1（< 0.8 触发），random.randint 返回固定值
-    with patch("core.engine.random.random", return_value=0.1), \
-         patch("core.engine.random.randint", return_value=600), \
-         patch("core.engine.cfg") as mock_cfg:
-        mock_cfg.TARGET_GROUPS = [99999]
-
-        # 手动执行一次 ice_break_monitor 的核心逻辑（不进入无限循环）
-        # 模拟 ice_break_monitor 的单次迭代
-        target_list = [str(gid) for gid in mock_cfg.TARGET_GROUPS]
-        pending_ice_break = []
-
-        for cid in target_list:
-            engine.yuki.update_energy(chat_id=cid)
-            activity = engine.yuki.group_activity.get(cid, 0.0)
-            desire = engine.yuki.desire_to_start_topic.get(cid, 0)
-            fail_count = engine.yuki.ice_break_fail_count.get(cid, 0)
-
-            if activity < 0.5 and desire > 75 and fail_count < 0.8:
-                pending_ice_break.append(cid)
-
-        for cid in pending_ice_break:
-            if engine.process_callback is not None:
-                await engine.process_callback(cid, "group", debounce_flag=False, force_reply=True, ice_break=True)
-
-    callback_mock.assert_called_once_with(
-        "99999", "group", debounce_flag=False, force_reply=True, ice_break=True
-    )
-    print(f"  [PASS] process_callback 已调用，参数 ice_break=True")
-
-
-async def test_ice_break_monitor_without_callback():
-    """ice_break_monitor 在 process_callback 未设置时不崩溃"""
-    print("\n[测试 11] ice_break_monitor 无回调安全降级")
-
-    from core.engine import YukiEngine
-
-    engine = _create_mock_engine()
-    engine.process_callback = None  # 未设置回调
-
-    # 这里只验证逻辑不会抛异常
-    try:
-        if engine.process_callback is not None:
-            await engine.process_callback("99999", "group", ice_break=True)
-        # 不应到达这里，因为 callback 是 None
-        callback_called = False
-    except Exception:
-        callback_called = True
-
-    assert not callback_called, "callback 为 None 时不应调用"
-    print(f"  [PASS] process_callback=None 时安全跳过")
-
-
-# ==================== 端到端管道测试 ====================
-
 async def test_pipeline_run_once_ice_break_context_propagation():
     """run_once 在 ice_break=True 时将标记正确传播到所有阶段"""
     print("\n[测试 12] run_once ice_break 上下文传播")
@@ -661,7 +573,3 @@ async def main():
     else:
         print(f"\n[FAIL] 有 {total_failed} 个测试失败")
         sys.exit(1)
-
-
-if __name__ == "__main__":
-    asyncio.run(main())

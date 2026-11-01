@@ -7,14 +7,9 @@ content 返回空串；旧逻辑用 `elif is_meme and desc` 判断，空串被�
 """
 import asyncio
 import io
-import os
-import sys
 
 from PIL import Image
 
-project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-if project_root not in sys.path:
-    sys.path.append(project_root)
 
 from config import cfg
 from core.session_pipeline import SessionPipeline

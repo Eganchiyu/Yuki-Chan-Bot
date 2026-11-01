@@ -9,11 +9,7 @@
 import asyncio
 import os
 import shutil
-import sys
 
-project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-if project_root not in sys.path:
-    sys.path.append(project_root)
 
 from core.history_manager import HistoryManager
 from core.reply_format import (
@@ -122,10 +118,9 @@ def test_send_reply_strips_malformed_layout_before_sending():
 
 # ==================== 历史写回测试 ====================
 
-def test_history_manager_normalizes_markup_on_append():
+def test_history_manager_normalizes_markup_on_append(tmp_path):
     """追加消息时归一化 assistant 回复，不污染历史。"""
-    tmp_dir = "data/_test_reply_format_append"
-    shutil.rmtree(tmp_dir, ignore_errors=True)
+    tmp_dir = str(tmp_path / "_test_reply_format_append")
     os.makedirs(tmp_dir, exist_ok=True)
     manager = HistoryManager(
         history_file=os.path.join(tmp_dir, "chat_history.json"),
@@ -142,10 +137,9 @@ def test_history_manager_normalizes_markup_on_append():
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
-def test_history_manager_repairs_existing_messages_on_preload():
+def test_history_manager_repairs_existing_messages_on_preload(tmp_path):
     """预载历史时批量修复已落盘的错格式，并写回磁盘。"""
-    tmp_dir = "data/_test_reply_format_repair"
-    shutil.rmtree(tmp_dir, ignore_errors=True)
+    tmp_dir = str(tmp_path / "_test_reply_format_repair")
     os.makedirs(tmp_dir, exist_ok=True)
     history_file = os.path.join(tmp_dir, "chat_history.json")
     try:

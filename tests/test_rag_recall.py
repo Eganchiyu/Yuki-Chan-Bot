@@ -1,11 +1,6 @@
 """日记召回打分/重排的单元测试（不依赖真实向量库与 embedding 模型）。"""
 import datetime
-import os
-import sys
 
-project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-if project_root not in sys.path:
-    sys.path.append(project_root)
 
 from modules.memory.rag import (  # noqa: E402
     RECENCY_FLOOR,
@@ -180,10 +175,3 @@ def test_search_diary_fast_uses_where_document_instead_of_full_scan():
     assert "没有找到" in missing
     # 每次查询都带 where_document，说明没有走全表拉取
     assert calls and all("where_document" in c for c in calls)
-
-
-if __name__ == "__main__":
-    for name, func in sorted(globals().items()):
-        if name.startswith("test_") and callable(func):
-            func()
-            print(f"PASS {name}")

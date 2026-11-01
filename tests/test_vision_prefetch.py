@@ -1,12 +1,7 @@
 # tests/test_vision_prefetch.py
 """入站图片预取回归：消息一到即后台下载理解，主路径复用结果、不重复下载。"""
 import asyncio
-import os
-import sys
 
-project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-if project_root not in sys.path:
-    sys.path.append(project_root)
 
 from config import cfg
 from modules.vision.prefetch import prefetch_images, resolve_image

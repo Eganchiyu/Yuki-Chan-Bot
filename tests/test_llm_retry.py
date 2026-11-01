@@ -9,12 +9,7 @@
 5. 内容安全过滤不做无意义重试。
 """
 import asyncio
-import os
-import sys
 
-project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-if project_root not in sys.path:
-    sys.path.append(project_root)
 
 from config import cfg
 from utils import llm_client

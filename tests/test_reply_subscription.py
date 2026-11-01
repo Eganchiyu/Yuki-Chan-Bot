@@ -1,18 +1,10 @@
 # tests/test_reply_subscription.py
 """自动回复订阅（reply_watch）行为测试。"""
 import asyncio
-import os
-import sys
 from collections import defaultdict
 from types import SimpleNamespace
 
-if sys.platform == "win32":
-    sys.stdout.reconfigure(encoding="utf-8")
-    sys.stderr.reconfigure(encoding="utf-8")
 
-project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-if project_root not in sys.path:
-    sys.path.append(project_root)
 
 from core import reply_watch
 from core.reply_watch import (

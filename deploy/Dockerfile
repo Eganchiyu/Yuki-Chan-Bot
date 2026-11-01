@@ -26,6 +26,9 @@ COPY pyproject.toml /app/pyproject.toml
 RUN python -c "import tomllib;d=tomllib.load(open('/app/pyproject.toml','rb'));open('/tmp/req.txt','w').write('\n'.join(d['project']['dependencies']))" \
     && pip install --extra-index-url https://download.pytorch.org/whl/cpu -r /tmp/req.txt
 
+# 测试门（deploy/test_gate.py）用 pytest 跑离线用例；单独一层，改这里不会重装依赖
+RUN pip install --no-cache-dir "pytest>=9.2.0" "pytest-asyncio>=1.4.1"
+
 # 运行期工作目录由 deploy/run.sh 的 -w "$ROOT" 指定（与宿主同路径），不依赖本镜像 WORKDIR
 ENV YUKI_HEALTH_PORT=8778 \
     YUKI_HEALTH_HOST=127.0.0.1 \

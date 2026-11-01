@@ -214,3 +214,15 @@
 - `core/prompts.py`：删除 `publish_qzone_mood` 图片索引说明与「Qzone动态」两行文案。
 - 测试：`test_system_state.py` 改为断言未注册并从归档导入 handler；`test_modes.py` 改断言 `enter_browser_interaction` 不在默认工具集；`test_toolchain.py` 定时任务测试改从归档导入。
 - 验证：`py_compile` 全部通过；主流程代码无残留引用。环境无 pytest/yaml（`maid_venv` 缺 libpython3.11），未跑单测。
+
+## 2026-11-01 11:58
+- 清理 `core/tools/tools_maid.py`：删除 `run_inline` 死参数及其 warning 分支、移除不再使用的 `logger` 导入，注释合并为一段说明「一律后台执行」。同步修正 `docs/toolchain-usage.md`、`docs/api-reference.md` 中对 `run_inline` 的描述。提交 f7a7d55。
+
+## 2026-11-01 补全测试环境 + 清理测试套件
+- 环境：`~/miniconda3/envs/yuki/bin/python -m pip install pytest pytest-asyncio`（已有 aiohttp/yaml 等项目依赖）；`pyproject.toml` 新增 `[dependency-groups] dev`。`pytest -q` 从「204 passed / 6 failed」变为 **199 passed / 0 failed**，且本机与容器只读挂载下都全绿。
+- `deploy/Dockerfile` 加独立一层 `pip install pytest pytest-asyncio`（镜像已重建为 yuki:base，`docker run yuki:base python -m pytest --version` → 9.2.0）。
+- `deploy/test_gate.py` 从 `python run_tests.py` 改为 `python -m pytest -q --tb=no`（缺 pytest 时给出明确提示）；`deploy/test_baseline.json` 基线由 33 项重置为 0 项。
+- 删除：`tests/run_tests.py`（自制 runner）、`tests/test_maid.py`（只有 self.fail 占位）、`tests/test_maid_search_diary.py`（直连真实记忆库的手动脚本）、`tests/tasks/state/*.json` 产物、`test_ice_break_pipeline.py` 里两个自证式伪 monitor 测试、`test_llm_client.py` 两个真实调 DeepSeek 的集成测试 + 自制 runner、`test_github_monitor.py` 的 TestGitHubClient 与需真实 token 的 monitor 用例。
+- 修：`test_engine.py` 改为 `from core.engine.engine import YukiEngine`；`GitHubRepoConfig(chat_id=)` → `chat_ids=[...]`。
+- 整理：新增 `tests/conftest.py`（项目根入 sys.path + win32 UTF-8），删掉 11 个测试文件里重复的 sys.path/win32 hack 与 3 个 `__main__` 块，清理未使用导入；测试落盘路径全部改到 `tmp_path`/临时目录（native_vision 5 例、reply_format 2 例、github_monitor 卡片目录、maid_features 的 LOGS_DIR），使 :ro 挂载的容器里也能跑。
+- 注意：期间仓库有并发进程在动（提交 f7a7d55，且 docs/ 下 13 个文件被删），本提交只 stage 自己改的文件。
