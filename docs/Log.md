@@ -196,3 +196,12 @@
 ### 状态
 改动仅 py_compile 校验通过。`maid_venv` 缺 `libpython3.11.so.1.0`（系统已无 3.11），
 pytest 无法运行，需机主重建虚拟环境后再跑测试。
+
+## 2026-11-01 thinking_effort 设为 high（实测记录）
+
+- `configs/config.yaml`：`thinking_effort: ''` → `high`（需重启生效）。
+- 实测 `api.deepseek.com` + `deepseek-flash` 对 `reasoning_effort`：
+  `high`（reasoning_tokens=39）/ `low`（57）/ `none`（无 reasoning，直接给答案）。
+  即只有 `none` 真能关思考，`high`/`low` 在 deepseek-flash 上是空操作，实际思考深度由模型决定。
+- 探测 Gemini AI Studio：该 key 能列 60 个模型，但 `generateContent` 一律 403
+  「free tier is not available for this project」，需开结算后才能实测。
