@@ -226,3 +226,8 @@
 - 修：`test_engine.py` 改为 `from core.engine.engine import YukiEngine`；`GitHubRepoConfig(chat_id=)` → `chat_ids=[...]`。
 - 整理：新增 `tests/conftest.py`（项目根入 sys.path + win32 UTF-8），删掉 11 个测试文件里重复的 sys.path/win32 hack 与 3 个 `__main__` 块，清理未使用导入；测试落盘路径全部改到 `tmp_path`/临时目录（native_vision 5 例、reply_format 2 例、github_monitor 卡片目录、maid_features 的 LOGS_DIR），使 :ro 挂载的容器里也能跑。
 - 注意：期间仓库有并发进程在动（提交 f7a7d55，且 docs/ 下 13 个文件被删），本提交只 stage 自己改的文件。
+
+## 2026-11-01 记忆库体检（只读，未删除任何数据）
+- 新增 `docs/database-profile.md`：chroma.sqlite3 结构画像（表/段/collection、metadata 键、ID 命名、磁盘布局、持久化设置）。
+- 核查结论：`diaries` 6285 条（文档内日期 2026-03 → 2026-11）、`stickers` 66 条、`yuki_memory` 7830 条**仍在**（4297 条 fact/preference/relationship/event 候选 + 3533 条 legacy 日记副本），`status` 全 active，最后写入 2026-06-14；代码已无任何引用（只 get_or_create diaries/stickers）→ 孤儿数据。
+- 备份快照对照（backups/yuki_memory/*）：10-24 起 diaries 6171→6285 持续增长，yuki_memory 恒为 7830，证明从未被删。此前「日记总数 14164」实为三张 collection 行数之和（6267+66+7830=14163）。
