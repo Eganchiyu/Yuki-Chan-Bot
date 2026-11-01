@@ -121,11 +121,9 @@ Yuki 具备标准化的工具调用能力，通过 Function Call 机制扩展 LL
 
 - **QQ 空间监控与发布**：自动发布说说、监控空间动态
 - **GitHub 仓库监控**：监控仓库事件并推送通知
-- **浏览器交互模式**：聚焦模式下的浏览器控制能力
 - **系统状态监控**：系统空闲与窗口巡检
 - **Shot Memory**：实时记忆渲染，记录群聊截屏留念
 - **网易云音乐**：搜歌与下载（含扫码登录保障），下载后可发送到会话
-- **Live2D 桌宠**：Electron + Live2D 桌面宠物交互（默认关闭，见「快速开始」，已适配 Linux）
 - **Debug WebUI**：上下文调试与观测界面
 
 
@@ -379,10 +377,9 @@ YukiV6/
 │   │   ├── tools_qzone.py           #   空间说说发布
 │   │   ├── tools_search.py          #   网页/地图搜索（小女仆侧）
 │   │   ├── tools_timer.py           #   定时任务
-│   │   └── tools_browser.py         #   浏览器模式入口
 │   ├── brain.py                     # YukiState 状态管理（精力/活跃度/生物钟）
 │   ├── history_manager.py           # 对话历史持久化（原子化读写）
-│   ├── modes.py                     # 模式管理（QQChat / BrowserInteraction）
+│   ├── modes.py                     # 模式管理（QQChat）
 │   ├── prompts.py                   # 系统提示词模板
 │   ├── reply_format.py              # 回复标记归一化与发送前清洗
 │   ├── reply_watch.py               # 回复订阅（等回音判定与追击提醒）
@@ -398,10 +395,8 @@ YukiV6/
 │   ├── vision/                      # 视觉/表情包理解（VLM）与原生视觉附件
 │   ├── debug/                       # Debug WebUI 与快照工具
 │   ├── github_monitor/              # GitHub 仓库监控
-│   ├── browser_interaction/         # 浏览器交互聚焦模式
 │   ├── qzone/                       # QQ 空间监控与发布
 │   ├── shot_memory/                 # 实时记忆渲染（截屏记录）
-│   └── LiveYukiL2D/                 # Live2D 桌宠交互
 │
 ├── network/                         # 网络通信层
 │   └── napcat.py                    # NapCat 接入层（连接/帧路由/CQ 协议/收发）
@@ -474,8 +469,7 @@ YukiV6/
 │   └── ...
 │
 ├── future addons/                   # 未来扩展计划
-│   ├── webpage_agent/               # 网页代理原型
-│   └── desktop_pet_plan.md          # 桌宠计划
+│   └── webpage_agent/               # 网页代理原型
 │
 ├── .github/                         # GitHub 配置
 │   ├── ISSUE_TEMPLATE/              # Issue 模板
@@ -525,41 +519,7 @@ python setup.py
 python main.py
 ```
 
-### 4. Live2D 桌宠（可选，默认关闭）
-
-桌宠是一个独立的 Electron + Live2D 窗口，**默认不启动**，不影响主程序功能。开启方式二选一：
-
-```bash
-# 方式一：临时开启（优先级最高）
-YUKI_DESKTOP_PET=1 python main.py
-```
-
-方式二：把 `modules/LiveYukiL2D/config.json` 里的 `desktopPet.enabled` 改成 `true`。
-
-关闭：`YUKI_DESKTOP_PET=0`，或把 `desktopPet.enabled` 改回 `false`。
-
-首次开启前需要装一次前端依赖（会下载约 100MB 的 Electron 二进制）：
-
-```bash
-cd modules/LiveYukiL2D/frontend/minimal
-npm install
-npm run build
-```
-
-**Linux 说明**
-
-- Electron 二进制必须与当前系统匹配。如果 `node_modules/electron/dist/` 里是 Windows 的 `electron.exe`（从 Windows 迁移过来的仓库常见），它会被 wine 接管，性能与窗口行为都不正常。重装即可：
-  ```bash
-  cd modules/LiveYukiL2D/frontend/minimal
-  rm -rf node_modules/electron && npm install && npm run build
-  ```
-  启动时会做平台自检，发现架构不匹配会直接报错并给出命令，而不是静默用错版本。
-- 默认以 `--ozone-platform=x11`（XWayland）启动。桌宠依赖**全局光标坐标、绝对窗口定位、窗口拖动**，这三样原生 Wayland 客户端拿不到；强制原生 Wayland 用 `YUKI_L2D_OZONE_PLATFORM=wayland`。
-- 鼠标穿透：Electron 的 `setIgnoreMouseEvents(..., { forward: true })` 只在 Windows/macOS 生效，Linux 上改为由主进程推送真实光标位置给渲染进程做命中判定（Hyprland 走 compositor IPC，其它环境回退 Chromium 查询）。
-- 排障：`LIVEYUKI_DEBUG=1 python main.py` 会把窗口几何、光标来源、穿透判定打到 stdout。
-- 编辑模式快捷键 `Ctrl+Alt+Y`；原生 Wayland 下需要 xdg-desktop-portal 提供 GlobalShortcuts（Hyprland 自带）。
-
-### 5. 表情包系统初始化（可选）
+### 4. 表情包系统初始化（可选）
 
 默认情况下表情包功能代码已就绪，但素材文件不随仓库分发。如需启用：
 
@@ -573,7 +533,7 @@ python scripts/04_meme_cache_tools/reset_and_import_meme.py
 
 详情请参考 [docs/architecture.md](docs/architecture.md) 中的表情包系统章节。
 
-### 6. 自进化底座（可选，需要 Docker）
+### 5. 自进化底座（可选，需要 Docker）
 
 小女仆改代码依赖宿主侧的守护进程，不装也能正常跑 Yuki，只是自改工具不可用：
 
@@ -640,7 +600,6 @@ python -m pytest tests/test_toolchain.py
 | **视觉模型** | Qwen-VL (DashScope)，表情包转写；主模型可选原生理解普通图片 |
 | **主对话模型** | DeepSeek / OpenAI 兼容（可开启原生视觉） |
 | **图像生成** | 通义万相 / OpenAI 兼容 |
-| **桌面交互** | Live2D + Electron |
 | **小女仆执行** | DeepSeek Harness（宿主侧 dsh 子进程，可回退内置循环） |
 | **自改守护** | Docker（代码只读挂载）+ systemd supervisor + 独立模型审查 |
 
@@ -667,7 +626,6 @@ python -m pytest tests/test_toolchain.py
 - [x] 引擎分层重构（回复/决策/日记/监控子服务）
 - [x] GitHub 仓库监控
 - [x] QQ 空间监控与发布
-- [x] 浏览器交互聚焦模式
 - [x] Shot Memory 实时记忆渲染
 - [x] 回复订阅：等不到回音时自己补一句
 - [x] 入站图片预取：下载与视觉理解前置到防抖等待期

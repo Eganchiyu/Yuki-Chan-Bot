@@ -45,7 +45,6 @@ done
 args+=(
   -w "$ROOT"
   -e YUKI_HEALTH_PORT=8778
-  -e YUKI_DESKTOP_PET=0
   "$IMAGE"
 )
 

@@ -18,8 +18,6 @@ __pycache__/
 **/__pycache__/
 *.pyc
 .github/
-modules/LiveYukiL2D/reference/
-modules/LiveYukiL2D/frontend/
 screenshots/
 gif_images/
 *.png

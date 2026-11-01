@@ -108,7 +108,6 @@ VERBOSE_NAMESPACES = (
     "llm_client",
     "modes",
     "init",
-    "desktop_pet",
 )
 
 

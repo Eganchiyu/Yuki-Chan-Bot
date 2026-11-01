@@ -137,12 +137,8 @@ class EngineReplyService:
         if tool_names and "delegate_to_maid" in tool_names:
             display_content = clean_content + " | (๑•̀ㅂ•́)و💻"
         if display_content:
-            if mode in {"desktop_pet", "browser_interaction"}:
-                from modules.LiveYukiL2D.server import broadcast
-                await broadcast({"type": "say", "text": display_content})
-            else:
-                send_mode = "private" if mode == "master_private" else mode
-                await self.sender.send(chat_id, display_content, mode=send_mode)
+            send_mode = "private" if mode == "master_private" else mode
+            await self.sender.send(chat_id, display_content, mode=send_mode)
         sent_thoughts.add(clean_content)
         logger.info(f"[ToolChain] 实时发送阶段性文本 chat_id={chat_id}: {clean_content}")
         return clean_content
@@ -316,10 +312,6 @@ class EngineReplyService:
                         save_immediately=False,
                         return_snapshot=False,
                     )
-                    if mode == "browser_interaction":
-                        await self.yuki.mode_manager.record_step(
-                            f"调用工具 {tool_result_message.get('name')}"
-                        )
                 tool_messages.extend(tool_result_messages)
                 remaining_budget = max(
                     0,

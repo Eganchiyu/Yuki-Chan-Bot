@@ -201,5 +201,4 @@ bash deploy/run.sh
 - `deploy/maid_runner.py` 是独立 systemd 服务，不随容器重启；它挂了任务会以
   `runner_unavailable` 明确失败，不会静默卡住（容器侧 90 秒内无动静即判定）。
 - 不能蓝绿并行：`data/yuki.lock` 单实例锁 + `yuki_memory` 是文件锁型 ChromaDB。
-- 容器内跑不了 Live2D 桌宠（Electron/GUI），已用 `YUKI_DESKTOP_PET=0` 关闭。
 - `.dockerignore` 排除了 `models/`，模型以只读卷挂载（不重复占盘）。

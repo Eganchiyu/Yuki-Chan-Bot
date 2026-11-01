@@ -8,7 +8,6 @@ from concurrent.futures.thread import ThreadPoolExecutor
 from config import cfg
 from core.modes import ModeManager
 from core.prompts import (
-    get_yuki_setting_browser_interaction,
     get_yuki_setting_group,
     get_yuki_setting_master_private,
     get_yuki_setting_private,
@@ -155,8 +154,6 @@ class YukiState:
     def get_setting(mode):
         if mode == "master_private":
             return get_yuki_setting_master_private()
-        if mode == "browser_interaction":
-            return get_yuki_setting_browser_interaction()
         return get_yuki_setting_private() if mode == "private" else get_yuki_setting_group()
 
     def update_energy(self, chat_id):

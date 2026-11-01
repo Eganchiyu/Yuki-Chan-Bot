@@ -208,6 +208,9 @@
   - `maid_charter` 增加删除比例保护（单文件缩水超 50% 视为误删）与敏感改动标记（向量/记忆相关改动额外留档）
 
 ### 移除
+- 剥离并卸载 Live2D 桌宠：删除 `modules/LiveYukiL2D/`（含前端/后端/模型），`main.py` 去掉 `start_desktop_pet_if_enabled()` 与 `run_runtime()` 启动调用，`session_pipeline.send_answer()`、`engine_reply.send_tool_thought()` 去掉 Live2D `broadcast` 分支，`decide_reply_action()` 强制回复集合去掉 `desktop_pet`，`utils/logger.py` 去掉 `desktop_pet` 命名空间，`deploy/run.sh` 去掉 `YUKI_DESKTOP_PET=0`，`README.md`/`.gitignore`/`.dockerignore` 同步清理
+- 剥离并卸载浏览器交互聚焦模式：删除 `modules/browser_interaction/`、`core/modes.py` 的 `BrowserInteractionMode` 与注册、`core/prompts.get_yuki_setting_browser_interaction()` 及 `core/brain` 分支、`core/tools/_archived/tools_browser.py`、`engine_reply` 的 `record_step` 分支；`tests/test_modes.py` 重写为「已无聚焦模式可注册」断言 + RAG 打分测试
+- 归档：功能源码与复原手册统一放在 `_archive/`（`_archive/docs/live2d-archive.md`、`_archive/docs/browser-interaction-archive.md`、`_archive/docs/removal.diff`），`frontend/minimal/node_modules` 与 `reference/Open-LLM-VTuber` 未归档（可再生/第三方）
 - 移除 `YukiEngine.break_ice()` 独立破冰方法（约 55 行）
 - 移除 `build_ice_break_prompt()` 函数（已被 `get_ice_break_instructions` + `build_chat_context` 替代）
 

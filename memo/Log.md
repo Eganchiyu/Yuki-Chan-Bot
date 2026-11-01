@@ -231,3 +231,10 @@
 - 新增 `docs/database-profile.md`：chroma.sqlite3 结构画像（表/段/collection、metadata 键、ID 命名、磁盘布局、持久化设置）。
 - 核查结论：`diaries` 6285 条（文档内日期 2026-03 → 2026-11）、`stickers` 66 条、`yuki_memory` 7830 条**仍在**（4297 条 fact/preference/relationship/event 候选 + 3533 条 legacy 日记副本），`status` 全 active，最后写入 2026-06-14；代码已无任何引用（只 get_or_create diaries/stickers）→ 孤儿数据。
 - 备份快照对照（backups/yuki_memory/*）：10-24 起 diaries 6171→6285 持续增长，yuki_memory 恒为 7830，证明从未被删。此前「日记总数 14164」实为三张 collection 行数之和（6267+66+7830=14163）。
+
+## 2026-11-01 剥离 Live2D 桌宠 + 浏览器交互模式
+- 归档到 `_archive/`：`LiveYukiL2D/`（源码 3.9M，排除 node_modules 307M 与 reference/Open-LLM-VTuber 962M）、`modules/browser_interaction/`、`core/tools/tools_browser.py`、`docs/browser-interaction-mode-plan.md`、`tests/test_modes.py.original`、`docs/removal.diff`（全量代码改动）。
+- 卸载点位：`main.py`（启动函数+调用）、`core/session_pipeline.py`（强制回复集合 / broadcast 分支）、`core/engine/engine_reply.py`（broadcast + record_step 分支）、`core/modes.py`（BrowserInteractionMode）、`core/prompts.py` + `core/brain.py`（browser prompt）、`core/tools/_archived/__init__.py`、`core/engine/engine.py`（注释残留）、`utils/logger.py`、`deploy/run.sh` + `deploy/README.md`、`.gitignore` + `.dockerignore`、`README.md`（含小节编号顺延）、`tests/test_modes.py`（重写为 2 个用例）。
+- 文档：`_archive/README.md`（索引）、`_archive/docs/live2d-archive.md`、`_archive/docs/browser-interaction-archive.md`——记点位表、剥离清单、A/B 两套复原方案、代码用法（独立运行/开关/WS 与 REST 接口/config.json 字段/已知坑）。
+- 状态：`py_compile` 全绿、`bash -n deploy/run.sh` 通过；本机无 pytest（maid_venv 缺 libpython3.11.so），**测试未跑**，需在容器 `docker run yuki:base python -m pytest -q` 或 conda yuki 环境验证。
+- 保留未动：`ModeManager`/`ModeSpec`/`FocusModeState` 通用聚焦模式框架（`prompts.py` 仍注入模式状态）。

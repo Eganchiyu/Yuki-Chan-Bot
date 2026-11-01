@@ -30,17 +30,6 @@ class QQChatMode:
     )
 
 
-class BrowserInteractionMode:
-    """浏览器交互聚焦模式包装。"""
-    spec = ModeSpec(
-        mode_id="browser_interaction",
-        display_name="BrowserInteractionMode",
-        session_id="mode:browser",
-        tool_group="browser_interaction",
-        is_focus_mode=True,
-    )
-
-
 @dataclass
 class FocusModeState:
     """当前全局聚焦模式状态。"""
@@ -84,7 +73,6 @@ class ModeManager:
         self._lock = asyncio.Lock()
         self._specs = {
             QQChatMode.spec.mode_id: QQChatMode.spec,
-            BrowserInteractionMode.spec.mode_id: BrowserInteractionMode.spec,
         }
 
     def get_spec(self, mode: str) -> ModeSpec:

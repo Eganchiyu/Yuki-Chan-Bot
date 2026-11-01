@@ -138,45 +138,6 @@ def start_context_debug_webui_if_enabled():
         logger.error(f"[ContextDebug] WebUI 启动失败: {exc}")
 
 
-def start_desktop_pet_if_enabled(pipeline, pipeline_loop):
-    """启动 Live2D 桌宠窗口，并把输入接入主会话管线。
-
-    默认关闭。开启方式二选一：
-    - 环境变量 YUKI_DESKTOP_PET=1（优先级最高，可临时开关）
-    - modules/LiveYukiL2D/config.json 里把 desktopPet.enabled 改成 true
-
-    任一处显式关闭都不会拉起 Electron 窗口。本函数会阻塞数秒（起 HTTP 服务 +
-    拉起 Electron），调用方应放到线程里执行。
-    """
-    import os
-
-    flag = os.getenv("YUKI_DESKTOP_PET", "").strip().lower()
-    if flag in {"0", "false", "no", "off"}:
-        logger.info("[DesktopPet] 已通过 YUKI_DESKTOP_PET 关闭")
-        return
-
-    explicit_on = flag in {"1", "true", "yes", "on"}
-
-    try:
-        from modules.LiveYukiL2D import desktop as desktop_pet
-
-        if not explicit_on and not desktop_pet.config_enabled():
-            logger.info(
-                "[DesktopPet] 桌宠默认关闭，跳过启动"
-                "（开启：设置 YUKI_DESKTOP_PET=1，或把 "
-                "modules/LiveYukiL2D/config.json 的 desktopPet.enabled 改为 true）"
-            )
-            return
-
-        proc = desktop_pet.main(session_pipeline=pipeline, pipeline_loop=pipeline_loop)
-        if proc is None:
-            logger.error("[DesktopPet] Electron 窗口未能启动，详见上方日志；主程序继续运行")
-        else:
-            logger.info(f"[DesktopPet] Live2D 桌宠已启动 (pid={proc.pid})")
-    except Exception as exc:
-        logger.error(f"[DesktopPet] 启动失败: {exc}")
-
-
 def _last_maid_chat():
     """从 tasks/dsh 里找最近一次委托的 (chat_id, mode)，作为通知的兜底目标。"""
     import glob
@@ -247,11 +208,6 @@ def _install_restart_notifier() -> None:
 async def run_runtime() -> None:
     try:
         _install_restart_notifier()
-        # 桌宠启动包含起 aiohttp 服务（最长等 3 秒）和拉起 Electron，
-        # 放到线程里跑，避免阻塞消息管线的事件循环。
-        await asyncio.to_thread(
-            start_desktop_pet_if_enabled, session_pipeline, asyncio.get_running_loop()
-        )
         await napcat_listen(session_pipeline.sender, session_pipeline, "mixed")
     finally:
         from utils.llm_client import close_global_session
