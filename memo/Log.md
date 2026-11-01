@@ -296,3 +296,9 @@
 ## 2026-11-01 小本本上限调低到 512 字
 - `core/notebook.py`：`NOTEBOOK_MAX_CHARS = 512`（读写都截断）；`core/tools/tools.py` 工具描述与参数说明同步改为 512 字符。
 - 原因：`engine_reply.py` 单轮 `max_tokens=1024`，1024 中文字符 + JSON 结构会被截断。
+
+## 2026-11-01 人设参考图：master / Yuki
+- 机主提供两张人设图，存为 `output/assets/character/master_reference.png`（主人，1254×1254，三视图）与 `output/assets/character/yuki_reference.png`（Yuki，1024×1536，覆盖旧图；旧图备份到同目录 `_backup/yuki_reference_20261029.png`）。两张原文件实际是 PNG 字节，按 .png 存放。
+- `core/tools/tools.py` 的 `generate_image` ToolSpec 描述与 `image_paths` 参数说明改为列出这两张固定人设参考图（含外貌/服装要点），替换原来只提 Yuki 单张的措辞。
+- 校验：容器 yuki 内 `_resolve_reference_image` 对两条路径均通过（output 目录白名单 + 5MB 内 + PNG 魔数）；两文件均在 `output/` 下，被 .gitignore 忽略，不进版本库。提交 b6d0823。
+- 状态：代码已提交，需重启 yuki 容器/会话才能让新工具描述生效。
