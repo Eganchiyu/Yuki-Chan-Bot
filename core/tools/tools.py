@@ -50,12 +50,12 @@ TOOL_SPECS = [
         name="update_notebook",
         description=(
             "用来更新小本本。"
-            "每次调用会覆盖小本本原有内容（最多1024字符），**要保留的内容请一起写进去。**"
+            "每次调用会覆盖小本本原有内容（最多512字符），**要保留的内容请一起写进去。**"
         ),
         parameters={
             "type": "object",
             "properties": {
-                "content": {"type": "string", "description": "小本本的完整内容（最多1024字符）"},
+                "content": {"type": "string", "description": "小本本的完整内容（最多512字符）"},
             },
             "required": ["content"],
         },

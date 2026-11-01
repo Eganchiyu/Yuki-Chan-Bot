@@ -292,3 +292,7 @@
 - `core/toolchain.py`：`ARGUMENT_BREVITY_HINT` 改名 `MAID_GOAL_BREVITY_HINT`，不再由 `ToolSpec.to_schema()` 全局追加。
 - `core/tools/tools.py`：只有 `delegate_to_maid` 的 description 拼接该提示，其余工具（含 update_notebook）不再被追加。
 - 遗留：`toolchain.py:231` 的参数截断纠错文案仍写「压缩到 500 字以内」，对所有工具生效，未改。
+
+## 2026-11-01 小本本上限调低到 512 字
+- `core/notebook.py`：`NOTEBOOK_MAX_CHARS = 512`（读写都截断）；`core/tools/tools.py` 工具描述与参数说明同步改为 512 字符。
+- 原因：`engine_reply.py` 单轮 `max_tokens=1024`，1024 中文字符 + JSON 结构会被截断。

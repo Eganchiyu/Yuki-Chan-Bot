@@ -1,5 +1,5 @@
 # core/notebook.py
-"""小本本：Yuki 自己长期维护的私密笔记，最多 1024 字。"""
+"""小本本：Yuki 自己长期维护的私密笔记，最多 512 字。"""
 import json
 import os
 import threading
@@ -9,7 +9,7 @@ from utils.logger import get_logger
 
 logger = get_logger("notebook")
 
-NOTEBOOK_MAX_CHARS = 1024
+NOTEBOOK_MAX_CHARS = 512
 DEFAULT_NOTEBOOK_PATH = os.path.join(BASE_DIR, "data", "notebook.json")
 
 
@@ -32,10 +32,10 @@ class NotebookStore:
                 logger.warning(f"[Notebook] 读取失败: {e}")
                 return ""
         content = data.get("content") if isinstance(data, dict) else data
-        return str(content or "")
+        return str(content or "")[:NOTEBOOK_MAX_CHARS]
 
     def save(self, content: str) -> str:
-        """覆盖写入小本本，超长部分截断到 1024 字，返回实际保存的内容。"""
+        """覆盖写入小本本，超长部分截断到 512 字，返回实际保存的内容。"""
         content = str(content or "").strip()
         truncated = len(content) > NOTEBOOK_MAX_CHARS
         content = content[:NOTEBOOK_MAX_CHARS]
