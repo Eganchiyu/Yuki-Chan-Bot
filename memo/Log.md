@@ -272,3 +272,10 @@
 - 现役 TOOL_SPECS（10 个）：delegate_to_maid、search_diary、send_master_private、poke、send_qq_file、capture_group_snapshot、search_group_snapshots、parse_rich_message、download_file、generate_image。
 - 保留未动：`core/ncm_login.py`（归档模块仍 import）、`config.py` 的 ncm_cookie_file / ncm_download_dir、README 的 ncm 章节。tests/test_tool_markup.py 仅把 "ncm_search" 当字符串样例，无影响。
 - 测试：206 项中 205 通过；`test_vision_prefetch::test_pipeline_enqueue_schedules_prefetch_immediately` 失败（`AttributeError: _recent_msg_times`），来自工作区里他人未提交的 session_pipeline.py 改动，与本次无关。
+
+## 2026-11-01 小女仆 ncm 技能：写好但登录未跑通，整体归档
+- 女仆确有 skills 机制：`skills/<name>.md`（首行当简介，`list_skills` 读）+ `skills/<name>.py`（`read_skill` 读文档与源码），`read_skill` 支持只有 md 的说明型技能；`skills/` 是容器 RW 挂载卷。
+- 写了 `skills/ncm.md` + `skills/ncm.py`（`ncm_search`/`ncm_download` 同步封装归档工具 + CLI），实测搜索能走到「需要扫码」分支。
+- 卡点：容器内缺 `qrcode`（已 `pip install --user qrcode` 落到 `data/home/.local`，并加进 `pyproject.toml`）；二维码 3 分钟有效，对话往返常超时，`code 803` 被消费成 `800`，Cookie 没落盘。
+- 依机主要求停止并归档：技能移入 `_archive/skills/`，三个扫码辅助脚本移入 `_archive/scripts/ncm_login/`，`_archive/README.md` 补索引与恢复步骤。工具侧归档见提交 66c46cc。
+- 状态：ncm 在 Yuki 与女仆两侧均未启用；`data/home/.cache/ncm_cookie.txt` 不存在。
