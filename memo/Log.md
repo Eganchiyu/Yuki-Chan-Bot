@@ -287,3 +287,8 @@
 - 注入：`core/prompts.py::build_chat_context` 在【回忆】之后、最近对话之前插入 `【小本本】…`，并负面约束不提及/复述小本本，作为潜意识底色；小本本为空时不注入。
 - 验证：容器 yuki 内导入 OK；`tests/test_system_state.py` 4 项通过；临时目录实测存取与超长截断、注入顺序正确。
 - 状态：代码已就绪，需重启 yuki 容器后生效。
+
+## 2026-11-01 参数简练提示改为只给 delegate_to_maid
+- `core/toolchain.py`：`ARGUMENT_BREVITY_HINT` 改名 `MAID_GOAL_BREVITY_HINT`，不再由 `ToolSpec.to_schema()` 全局追加。
+- `core/tools/tools.py`：只有 `delegate_to_maid` 的 description 拼接该提示，其余工具（含 update_notebook）不再被追加。
+- 遗留：`toolchain.py:231` 的参数截断纠错文案仍写「压缩到 500 字以内」，对所有工具生效，未改。

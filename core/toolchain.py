@@ -10,8 +10,8 @@ from utils.logger import get_logger
 
 logger = get_logger("toolchain")
 
-# 追加到所有工具描述末尾的参数约束：工具轮次输出上限有限，参数写太长会被截断
-ARGUMENT_BREVITY_HINT = (
+# 委托小女仆时的目标描述约束：工具轮次输出上限有限，参数写太长会被截断
+MAID_GOAL_BREVITY_HINT = (
     "（调用时 arguments 务必简练：单个字符串参数控制在 500 字以内，"
     "只写关键指令，不要复制整段聊天记录或历史内容。）"
 )
@@ -96,7 +96,7 @@ class ToolSpec:
             "type": "function",
             "function": {
                 "name": self.name,
-                "description": self.description + ARGUMENT_BREVITY_HINT,
+                "description": self.description,
                 "parameters": self.parameters,
             },
         }

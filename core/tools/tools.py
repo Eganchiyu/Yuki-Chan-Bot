@@ -1,6 +1,6 @@
 # core/tools/tools.py
 """工具规格装配：汇总各职责子服务导出的 ToolSpec，并保持旧引用兼容。"""
-from core.toolchain import ToolSpec
+from core.toolchain import MAID_GOAL_BREVITY_HINT, ToolSpec
 
 from .tools_diary import search_diary_tool
 from .tools_maid import delegate_to_maid_tool
@@ -17,6 +17,7 @@ TOOL_SPECS = [
             "将工作任务委托给电脑上的小女仆处理。使用小女仆完成你自己不能完成的任务。"
             "委托后立即返回，她在后台干活，完成后会主动把结果汇报给你——"
             "不要等待结果，也不需要反复询问进度。"
+            f"{MAID_GOAL_BREVITY_HINT}"
         ),
         parameters={
             "type": "object",
@@ -33,7 +34,7 @@ TOOL_SPECS = [
     ToolSpec(
         name="search_diary",
         description=(
-            "查询日记/记忆。可按日期、关键词检索，命中结果是随机抽取的（不按时间顺序）。"
+            "（随机）查询日记/记忆。可按日期、关键词检索。"
             "两个参数都不填时随机翻看日记本里的若干条，适合想随意回忆/找话题时使用。"
         ),
         parameters={
@@ -48,14 +49,13 @@ TOOL_SPECS = [
     ToolSpec(
         name="update_notebook",
         description=(
-            "用来更新小本本。小本本可以用来记录自己的心愿、信念、不想忘记的东西，"
-            "或者一些长期目标等重要事情，不要写零碎的事情。"
-            "每次调用会覆盖小本本原有内容（最多1024字），要保留的内容请一起写进去。"
+            "用来更新小本本。"
+            "每次调用会覆盖小本本原有内容（最多1024字符），**要保留的内容请一起写进去。**"
         ),
         parameters={
             "type": "object",
             "properties": {
-                "content": {"type": "string", "description": "小本本的完整内容（最多1024字）"},
+                "content": {"type": "string", "description": "小本本的完整内容（最多1024字符）"},
             },
             "required": ["content"],
         },
