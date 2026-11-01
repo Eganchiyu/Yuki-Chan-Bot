@@ -238,3 +238,10 @@
 - 文档：`_archive/README.md`（索引）、`_archive/docs/live2d-archive.md`、`_archive/docs/browser-interaction-archive.md`——记点位表、剥离清单、A/B 两套复原方案、代码用法（独立运行/开关/WS 与 REST 接口/config.json 字段/已知坑）。
 - 状态：`py_compile` 全绿、`bash -n deploy/run.sh` 通过；本机无 pytest（maid_venv 缺 libpython3.11.so），**测试未跑**，需在容器 `docker run yuki:base python -m pytest -q` 或 conda yuki 环境验证。
 - 保留未动：`ModeManager`/`ModeSpec`/`FocusModeState` 通用聚焦模式框架（`prompts.py` 仍注入模式状态）。
+
+## 2026-11-01 清理记忆库：删除弃用的 yuki_memory collection
+- 备份：`yuki_memory/_archive/20261101_121448/`（rsync 整目录 105 MB，备份库 integrity_check=ok）。
+- 删除：容器镜像 55597bd6a186（chromadb 1.5.9）挂载同目录执行 `delete_collection("yuki_memory")`，7830 条结构化记忆一并消失；再手删 API 未清理的 HNSW 残留目录 `67437597-…`（23 MB），最后 VACUUM（15478→8294 页，freelist 6597→0）。
+- 验证：collections/segments/embeddings 全部对齐（6285+66=6351），FTS 6351，独有 metadata 键计数全 0，文件内 `ymem_*`/`review_status`/`legacy_diary` 字符串 0 命中，integrity ok，API 抽查 diaries/stickers 查询正常；库 63.4 MB→34.0 MB。
+- 文档：`docs/database-profile.md` 全篇重写为清理后状态（含清理记录、回滚命令、孤儿目录 f989647f 说明）。
+- 状态：任务完成。注意容器 `yuki` 于 12:13 以 exit 137 自行退出（早于本次改动），当前未运行，未擅自重启。
