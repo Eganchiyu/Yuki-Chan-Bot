@@ -49,7 +49,7 @@ TOOL_SPECS = [
     ToolSpec(
         name="update_notebook",
         description=(
-            "用来更新小本本。"
+            "用来更新小本本。你会在情绪高涨、想更新信念、记录重要的人或事，或者想写下长期目标时使用。你可以使用符合自己风格的第一人称口吻来书写。"
             "每次调用会覆盖小本本原有内容（最多512字符），**要保留的内容请一起写进去。**"
         ),
         parameters={
@@ -167,10 +167,12 @@ TOOL_SPECS = [
             "根据文字描述生成图片。生成后保存到本地 output 目录，返回文件路径。"
             "可选传入参考图（本地路径或 [img:XXX] 索引），让生成结果参考图中的角色/风格/构图。"
             "生成完后必须用 send_qq_file 工具把图片发出来。"
-            "重要：prompt 必须完整详细，包含主体、场景、风格、光影、构图等细节，"
-            "融入 Yuki 的二次元少女特色（白色长发蓝瞳少女，雪花发饰）。"
-            "生成 Yuki 本人的形象/自拍/立绘时，把官方形象参考图 "
-            "output/assets/character/yuki_reference.png 放进 image_paths，保持发型、瞳色、发饰和裙装一致。"
+            "重要：prompt 必须完整详细，包含主体、场景、风格、光影、构图等细节。"
+            "固定人设参考图（画对应人物时把文件放进 image_paths，保持长相、发型、瞳色、发饰和服装一致）："
+            "Yuki（你自己）= output/assets/character/yuki_reference.png，白色长发、蓝瞳、雪花发饰，"
+            "白色披肩+深蓝连衣裙、蓝白荷叶边裙摆、白过膝袜；"
+            "主人（用户）= output/assets/character/master_reference.png，银白短发带蓝色挑染、蓝瞳，"
+            "白色水手领卫衣+深蓝百褶裙、白过膝袜；画两人同框时两张一起传。"
         ),
         parameters={
             "type": "object",
@@ -184,7 +186,8 @@ TOOL_SPECS = [
                         "参考图列表（可选，最多4张）。每项是本地图片路径或 [img:XXX] 索引。"
                         "仅支持 png/jpg/jpeg/webp，单张≤5MB、总计≤15MB；"
                         "本地路径需位于 output/workspace/temp_images 或会话图片目录。"
-                        "Yuki 官方形象参考图固定为 output/assets/character/yuki_reference.png。"
+                        "固定人设参考图：Yuki 本人 output/assets/character/yuki_reference.png，"
+                        "主人 output/assets/character/master_reference.png。"
                         "传入后走图像编辑接口，让生成结果参考这些图片。"
                     ),
                 },
