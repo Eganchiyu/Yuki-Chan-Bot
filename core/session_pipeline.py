@@ -20,6 +20,21 @@ from utils.paths import normalize_stored_path
 logger = get_logger("session_pipeline")
 
 
+# ---------- 预编译正则 / 常量 ----------
+
+_QUOTED_PREFIX_RE = re.compile(r'^【"[^"]*"】说:\s*')
+_MEME_FULLMATCH_RE = re.compile(r'\[MEME:(.+?)\]', re.DOTALL)
+_MEME_SPLIT_RE = re.compile(r'(\[MEME:.*?\])')
+
+_MEME_DISCARD_SLEEP = 3.0      # 被随机丢弃时的节奏延迟
+_MEME_SENT_SLEEP = 2.0         # 表情包已发送后的节奏延迟
+_TEXT_SENT_SLEEP = 0.5         # 文本已发送后的节奏延迟
+_MEME_RANDOM_KEEP_PROB = 0.6   # 非最后一个表情包保留概率
+
+_ALWAYS_REPLY_MODES = frozenset({"private", "master_private"})
+_REPLYABLE_MODES = frozenset({"group", "private", "master_private"})
+
+
 @dataclass
 class IncomingMessage:
     """管线内统一使用的入站消息，显式标记来源、归属和状态。"""
@@ -83,15 +98,14 @@ class SessionPipeline:
         self.image_store = components.get("image_store")
         self.group_active_state = group_active_state
 
-        # --- 极简重构的防抖与锁机制 ---
-        self._timer_tasks: dict = {}  # chat_id -> asyncio.Task (当前正在计时的防抖任务)
-        self._chat_locks: dict = {}  # chat_id -> asyncio.Lock (确保处理管线串行)
+        # --- 防抖与锁机制 ---
+        self._timer_tasks: dict = {}    # chat_id -> asyncio.Task (当前正在计时的防抖任务)
+        self._chat_locks: dict = {}     # chat_id -> asyncio.Lock (确保处理管线串行)
         self._skip_debounce: dict = {}  # chat_id -> bool (是否跳过本次防抖的持久化标志)
 
         self.last_process_end_time: dict = {}
-        self.last_msg_time = {}
-        # chat_id -> 最近真人消息时间戳，用于估算「等多久算没回应」
-        self._recent_msg_times: dict = {}
+        self.last_msg_time: dict = {}
+        self._recent_msg_times: dict = {}  # chat_id -> 最近真人消息时间戳（用于估算等待）
 
         self.stages = [
             self.prepare_message_batch,
@@ -103,6 +117,10 @@ class SessionPipeline:
             self.send_reply,
             self.finalize_conversation,
         ]
+
+    # ---------------------------------------------------------------
+    # 基础设施
+    # ---------------------------------------------------------------
 
     def _get_lock(self, chat_id: str) -> asyncio.Lock:
         if chat_id not in self._chat_locks:
@@ -120,7 +138,6 @@ class SessionPipeline:
             return
         prefetch_images(self.meme_processor, images_info)
 
-    # (保留原本的 _mark_stage 和 _update_snapshot 不变)
     def _mark_stage(self, context, stage_name, status="done", error=None):
         snapshot_id = context.get("debug_snapshot_id")
         if not snapshot_id:
@@ -136,8 +153,10 @@ class SessionPipeline:
             errors.append({"stage": stage_name, "error": str(error)})
             context["debug_errors"] = errors
         try:
-            context_snapshot_store.update(snapshot_id, stage=stage_name, stage_status=status, latency=latency,
-                                          errors=errors)
+            context_snapshot_store.update(
+                snapshot_id, stage=stage_name, stage_status=status,
+                latency=latency, errors=errors,
+            )
         except Exception:
             pass
 
@@ -150,45 +169,50 @@ class SessionPipeline:
         except Exception:
             pass
 
-    # ------------------- 核心逻辑重写 -------------------
+    # ---------------------------------------------------------------
+    # 入队（防抖 + 排队）
+    # ---------------------------------------------------------------
 
-    async def enqueue_message(self, chat_id, mode, message_obj=None, debounce_flag=True, force_reply=None,
-                              ice_break=False):
+    def _append_poke_to_buffer(self, buffer: list, incoming: IncomingMessage) -> bool:
+        """把「连续戳同一目标」合并成一条；返回是否已合并。"""
+        if incoming.source != "napcat.notice.poke" or not buffer:
+            return False
+        last = buffer[-1]
+        last_base = last.get("poke_base") or last.get("content")
+        if (last.get("source") != "napcat.notice.poke"
+                or last.get("user_id") != incoming.user_id
+                or last_base != incoming.content):
+            return False
+        count = last.get("poke_count", 1) + 1
+        last["poke_base"] = last_base
+        last["poke_count"] = count
+        last["content"] = f"{last_base} x{count}"
+        return True
+
+    async def enqueue_message(self, chat_id, mode, message_obj=None, debounce_flag=True,
+                              force_reply=None, ice_break=False):
         """核心入列机制：写入缓冲 -> 重置定时器 -> 等待执行锁"""
         chat_id_str = str(chat_id)
 
         # 1. 安全写入缓冲区
         if message_obj:
-            incoming_message = IncomingMessage.from_mapping(message_obj)
-            if not incoming_message.owner_id:
-                incoming_message.owner_id = chat_id_str
+            incoming = IncomingMessage.from_mapping(message_obj)
+            if not incoming.owner_id:
+                incoming.owner_id = chat_id_str
             buffer = self.yuki.message_buffer.setdefault(chat_id_str, [])
-            merged = False
-            if incoming_message.source == "napcat.notice.poke" and buffer:
-                last = buffer[-1]
-                last_base = last.get("poke_base") or last.get("content")
-                # 同一人连续戳同一目标时，合并为一条并累计次数，压缩上下文占用
-                if (last.get("source") == "napcat.notice.poke"
-                        and last.get("user_id") == incoming_message.user_id
-                        and last_base == incoming_message.content):
-                    count = last.get("poke_count", 1) + 1
-                    last["poke_base"] = last_base
-                    last["poke_count"] = count
-                    last["content"] = f"{last_base} x{count}"
-                    merged = True
-            if not merged:
-                buffer.append(incoming_message.to_dict())
+            if not self._append_poke_to_buffer(buffer, incoming):
+                buffer.append(incoming.to_dict())
             self.last_msg_time[chat_id_str] = time.time()
             # 有人来了就算等到了：解除回复订阅，避免 Yuki 继续追击
-            if is_human_incoming(incoming_message):
+            if is_human_incoming(incoming):
                 resolve(chat_id_str, "human_message")
                 self._record_human_timestamp(chat_id_str)
             # 消息一到就后台预取图片，把下载与图像理解挪出回复关键路径
-            self._schedule_image_prefetch(incoming_message.content)
+            self._schedule_image_prefetch(incoming.content)
 
         # 2. 本轮是否需要跳过防抖：被直接叫到（名字/被 @）时上游会带
         #    debounce_flag=False + force_reply=True，这里把状态锁住供定时器读取
-        should_skip = (force_reply is not None and force_reply) or (not debounce_flag) or ice_break
+        should_skip = bool(force_reply) or not debounce_flag or ice_break
         if should_skip:
             self._skip_debounce[chat_id_str] = True
 
@@ -199,19 +223,18 @@ class SessionPipeline:
         # 4. 创建新的控制流 (按序执行：计时 -> 获取锁 -> 消费)
         async def _wait_and_process():
             try:
-                # 步骤A：严格防抖。如果在计时期间被新消息 cancel，会直接抛出 CancelledError 重新排队
+                # 步骤A：严格防抖。计时期间被新消息 cancel 会直接抛 CancelledError 重新排队
                 if not self._skip_debounce.get(chat_id_str, False):
                     await asyncio.sleep(cfg.DEBOUNCE_TIME)
 
                 # 步骤B：计时结束，说明这批消息落定，清空 skip 标志位以备下一轮
                 self._skip_debounce[chat_id_str] = False
 
-                # 从定时器字典中将自己摘除，防止在获取锁执行期间，被无关的新消息错误 Cancel
+                # 从定时器字典中摘除自己，避免获取锁执行期间被无关新消息错误 Cancel
                 if self._timer_tasks.get(chat_id_str) == asyncio.current_task():
                     self._timer_tasks.pop(chat_id_str, None)
 
-                # 步骤C：非阻塞排队。如果上一个管线（例如长耗时的工具链调用）还没跑完，这里乖乖等待
-                # (修复 Bug：解决工具链期间新消息直接被消费没有防抖，现在它们会先防抖，然后在这里等锁)
+                # 步骤C：非阻塞排队。上一个管线（如长耗时工具链）没跑完时在此等待
                 async with self._get_lock(chat_id_str):
                     # 获取锁后进行空载检查
                     if not self.yuki.message_buffer.get(chat_id_str) and not force_reply and not ice_break:
@@ -223,7 +246,7 @@ class SessionPipeline:
                     await self.run_once(chat_id_str, mode, debounce_flag, force_reply, ice_break)
 
             except asyncio.CancelledError:
-                # 收到新消息，当前倒计时作废，这属于防抖的正常现象
+                # 收到新消息，当前倒计时作废，属于防抖的正常现象
                 pass
             except Exception as e:
                 logger.error(f"[Pipeline] 管道处理异常 {chat_id_str}: {e}")
@@ -231,6 +254,10 @@ class SessionPipeline:
         task = asyncio.create_task(_wait_and_process())
         self._timer_tasks[chat_id_str] = task
         return task
+
+    # ---------------------------------------------------------------
+    # 单次流水线
+    # ---------------------------------------------------------------
 
     def _new_pipeline_context(self, chat_id, mode, debounce_flag, force_reply, ice_break) -> dict:
         """创建单次管线上下文，集中声明跨阶段数据的初始形态。"""
@@ -251,7 +278,7 @@ class SessionPipeline:
         try:
             context["debug_snapshot_id"] = context_snapshot_store.put({
                 "chat_id": str(chat_id), "mode": mode, "stage": "run_once",
-                "should_reply": None, "tool_context": {"pipeline_stages": PIPELINE_STAGES}
+                "should_reply": None, "tool_context": {"pipeline_stages": PIPELINE_STAGES},
             })
         except Exception:
             pass
@@ -271,7 +298,10 @@ class SessionPipeline:
                 return context
         return context
 
-    # ------------------- 阶段一精简 -------------------
+    # ---------------------------------------------------------------
+    # 阶段一：读取缓冲
+    # ---------------------------------------------------------------
+
     async def prepare_message_batch(self, context):
         """防抖已在外部完成，此处只需极简读取缓冲，无需任何 Sleep 逻辑"""
         chat_id, mode = context["chat_id"], context["mode"]
@@ -279,7 +309,8 @@ class SessionPipeline:
         if context.get("ice_break"):
             recent_msgs = self.history_manager.get_session(chat_id)[-5:]
             context["combined_text"] = "".join(
-                [m['content'] for m in recent_msgs if m.get("role") != "system"]) or "（群聊安静中）"
+                m["content"] for m in recent_msgs if m.get("role") != "system"
+            ) or "（群聊安静中）"
             context["message_objs"] = []
             context["first_time"] = time.time()
             await self.yuki.boost_activity(chat_id)
@@ -297,9 +328,7 @@ class SessionPipeline:
             return context
 
         cid = str(chat_id)
-        if cid not in self.yuki.message_buffer:
-            self.yuki.message_buffer[cid] = []
-
+        self.yuki.message_buffer.setdefault(cid, [])
         incoming_messages = self.yuki.pop_buffer(cid)
         if not incoming_messages and not context["force_reply"]:
             context["stop"] = True
@@ -311,7 +340,51 @@ class SessionPipeline:
         await self.yuki.boost_activity(chat_id)
         return context
 
-    # ------------------- 后续阶段（除 finalize 记录时间外无改动） -------------------
+    # ---------------------------------------------------------------
+    # 阶段二：内容归一化
+    # ---------------------------------------------------------------
+
+    @staticmethod
+    def _merge_consecutive_messages(incoming_messages: list[dict]) -> str:
+        """合并同一用户连续消息，去掉重复前缀。"""
+        merged_contents: list[str] = []
+        previous_user_id = None
+        for message in incoming_messages:
+            user_id = message.get("user_id")
+            text = message["content"]
+            if user_id and user_id == previous_user_id and text.startswith("【"):
+                text = _QUOTED_PREFIX_RE.sub("", text)
+            merged_contents.append(text)
+            previous_user_id = user_id
+        return "\n".join(merged_contents)
+
+    async def _understand_images(self, images_info: list[dict]) -> list[tuple[dict, Any]]:
+        """并发解析所有图片；预取命中的直接复用结果。"""
+        async def understand_one(img):
+            result = await resolve_image(self.meme_processor, img["url"], img["is_meme"])
+            return img, result
+
+        return await asyncio.gather(*(understand_one(img) for img in images_info))
+
+    @staticmethod
+    def _format_image_result(img: dict, result: Any) -> tuple[str, Any]:
+        """返回 (占位符替换文本, native_attachment)。"""
+        is_meme = img["is_meme"]
+        desc = result.get("description", "未知图片/表情") if isinstance(result, dict) else result
+        desc = str(desc or "").strip()
+        idx = result.get("index") if isinstance(result, dict) else None
+        idx_tag = f"[img:{idx}]" if idx else ""
+        kind = "表情" if is_meme else "图片"
+
+        if result.get("native"):
+            return f"[图片]{idx_tag}", result.get("attachment")
+        if desc:
+            if not is_meme:
+                logger.debug(f"[Pipeline_meme]收到[{kind}:{desc}]{idx_tag}")
+            return f"[{kind}:{desc}]{idx_tag}", None
+        # 识别为空/失败时也必须占掉一个占位符，否则占位符会原样漏进模型上下文
+        return f"[{kind}:未知图片/表情]{idx_tag}", None
+
     async def normalize_incoming_content(self, context):
         """合并消息、理解图片、解析 CQ 码，生成用户输入文本。"""
         # 破冰模式已在 prepare_message_batch 中设置 combined_text，直接跳过
@@ -321,57 +394,22 @@ class SessionPipeline:
         chat_id = context["chat_id"]
         incoming_messages = context.get("incoming_messages") or context["message_objs"]
 
-        # 更新用户昵称到QQ号的映射
+        # 更新用户昵称到 QQ 号的映射
         for m in incoming_messages:
             if m.get("user_id") and m.get("name"):
                 self.yuki.user_mapping.update(chat_id, m["name"], m["user_id"])
-        # ========================================
 
-        # 合并同一用户连续消息，去掉重复前缀
-        merged_contents = []
-        previous_user_id = None
-        for message in incoming_messages:
-            user_id = message.get("user_id")
-            text = message["content"]
-            if user_id and user_id == previous_user_id and text.startswith("【"):
-                # 同一用户连续消息，去掉前缀
-                text = re.sub(r'^【"[^"]*"】说:\s*', '', text)
-            merged_contents.append(text)
-            previous_user_id = user_id
-        combined_text = "\n".join(merged_contents)
+        combined_text = self._merge_consecutive_messages(incoming_messages)
 
         modified_text, images_info = self.meme_processor.extract_urls_from_text(combined_text)
-        native_images = []
+        native_images: list[Any] = []
         if images_info:
-            # 优先复用入队时已启动的预取任务，未命中才同步下载/理解
-            async def understand_image(img):
-                result = await resolve_image(self.meme_processor, img["url"], img["is_meme"])
-                return img, result
-
-            tasks = [understand_image(img) for img in images_info]
-            results = await asyncio.gather(*tasks)
-
-            understood_contents = []
-            for img, result in results:
-                is_meme = img["is_meme"]
-                desc = result.get("description", "未知图片/表情") if isinstance(result, dict) else result
-                desc = str(desc or "").strip()
-                idx = result.get("index") if isinstance(result, dict) else None
-                idx_tag = f"[img:{idx}]" if idx else ""
-                kind = "表情" if is_meme else "图片"
-
-                if result.get("native"):
-                    attachment = result.get("attachment")
-                    if attachment:
-                        native_images.append(attachment)
-                    understood_contents.append(f"[图片]{idx_tag}")
-                elif desc:
-                    understood_contents.append(f"[{kind}:{desc}]{idx_tag}")
-                    if not is_meme:
-                        logger.debug(f"[Pipeline_meme]收到[{kind}:{desc}]{idx_tag}")
-                else:
-                    # 识别为空/失败时也必须占掉一个占位符，否则占位符会原样漏进模型上下文
-                    understood_contents.append(f"[{kind}:未知图片/表情]{idx_tag}")
+            understood_contents: list[str] = []
+            for img, result in await self._understand_images(images_info):
+                placeholder, attachment = self._format_image_result(img, result)
+                if attachment:
+                    native_images.append(attachment)
+                understood_contents.append(placeholder)
 
             combined_text = modified_text
             for content in understood_contents:
@@ -393,6 +431,10 @@ class SessionPipeline:
             context, combined_text=combined_text, native_image_count=len(native_images)
         )
         return context
+
+    # ---------------------------------------------------------------
+    # 阶段三：加载上下文
+    # ---------------------------------------------------------------
 
     async def prepare_chat_context(self, context):
         """加载上下文，确保系统提示词存在，并追加当前用户消息。"""
@@ -416,56 +458,19 @@ class SessionPipeline:
         context["session"] = session
         context["current_time_str"] = current_time_str
         self._update_snapshot(
-            context,
-            current_time_str=current_time_str,
-            message_count=len(session),
+            context, current_time_str=current_time_str, message_count=len(session)
         )
         logger.debug("[Pipeline] 上下文加载完成")
         return context
 
-    async def decide_reply_action(self, context):
-        """群聊中判断是否继续回复；潜水时保留用户上下文。"""
-        # 破冰模式强制回复，跳过决策
-        if context.get("ice_break"):
-            return context
-
-        # 私聊、桌宠和聚焦模式：永远回复，跳过群聊潜水决策
-        if context["mode"] in {"private", "master_private"}:
-            self._update_snapshot(context, should_reply=True)
-            return context
-
-        chat_id = context["chat_id"]
-        mode = context["mode"]
-        session = context["session"]
-
-        # 从已检索的 RAG 结果中计算话题兴趣度：只取未加权重的纯语义分，避免重排加成污染决策
-        rag_interest = 0.0
-        relevant_diaries = context.get("relevant_diaries", [])
-        if relevant_diaries:
-            rag_interest = sum(
-                d.get("relevance", d.get("score", 0)) for d in relevant_diaries
-            ) / len(relevant_diaries)
-            rag_interest = min(1.0, max(0.0, rag_interest))
-
-        if mode == "group" and not await self.engine.decide_to_reply(
-            session,
-            context["message_objs"],
-            chat_id,
-            force_reply=context["force_reply"],
-            rag_interest=rag_interest,
-        ):
-            self.history_manager.replace_session(chat_id, session)
-            logger.info(f"[Pipeline] {cfg.ROBOT_NAME.title()} 决定继续潜水")
-            context["stop"] = True
-            self._update_snapshot(context, should_reply=False)
-        else:
-            self._update_snapshot(context, should_reply=True)
-        return context
+    # ---------------------------------------------------------------
+    # 阶段四：RAG 检索
+    # ---------------------------------------------------------------
 
     async def retrieve_memories(self, context):
         """根据输入长度动态检索相关日记。"""
         if not cfg.RAG_ENABLED:
-            logger.debug(f"[Pipeline] RAG 已关闭，跳过日记检索，直接使用上下文")
+            logger.debug("[Pipeline] RAG 已关闭，跳过日记检索，直接使用上下文")
             context["relevant_diaries"] = []
             return context
 
@@ -484,7 +489,7 @@ class SessionPipeline:
             chat_id=chat_id,
             speaker_names=speaker_names,
             top_k_keywords=dynamic_top_k,
-            n_results=8
+            n_results=8,
         )
         logger.debug(f"[Pipeline] 检索到 {len(relevant_diaries)} 条相关日记")
         logger.info(
@@ -495,6 +500,52 @@ class SessionPipeline:
         context["relevant_diaries"] = relevant_diaries
         self._update_snapshot(context, relevant_diaries=relevant_diaries)
         return context
+
+    # ---------------------------------------------------------------
+    # 阶段五：决策是否回复
+    # ---------------------------------------------------------------
+
+    @staticmethod
+    def _compute_rag_interest(relevant_diaries: list[dict]) -> float:
+        """从 RAG 结果中取纯语义分（不加权），作为群聊回复兴趣度。"""
+        if not relevant_diaries:
+            return 0.0
+        avg = sum(d.get("relevance", d.get("score", 0)) for d in relevant_diaries) / len(relevant_diaries)
+        return min(1.0, max(0.0, avg))
+
+    async def decide_reply_action(self, context):
+        """群聊中判断是否继续回复；潜水时保留用户上下文。"""
+        # 破冰模式强制回复，跳过决策
+        if context.get("ice_break"):
+            return context
+
+        # 私聊 / 桌宠 / 聚焦模式：永远回复，跳过群聊潜水决策
+        if context["mode"] in _ALWAYS_REPLY_MODES:
+            self._update_snapshot(context, should_reply=True)
+            return context
+
+        chat_id = context["chat_id"]
+        session = context["session"]
+        rag_interest = self._compute_rag_interest(context.get("relevant_diaries", []))
+
+        if context["mode"] == "group" and not await self.engine.decide_to_reply(
+            session,
+            context["message_objs"],
+            chat_id,
+            force_reply=context["force_reply"],
+            rag_interest=rag_interest,
+        ):
+            self.history_manager.replace_session(chat_id, session)
+            logger.info(f"[Pipeline] {cfg.ROBOT_NAME.title()} 决定继续潜水")
+            context["stop"] = True
+            self._update_snapshot(context, should_reply=False)
+        else:
+            self._update_snapshot(context, should_reply=True)
+        return context
+
+    # ---------------------------------------------------------------
+    # 阶段六：生成回复
+    # ---------------------------------------------------------------
 
     async def generate_reply(self, context):
         """调用引擎生成回复。"""
@@ -516,12 +567,76 @@ class SessionPipeline:
         context["voice"] = voice
         return context
 
+    # ---------------------------------------------------------------
+    # 阶段七：发送回复（文本 / 表情包 / 语音）
+    # ---------------------------------------------------------------
+
+    @staticmethod
+    def _select_kept_memes(parts: list[str]) -> set[int]:
+        """决定哪些 [MEME] 片段保留：最后一个必留，其余按概率保留。"""
+        meme_indices = [
+            i for i, part in enumerate(parts) if _MEME_FULLMATCH_RE.fullmatch(part.strip())
+        ]
+        keep: set[int] = set()
+        if not meme_indices:
+            return keep
+        keep.add(meme_indices[-1])
+        for idx in meme_indices[:-1]:
+            if random.random() >= _MEME_RANDOM_KEEP_PROB:
+                keep.add(idx)
+        return keep
+
+    def _record_bot_message_to_shot_buffer(self, shot_live_buffer, chat_id, **kwargs):
+        if not shot_live_buffer:
+            return
+        try:
+            shot_live_buffer.append(chat_id, user_id=cfg.SELF_QQ, is_bot=True, **kwargs)
+        except Exception as exc:
+            logger.debug(f"[ShotMemory] 记录到截屏缓冲失败: {exc}")
+
+    async def _send_meme_segment(self, chat_id, send_mode, meme_match, shot_live_buffer):
+        if not getattr(self, "sticker_manager", None):
+            return
+        search_query = meme_match.group(1).strip()
+        best = await self.sticker_manager.get_suitable_sticker(search_query, chat_id)
+        if not best:
+            return
+
+        image_path = os.path.abspath(normalize_stored_path(best["image_ref"]))
+        self.yuki.last_sent_meme[chat_id] = best["id"]
+
+        cq_code = f"[CQ:image,file=file:///{image_path},sub_type=1]"
+        await self.sender.send(chat_id, cq_code, mode=send_mode)
+
+        self._record_bot_message_to_shot_buffer(
+            shot_live_buffer, chat_id,
+            name=cfg.ROBOT_NAME.title(),
+            raw_text="[表情包]",
+            content="[表情包]",
+            segments=[{"type": "image", "data": {"file": image_path}}],
+        )
+        # 因为检索已经耗时，这里的强制睡眠可以大幅缩短
+        await asyncio.sleep(_MEME_SENT_SLEEP)
+
+    async def _send_text_segment(self, chat_id, send_mode, part, shot_live_buffer):
+        await self.sender.send(chat_id, part, mode=send_mode)
+
+        bot_name = cfg.ROBOT_NAME.title()
+        self._record_bot_message_to_shot_buffer(
+            shot_live_buffer, chat_id,
+            name=bot_name,
+            raw_text=part,
+            content=f'【"{bot_name}"】说: {part}',
+            segments=[{"type": "text", "data": {"text": part}}],
+            message_id=None,
+        )
+        await asyncio.sleep(_TEXT_SENT_SLEEP)
+
     async def send_reply(self, context):
         """发送文本、表情包分段或语音回复。"""
         chat_id = context["chat_id"]
         mode = context["mode"]
-        # 发送前再做一次标记归一化：兼容模型把 <layout>/[MEME] 括号写错的情况，
-        # 否则错格式会被当作正文发出去（布局外泄）或漏掉表情包检索。
+        # 发送前再做一次标记归一化：兼容模型把 <layout>/[MEME] 括号写错的情况
         answer_text = clean_visible_reply(context["answer_text"])
         voice = context.get("voice")
 
@@ -531,123 +646,59 @@ class SessionPipeline:
         if mode == "group":
             self.yuki.consume_energy(chat_id)
 
-        logger.debug(f"[Pipeline] {cfg.ROBOT_NAME.title()} 正在发送消息 (精力: {self.yuki.energy.get(chat_id, 0):.1f})")
+        logger.debug(
+            f"[Pipeline] {cfg.ROBOT_NAME.title()} 正在发送消息 "
+            f"(精力: {self.yuki.energy.get(chat_id, 0):.1f})"
+        )
 
         # === 1. 语音直接发送 ===
         if voice:
             await self.sender.send(chat_id, voice, mode=send_mode)
-            logger.info(f"[Pipeline] 发送语音完成")
+            logger.info("[Pipeline] 发送语音完成")
             return context
 
-        # deepseek 等模型有时会返回空字符，拦截并发送占位提示，避免静默无回复
+        # deepseek 等模型有时返回空字符串，拦截并发送占位提示，避免静默无回复
         if not answer_text or not answer_text.strip():
             logger.warning(f"[Pipeline] {cfg.ROBOT_NAME.title()} 回复内容为空，拦截并发送占位提示")
             await self.sender.send(chat_id, "Yuki回复了空字符", mode=send_mode)
             return context
 
         # === 2. 流式发送文本与表情包 ===
-        # 按 [MEME:xxx] 切分，() 保留分隔符，结果类似于 ['文本1', '[MEME:关键词]', '文本2']
-        parts = re.split(r'(\[MEME:.*?\])', answer_text)
+        # 按 [MEME:xxx] 切分，() 保留分隔符，结果类似 ['文本1', '[MEME:关键词]', '文本2']
+        parts = _MEME_SPLIT_RE.split(answer_text)
+        keep_set = self._select_kept_memes(parts)
 
-        # 提前引入截屏缓冲模块，避免循环内重复导入
+        # 延迟导入，避免潜在循环依赖
         try:
             from modules.shot_memory import shot_live_buffer
         except ImportError:
             shot_live_buffer = None
-
-        # 收集所有表情包位置，用于随机丢弃逻辑
-        meme_indices = [i for i, part in enumerate(parts) if re.fullmatch(r'\[MEME:(.+?)\]', part.strip(), re.DOTALL)]
-
-        # 保留最后一个表情包，其余按 60% 概率随机丢弃
-        keep_set = set()
-        if meme_indices:
-            keep_set.add(meme_indices[-1])  # 最后一个必保留
-            for idx in meme_indices[:-1]:
-                if random.random() >= 0.6:
-                    keep_set.add(idx)
 
         for part_idx, part in enumerate(parts):
             part = part.strip()
             if not part:
                 continue
 
-            # 检查当前片段是否为表情包
-            meme_match = re.fullmatch(r'\[MEME:(.+?)\]', part, re.DOTALL)
-
+            meme_match = _MEME_FULLMATCH_RE.fullmatch(part)
             if meme_match:
-                # 如果当前表情包不在保留集合中，则丢弃
                 if part_idx not in keep_set:
                     logger.debug(f"[Pipeline] 表情包被随机丢弃: {part}")
-                    await asyncio.sleep(3.0)
+                    await asyncio.sleep(_MEME_DISCARD_SLEEP)
                     continue
-
-                # -------- 遇到表情包：现场检索 -> 发送 -> 记录截屏 --------
-                if getattr(self, 'sticker_manager', None):
-                    search_query = meme_match.group(1).strip()
-
-                    # 现场检索，此处的网络/计算耗时天然充当了防风控的延迟
-                    best_meme_data = await self.sticker_manager.get_suitable_sticker(search_query, chat_id)
-
-                    if best_meme_data:
-                        image_path = os.path.abspath(normalize_stored_path(best_meme_data['image_ref']))
-                        self.yuki.last_sent_meme[chat_id] = best_meme_data['id']
-
-                        # 发送 CQ 码
-                        cq_code = f"[CQ:image,file=file:///{image_path},sub_type=1]"
-                        await self.sender.send(chat_id, cq_code, mode=send_mode)
-
-                        # 存入截屏缓冲
-                        if shot_live_buffer:
-                            try:
-                                shot_live_buffer.append(
-                                    chat_id,
-                                    name=cfg.ROBOT_NAME.title(),
-                                    raw_text="[表情包]",
-                                    content="[表情包]",
-                                    segments=[{"type": "image", "data": {"file": image_path}}],
-                                    user_id=cfg.SELF_QQ,
-                                    is_bot=True,
-                                )
-                            except Exception as exc:
-                                logger.debug(f"[ShotMemory] 记录表情包到截屏缓冲失败: {exc}")
-
-                        # 因为检索已经耗时，这里的强制睡眠可以大幅缩短
-                        await asyncio.sleep(2.0)
+                await self._send_meme_segment(chat_id, send_mode, meme_match, shot_live_buffer)
             else:
-                # -------- 遇到纯文本：直接发送 -> 记录截屏 --------
-                await self.sender.send(chat_id, part, mode=send_mode)
-
-                if shot_live_buffer:
-                    try:
-                        bot_name = cfg.ROBOT_NAME.title()
-                        shot_live_buffer.append(
-                            chat_id,
-                            name=bot_name,
-                            raw_text=part,
-                            # 保持与接收消息相同的 content 格式习惯，方便后续统一读取
-                            content=f'【"{bot_name}"】说: {part}',
-                            # 严格遵守 Napcat 文本分段格式
-                            segments=[{'type': 'text', 'data': {'text': part}}],
-                            user_id=cfg.SELF_QQ,
-                            is_bot=True,
-                            # 机器人的发送没有真实 message_id，可以留空或填入自定义的标识
-                            message_id=None
-                        )
-                    except Exception as exc:
-                        logger.debug(f"[ShotMemory] 记录文本到截屏缓冲失败: {exc}")
-
-                # 文本发送极快，给一个极短的睡眠防止被平台判定为刷屏
-                await asyncio.sleep(0.5)
+                await self._send_text_segment(chat_id, send_mode, part, shot_live_buffer)
 
         logger.info(f"[Pipeline] 发送完成，内容: {answer_text[:80]}")
         return context
 
+    # ---------------------------------------------------------------
+    # 阶段八：收尾
+    # ---------------------------------------------------------------
+
     def _record_human_timestamp(self, chat_id: str):
         """记录真人消息时间，保留最近若干条用于估算平均间隔。"""
-        store = getattr(self, "_recent_msg_times", None)
-        if store is None:
-            store = self._recent_msg_times = {}
-        stamps = store.setdefault(chat_id, [])
+        stamps = self._recent_msg_times.setdefault(chat_id, [])
         stamps.append(time.time())
         if len(stamps) > 16:
             del stamps[:-16]
@@ -664,7 +715,7 @@ class SessionPipeline:
         if any(m.get("is_reply_watch_event") or m.get("is_timer_event") for m in message_objs):
             return None
         # 只有真正发给人的模式才订阅
-        if context.get("mode") not in {"group", "private", "master_private"}:
+        if context.get("mode") not in _REPLYABLE_MODES:
             return None
 
         callback = getattr(self.engine, "process_callback", None)
@@ -687,7 +738,7 @@ class SessionPipeline:
             energy_ratio=energy / max(1.0, float(cfg.MAX_ENERGY)),
             bioclock_ratio=(bioclock - 0.2) / 1.3,
             activity_ratio=min(activity / 5.0, 1.0),
-            recent_times=list(getattr(self, "_recent_msg_times", {}).get(chat_id, [])),
+            recent_times=list(self._recent_msg_times.get(chat_id, [])),
         )
 
     async def finalize_conversation(self, context):
@@ -722,13 +773,14 @@ class SessionPipeline:
         if len(session) > cfg.DIARY_MAX_LENGTH:
             history_snapshot = session.copy()
             self.history_manager.replace_session(chat_id, [session[0]])
-
             asyncio.create_task(self._background_summarize(chat_id, history_snapshot))
 
         # 破冰模式：递增失败计数
         if context.get("ice_break"):
             async with self.yuki.lock:
-                self.yuki.ice_break_fail_count[chat_id] = self.yuki.ice_break_fail_count.get(chat_id, 0) + 1
+                self.yuki.ice_break_fail_count[chat_id] = (
+                    self.yuki.ice_break_fail_count.get(chat_id, 0) + 1
+                )
             logger.info(f"[Pipeline] {chat_id} 破冰计数递增至 {self.yuki.ice_break_fail_count[chat_id]}")
 
         return context

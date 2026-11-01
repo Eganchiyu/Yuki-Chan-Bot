@@ -6,6 +6,9 @@ from core.engine.engine_monitor import EngineMonitorService
 from core.engine.engine_reply import EngineReplyService
 from core.toolchain import FunctionRegistry, ToolCallManager, ToolRegistryProvider
 from core.tools import TOOL_SPECS
+from modules.stickers.manager import StickerManager
+from modules.vision.image_store import ImageStore
+from modules.vision.processor import MemeProcessor
 
 
 class YukiEngine:
@@ -18,9 +21,9 @@ class YukiEngine:
         self.sender = sender
         self.maid = None
         self.process_callback = None
-        self.sticker_manager = None
-        self.image_store = None
-        self.meme_processor = None
+        self.sticker_manager: StickerManager | None = None
+        self.image_store: ImageStore | None = None
+        self.meme_processor: MemeProcessor | None = None
         self.tool_registry = FunctionRegistry()
         self.tool_registry.scan_and_register(TOOL_SPECS)
         self.tool_registry_provider = ToolRegistryProvider(
