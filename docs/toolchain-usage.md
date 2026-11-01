@@ -177,7 +177,7 @@ ToolCallManager.execute_tool_calls()
 | 工具名 | handler | 功能 |
 |--------|---------|------|
 | `search_diary` | `search_diary_tool` | 查询 Yuki 日记/记忆，支持日期与关键词 |
-| `delegate_to_maid` | `delegate_to_maid_tool` | 将重型任务委托给小女仆，支持后台队列或 inline 执行 |
+| `delegate_to_maid` | `delegate_to_maid_tool` | 将重型任务委托给小女仆后台队列执行 |
 | `send_qq_file` | `send_qq_file_tool` | 发送本地图片、语音或普通文件，支持 [img:XXX] 索引 |
 | `resolve_user` | `resolve_user_tool` | 根据用户昵称解析 QQ 号 |
 | `poke` | `poke_tool` | 戳一戳指定用户 |
@@ -198,10 +198,9 @@ ToolCallManager.execute_tool_calls()
 
 ### 5.2 delegate_to_maid
 
-- 参数：`goal` 必填，`run_inline` 可选。
+- 参数：`goal` 必填。
 - 调用前先使用 `MaidCapabilityBoundary.judge()` 进行能力边界判定。
-- `run_inline=True` 时直接等待 `maid_evolution_loop()` 结果。
-- 默认后台模式会构造 maid task 并放入 `context.yuki.maid_task_queue`。
+- 构造 maid task 放入 `context.yuki.maid_task_queue`，一律后台执行，不提供内联等待。
 
 ### 5.3 send_qq_file
 

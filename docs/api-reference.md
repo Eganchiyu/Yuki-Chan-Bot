@@ -233,7 +233,6 @@
 **参数**：
 - `context: ToolContext` - 工具调用上下文
 - `goal: str` - 任务目标
-- `run_inline: bool` - 是否内联执行，默认 False
 
 **返回**：`ToolResult` - 任务提交结果
 
