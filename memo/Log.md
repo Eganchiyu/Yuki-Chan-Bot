@@ -236,7 +236,7 @@
 - 归档到 `_archive/`：`LiveYukiL2D/`（源码 3.9M，排除 node_modules 307M 与 reference/Open-LLM-VTuber 962M）、`modules/browser_interaction/`、`core/tools/tools_browser.py`、`docs/browser-interaction-mode-plan.md`、`tests/test_modes.py.original`、`docs/removal.diff`（全量代码改动）。
 - 卸载点位：`main.py`（启动函数+调用）、`core/session_pipeline.py`（强制回复集合 / broadcast 分支）、`core/engine/engine_reply.py`（broadcast + record_step 分支）、`core/modes.py`（BrowserInteractionMode）、`core/prompts.py` + `core/brain.py`（browser prompt）、`core/tools/_archived/__init__.py`、`core/engine/engine.py`（注释残留）、`utils/logger.py`、`deploy/run.sh` + `deploy/README.md`、`.gitignore` + `.dockerignore`、`README.md`（含小节编号顺延）、`tests/test_modes.py`（重写为 2 个用例）。
 - 文档：`_archive/README.md`（索引）、`_archive/docs/live2d-archive.md`、`_archive/docs/browser-interaction-archive.md`——记点位表、剥离清单、A/B 两套复原方案、代码用法（独立运行/开关/WS 与 REST 接口/config.json 字段/已知坑）。
-- 状态：`py_compile` 全绿、`bash -n deploy/run.sh` 通过；本机无 pytest（maid_venv 缺 libpython3.11.so），**测试未跑**，需在容器 `docker run yuki:base python -m pytest -q` 或 conda yuki 环境验证。
+- 状态：`py_compile` 全绿、`bash -n deploy/run.sh` 通过；用 `~/miniconda3/envs/yuki/bin/python -m pytest -q` 跑全量：**195 passed**（`/usr/bin/python3` 无 pytest，`maid_venv` 缺 libpython3.11.so 起不来）。新增 `tests/README.md` 记录这套测试环境。
 - 保留未动：`ModeManager`/`ModeSpec`/`FocusModeState` 通用聚焦模式框架（`prompts.py` 仍注入模式状态）。
 
 ## 2026-11-01 清理记忆库：删除弃用的 yuki_memory collection
