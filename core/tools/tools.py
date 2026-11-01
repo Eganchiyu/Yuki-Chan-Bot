@@ -2,18 +2,13 @@
 """工具规格装配：汇总各职责子服务导出的 ToolSpec，并保持旧引用兼容。"""
 from core.toolchain import ToolSpec
 
-from .tools_browser import enter_browser_interaction_tool
 from .tools_diary import search_diary_tool
 from .tools_maid import delegate_to_maid_tool
 from .tools_media import download_file_tool, generate_image_tool
 from .tools_message import poke_tool, send_master_private_tool, send_qq_file_tool
 from .tools_ncm import ncm_download_tool, ncm_search_tool
-from .tools_qzone import publish_qzone_mood_tool
 from .tools_rich import parse_rich_message_tool
-from .tools_search import amap_search_tool, browser_search_tool
 from .tools_snapshot import capture_group_snapshot_tool, search_group_snapshots_tool
-from .tools_status import get_master_status_tool
-from .tools_timer import manage_timer_task_tool
 
 TOOL_SPECS = [
     ToolSpec(
@@ -50,23 +45,6 @@ TOOL_SPECS = [
         },
         handler=search_diary_tool,
     ),
-    ToolSpec(
-        name="get_master_status",
-        description="判断主人是否在线、是否活跃，并返回当前聚焦的窗口标题。",
-        parameters={"type": "object", "properties": {}},
-        handler=get_master_status_tool,
-    ),
-    # ToolSpec(
-    #     name="enter_browser_interaction",
-    #     description="进入浏览器交互聚焦模式。用于需要观察或操作浏览器时调用；如果已有聚焦模式运行则会拒绝重复进入。",
-    #     parameters={
-    #         "type": "object",
-    #         "properties": {
-    #             "goal": {"type": "string", "description": "进入浏览器模式后要完成的任务目标"},
-    #         },
-    #     },
-    #     handler=enter_browser_interaction_tool,
-    # ),
     ToolSpec(
         name="send_master_private",
         description="向主人私聊发送私密信息。用于信息通知、有人提到主人或者想要找主人等场景。",
@@ -156,24 +134,6 @@ TOOL_SPECS = [
             },
         },
         handler=search_group_snapshots_tool,
-    ),
-    ToolSpec(
-        name="publish_qzone_mood",
-        description="发布 QQ 空间说说，支持文本和图片。不要频繁调用。",
-        parameters={
-            "type": "object",
-            "properties": {
-                "content": {"type": "string", "description": "说说文本内容"},
-                "visible": {"type": "integer", "description": "可见范围: 1=公开(默认) 4=仅自己", "default": 1},
-                "image_paths": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "description": "图片本地路径列表（可选），如 [\"D:/photo/a.jpg\"]",
-                },
-            },
-            "required": ["content"],
-        },
-        handler=publish_qzone_mood_tool,
     ),
     ToolSpec(
         name="parse_rich_message",

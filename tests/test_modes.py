@@ -3,7 +3,8 @@ from types import SimpleNamespace
 
 from core.modes import ModeManager
 from core.toolchain import ToolContext, ToolRuntime, ToolRegistryProvider
-from core.tools import TOOL_SPECS, enter_browser_interaction_tool
+from core.tools import TOOL_SPECS
+from core.tools._archived import enter_browser_interaction_tool
 from modules.browser_interaction import BROWSER_TOOL_SPECS
 from modules.browser_interaction.tools import browser_complete_tool, browser_scan_placeholder_tool
 from modules.memory.rag import MemoryRAG
@@ -173,7 +174,8 @@ def test_tool_registry_provider_uses_browser_tool_group_only_in_browser_mode():
     default_tools = provider.list_functions("group")
     browser_tools = provider.list_functions("browser_interaction")
 
-    assert "enter_browser_interaction" in default_tools
+    # enter_browser_interaction 已从主模型卸载
+    assert "enter_browser_interaction" not in default_tools
     assert "browser_scan_placeholder" not in default_tools
     assert "browser_scan_placeholder" in browser_tools
     assert "enter_browser_interaction" not in browser_tools

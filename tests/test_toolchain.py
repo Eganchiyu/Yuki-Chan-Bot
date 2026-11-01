@@ -186,7 +186,7 @@ def test_execute_tool_calls_keep_order():
 
 def test_timer_task_triggers_pipeline_callback():
     async def run():
-        from core.tools import manage_timer_task_tool
+        from core.tools._archived import manage_timer_task_tool
 
         calls = []
 

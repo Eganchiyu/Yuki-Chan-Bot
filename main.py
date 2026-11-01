@@ -14,7 +14,6 @@ from core.prompts import sync_system_prompts
 from core.session_pipeline import SessionPipeline
 from init import load_group_state
 from modules.QQNapcatListen.listen_main import napcat_listen
-from core.tools.tools_status import start_monitor_service, stop_monitor_service
 from modules.vision.processor import MemeProcessor
 from network.napcat import NapCatGateway
 from utils.logger import get_logger, setup_logging
@@ -295,10 +294,6 @@ def _do_cleanup():
         return
     _cleanup_done = True
     logger.info("[Main] 正在清理资源...")
-    try:
-        stop_monitor_service()
-    except Exception as e:
-        logger.error(f"[Main] 停止监控服务时出错: {e}")
     if is_dry_run():
         # 试启动只读自检：不回写配置、不落历史，避免污染生产数据
         logger.info("[Main] DRY_RUN 清理：跳过配置回写与历史落盘")
@@ -376,8 +371,6 @@ if __name__ == "__main__":
             start_context_debug_webui_if_enabled()
 
         warmup_groups(components["yuki"], components["history_manager"])
-
-        start_monitor_service()
 
         if is_dry_run():
             # 试启动门：初始化全部通过即算成功，不接管 NapCat、不消费消息

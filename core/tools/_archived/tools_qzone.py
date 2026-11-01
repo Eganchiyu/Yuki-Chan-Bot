@@ -2,7 +2,7 @@
 """QQ 空间说说发布工具。"""
 from core.toolchain import ToolResult
 
-from .tools_common import _resolve_image_path, logger
+from ..tools_common import _resolve_image_path, logger
 
 
 async def publish_qzone_mood_tool(context, content, visible=1, image_paths=None):

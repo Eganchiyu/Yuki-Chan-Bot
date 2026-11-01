@@ -205,3 +205,12 @@
 - `configs/config.yaml` 已加 `target.masters: [2624538603, 7373372370]`（文件 gitignored，未入库）；注意该文件 `target.qq` 仍为 `737337230`（9 位，疑似少一位），主号需机主自行确认。
 - 文档：`docs/deployment-guide.md`、`docs/module-relationship.md` 补 masters 说明。
 - 验证：用 `~/miniconda3/envs/yuki/bin/python` 实测 `MASTER_QQS == [737337230, 2624538603, 7373372370]`，`is_master_qq` 对大小号均 True；`maid_venv` 仍缺 libpython3.11 不可用，环境无 pytest 故未跑单测。
+
+## 2026-11-01 从主模型卸载五个工具（仅归档，不删除）
+- 新增归档包 `core/tools/_archived/`，`git mv` 移入 `tools_search.py`、`tools_timer.py`、`tools_qzone.py`、`tools_browser.py`、`tools_status.py`；`_archived/__init__.py` 重新导出 6 个 handler 便于日后做成 skill 下放给女仆。
+- 归档文件里的 `from .tools_common import` 改为 `from ..tools_common import`（唯一必要改动）；`tools_status` 依赖的 `_archived/tools_status.py` 自包含。
+- `core/tools/__init__.py`、`core/tools/tools.py`：删除 5 个模块的 import，删除 `get_master_status`、`publish_qzone_mood` 两个 ToolSpec 及注释掉的 `enter_browser_interaction` 块。现役 TOOL_SPECS：delegate_to_maid、search_diary、send_master_private、poke、send_qq_file、ncm_search、ncm_download、capture_group_snapshot、search_group_snapshots、parse_rich_message、download_file、generate_image。
+- `main.py`：移除 `start_monitor_service`/`stop_monitor_service` 的导入、启动与清理调用（该后台线程唯一消费者是 get_master_status）。
+- `core/prompts.py`：删除 `publish_qzone_mood` 图片索引说明与「Qzone动态」两行文案。
+- 测试：`test_system_state.py` 改为断言未注册并从归档导入 handler；`test_modes.py` 改断言 `enter_browser_interaction` 不在默认工具集；`test_toolchain.py` 定时任务测试改从归档导入。
+- 验证：`py_compile` 全部通过；主流程代码无残留引用。环境无 pytest/yaml（`maid_venv` 缺 libpython3.11），未跑单测。

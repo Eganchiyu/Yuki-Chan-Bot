@@ -11,9 +11,10 @@ project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if project_root not in sys.path:
     sys.path.append(project_root)
 
-from core.tools import TOOL_SPECS, get_master_status_tool
+from core.tools import TOOL_SPECS
 from core.toolchain import ToolContext, ToolRuntime
-from core.tools import tools_status as monitor
+from core.tools._archived import get_master_status_tool
+from core.tools._archived import tools_status as monitor
 
 
 def test_master_status_records_recent_activity(monkeypatch):
@@ -41,9 +42,9 @@ def test_master_status_returns_false_when_activity_is_stale(monkeypatch):
     assert status["foreground_window"] == ""
 
 
-def test_master_status_tool_is_registered():
-    spec = next(spec for spec in TOOL_SPECS if spec.name == "get_master_status")
-    assert spec.handler is get_master_status_tool
+def test_master_status_tool_is_not_registered():
+    """get_master_status 已从主模型卸载，代码归档在 core/tools/_archived。"""
+    assert all(spec.name != "get_master_status" for spec in TOOL_SPECS)
 
 
 def test_master_status_tool_returns_boolean_data(monkeypatch):

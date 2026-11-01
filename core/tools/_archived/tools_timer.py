@@ -5,7 +5,7 @@ import datetime
 
 from core.toolchain import ToolResult
 
-from .tools_common import logger
+from ..tools_common import logger
 
 _TIMER_TASKS_KEY = "__timer_tasks__"
 _TIMER_HANDLES_KEY = "__timer_handles__"
