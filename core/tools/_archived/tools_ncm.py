@@ -20,7 +20,7 @@ from core.ncm_login import (
 from core.toolchain import ToolResult
 from utils.http_client import create_tcp_connector
 
-from .tools_common import logger
+from core.tools.tools_common import logger
 
 _NCM_REFERER = "https://music.163.com/"
 _NCM_SEARCH_URL = "https://music.163.com/api/search/get"

@@ -5,7 +5,6 @@ from .tools_diary import search_diary_tool
 from .tools_maid import delegate_to_maid_tool
 from .tools_media import download_file_tool, generate_image_tool
 from .tools_message import poke_tool, send_master_private_tool, send_qq_file_tool
-from .tools_ncm import ncm_download_tool, ncm_search_tool
 from .tools_rich import parse_rich_message_tool
 from .tools_snapshot import capture_group_snapshot_tool, search_group_snapshots_tool
 
@@ -20,8 +19,6 @@ __all__ = [
     "poke_tool",
     "send_master_private_tool",
     "send_qq_file_tool",
-    "ncm_download_tool",
-    "ncm_search_tool",
     "parse_rich_message_tool",
     "capture_group_snapshot_tool",
     "search_group_snapshots_tool",

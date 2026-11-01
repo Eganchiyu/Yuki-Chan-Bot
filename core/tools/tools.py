@@ -6,7 +6,6 @@ from .tools_diary import search_diary_tool
 from .tools_maid import delegate_to_maid_tool
 from .tools_media import download_file_tool, generate_image_tool
 from .tools_message import poke_tool, send_master_private_tool, send_qq_file_tool
-from .tools_ncm import ncm_download_tool, ncm_search_tool
 from .tools_rich import parse_rich_message_tool
 from .tools_snapshot import capture_group_snapshot_tool, search_group_snapshots_tool
 
@@ -82,33 +81,6 @@ TOOL_SPECS = [
             "required": ["file_path"],
         },
         handler=send_qq_file_tool,
-    ),
-    ToolSpec(
-        name="ncm_search",
-        description="搜索网易云音乐歌曲，返回歌曲列表（含歌曲 id、歌手、专辑、时长）。用户想找歌/点歌/要歌曲链接时使用，搜索到后如需下载用 ncm_download。若返回 ncm_cookie_expired 错误并带 qr_image_path，需用 send_qq_file 把该二维码图片发给用户扫码，用户扫码后再次调用即可。",
-        parameters={
-            "type": "object",
-            "properties": {
-                "keyword": {"type": "string", "description": "搜索关键词，如歌名或歌手名"},
-                "limit": {"type": "integer", "description": "返回数量，默认5，最多5", "default": 5},
-            },
-            "required": ["keyword"],
-        },
-        handler=ncm_search_tool,
-    ),
-    ToolSpec(
-        name="ncm_download",
-        description="把网易云音乐歌曲下载到本地，返回文件路径。之后可用 send_qq_file 把文件发送到群里或私聊。VIP/版权受限歌曲可能下载失败。若返回 ncm_cookie_expired 错误并带 qr_image_path，需用 send_qq_file 把该二维码图片发给用户扫码，用户扫码后再次调用即可。",
-        parameters={
-            "type": "object",
-            "properties": {
-                "song_id": {"type": "integer", "description": "歌曲 ID（来自 ncm_search 结果）"},
-                "quality": {"type": "string", "description": "码率，默认320000（320kbps）；失败可降为128000", "default": "320000"},
-                "filename": {"type": "string", "description": "保存的文件名，可省略"},
-            },
-            "required": ["song_id"],
-        },
-        handler=ncm_download_tool,
     ),
     ToolSpec(
         name="capture_group_snapshot",

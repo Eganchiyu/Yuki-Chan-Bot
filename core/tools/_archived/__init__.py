@@ -3,12 +3,15 @@
 
 这些工具保留代码以备后续作为 skill 下放给小女仆，当前不在 TOOL_SPECS 中注册。
 """
+from .tools_ncm import ncm_download_tool, ncm_search_tool
 from .tools_qzone import publish_qzone_mood_tool
 from .tools_search import amap_search_tool, browser_search_tool
 from .tools_status import get_master_status_tool
 from .tools_timer import manage_timer_task_tool
 
 __all__ = [
+    "ncm_download_tool",
+    "ncm_search_tool",
     "publish_qzone_mood_tool",
     "amap_search_tool",
     "browser_search_tool",

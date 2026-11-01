@@ -257,3 +257,18 @@
 - 主/备对话：`_request_with_failover` 按 `THINKING_EFFORT` 注入 `reasoning_effort`。
 - 视觉：DeepSeek 端点写死 `reasoning_effort="none"`，不再依赖配置。
 - 待办：`maid_venv` 缺 libpython3.11，测试未跑，需重建环境。
+
+## 2026-11-01 18:2x 排查「挂几小时后 LLM 全部 Connection timeout」
+- 现象：yuki_20261101 日志 16:15:45 最后一次出站成功；16:26 起所有外部请求在正好 10s 失败（= aiohttp connect=10 超时），持续到 17:51 重启。
+- 同期非 LLM 出站也挂（16:32 图片下载 15s total 超时）；127.0.0.1 的 NapCat WS 一直正常。
+- 主机出口是 Clash(Mihomo) TUN + fake-ip：api.deepseek.com -> 198.18.0.111；DIRECT 的国内图片域名也一起挂。
+- 结论：失败点在网络出口层（Mihomo 出站/DNS）或在进程内 DNS 解析（aiohttp ThreadedResolver 与 asyncio.to_thread 共默认线程池）。重启即恢复只符合后者。
+- 附带发现：BACKUP_BASE_URL 与主线路同域名，熔断切换无意义。
+- 状态：待下次复现时现场取证（curl vs 容器内请求）后再改代码。
+
+## 2026-11-01 归档 ncm（网易云）工具
+- 与 a8db344 同款处理：`core/tools/tools_ncm.py` → `core/tools/_archived/tools_ncm.py`，并把 `from .tools_common import logger` 改为 `from core.tools.tools_common import logger`。
+- `core/tools/_archived/__init__.py` 增加 `ncm_search_tool`、`ncm_download_tool` 导出；`core/tools/__init__.py`、`core/tools/tools.py` 删除对应 import 与两个 ToolSpec。
+- 现役 TOOL_SPECS（10 个）：delegate_to_maid、search_diary、send_master_private、poke、send_qq_file、capture_group_snapshot、search_group_snapshots、parse_rich_message、download_file、generate_image。
+- 保留未动：`core/ncm_login.py`（归档模块仍 import）、`config.py` 的 ncm_cookie_file / ncm_download_dir、README 的 ncm 章节。tests/test_tool_markup.py 仅把 "ncm_search" 当字符串样例，无影响。
+- 测试：206 项中 205 通过；`test_vision_prefetch::test_pipeline_enqueue_schedules_prefetch_immediately` 失败（`AttributeError: _recent_msg_times`），来自工作区里他人未提交的 session_pipeline.py 改动，与本次无关。
