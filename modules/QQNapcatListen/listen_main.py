@@ -25,6 +25,9 @@ logger = get_logger("napcat_listen")
 _ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 _STAGING_DIR = os.path.join(_ROOT, "staging")
 _SUPERVISOR_STATE = os.path.join(_ROOT, "deploy", "state.json")
+# 重启会杀掉进程，所以「重启完成」这句话必须先落盘，等新进程连上 NapCat 再补发
+_RESTART_NOTICE_FILE = os.path.join(_ROOT, "data", "restart_notice.json")
+RESTART_NOTICE_MAX_AGE = 600  # 超过 10 分钟就当作过期，避免隔很久才补发
 MAX_RESTART_PER_HOUR = int(os.environ.get("YUKI_MAX_RESTART_PER_HOUR", 5))
 
 
@@ -39,6 +42,9 @@ async def start_background_tasks(gateway, pipeline, mode: str):
 
     from core.maid.maid_worker import maid_worker
     asyncio.create_task(maid_worker(engine, yuki, gateway, pipeline.history_manager))
+
+    # /重启 前落盘的「重启完成」消息，等 NapCat 连上后补发回原会话
+    asyncio.create_task(send_pending_restart_notice(gateway))
 
     # 自改会重启容器，把「等结果」的协程打断而宿主的 dsh 还在跑；
     # 这个巡检负责把那些已完成、却没人汇报的结果捡回来交给 Yuki。
@@ -141,6 +147,61 @@ def request_container_restart(reason: str = "") -> str:
     return task_dir
 
 
+def _write_restart_notice(chat_id, text: str, mode: str = "group") -> None:
+    """落盘「重启完成」待发消息，供新进程启动后补发到原会话。"""
+    payload = {
+        "chat_id": int(chat_id),
+        "mode": mode,
+        "text": text,
+        "ts": time.time(),
+    }
+    os.makedirs(os.path.dirname(_RESTART_NOTICE_FILE), exist_ok=True)
+    tmp = _RESTART_NOTICE_FILE + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=False)
+    os.replace(tmp, _RESTART_NOTICE_FILE)
+
+
+def _pop_restart_notice() -> dict | None:
+    """取出并删除待发的重启通知。"""
+    try:
+        with open(_RESTART_NOTICE_FILE, encoding="utf-8") as f:
+            notice = json.load(f)
+    except FileNotFoundError:
+        return None
+    except Exception as e:
+        logger.warning(f"[Restart] 读取重启通知失败: {e}")
+        notice = None
+    try:
+        os.remove(_RESTART_NOTICE_FILE)
+    except Exception:
+        pass
+    return notice
+
+
+async def send_pending_restart_notice(gateway, retries: int = 20, delay: float = 3.0):
+    """启动后补发「重启完成」到重启前所在的会话。"""
+    notice = _pop_restart_notice()
+    if not notice:
+        return
+    if time.time() - float(notice.get("ts") or 0) > RESTART_NOTICE_MAX_AGE:
+        logger.warning("[Restart] 重启完成通知已过期，丢弃")
+        return
+
+    chat_id = notice.get("chat_id")
+    text = notice.get("text") or f"{cfg.ROBOT_NAME.title()} 重启完成，我回来啦~"
+    mode = notice.get("mode") or "group"
+    for attempt in range(1, retries + 1):
+        try:
+            await gateway.send(chat_id, text, mode=mode)
+            logger.info(f"[Restart] 已向 {chat_id} 补发重启完成通知")
+            return
+        except Exception as e:
+            logger.warning(f"[Restart] 重启完成通知发送失败（第 {attempt}/{retries} 次）: {e}")
+            await asyncio.sleep(delay)
+    logger.error("[Restart] 重启完成通知多次发送失败，已放弃")
+
+
 async def _restart_flow(gateway, group_id):
     """先在本群喊一声“正在重启”，确认发出去了再投递重启请求。"""
     recent = _recent_restart_count()
@@ -156,6 +217,14 @@ async def _restart_flow(gateway, group_id):
     except Exception as e:
         # 消息发不出去也照样重启：卡住的机器更需要重启
         logger.error(f"[Restart] 重启前通知失败: {e}")
+
+    # 必须在容器被重建之前落盘，否则新进程不知道要回哪个会话
+    try:
+        _write_restart_notice(
+            group_id, f"{cfg.ROBOT_NAME.title()} 重启完成，我回来啦~", mode="group"
+        )
+    except Exception as e:
+        logger.error(f"[Restart] 记录重启完成通知失败: {e}")
 
     try:
         task_dir = request_container_restart(f"{cfg.ROBOT_NAME} 群聊 /重启 指令")

@@ -326,3 +326,10 @@
 - 端到端验证：18:26:54 投递 → 18:27:00 容器重建 → 18:27:07 supervisor 记录 restarted 且健康；记忆快照 backups/yuki_memory/20261102_182655。
 - 已知：run.sh 用 docker rm -f（SIGKILL），不是优雅停机；靠 supervisor 重启前的记忆快照兜底。NapCat 离线时 /notify 会 500，不影响重启。
 - 测试：test_napcat_gateway / test_napcat_inbound / test_modes 14 passed。
+
+## 2026-11-02 18:3x /重启 补发「重启完成」
+- listen_main.py 新增：_write_restart_notice / _pop_restart_notice / send_pending_restart_notice。
+  /重启 时先把「Yuki 重启完成，我回来啦~」写进 data/restart_notice.json（含 chat_id/mode/ts），
+  新进程在 start_background_tasks 里补发，最多重试 20 次×3s，超过 10 分钟视为过期丢弃。
+- 端到端实测：18:29:28 投递 → 18:29:32 容器重建 → 18:29:39 WS 连上 → 「已向 1057020972 补发重启完成通知」
+  → data/restart_notice.json 已被消费删除。
