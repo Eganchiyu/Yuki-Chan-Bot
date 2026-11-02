@@ -280,7 +280,9 @@ maid_task_queue: asyncio.Queue     # 小女仆任务队列
 
 **职责**：
 - 把 NapCat 事件翻译成 `IncomingMessage` 并投给 `SessionPipeline`
-- 群聊开关控制（`/关闭`, `/开启`）
+- 群聊开关控制（`/关闭`, `/开启`）；主人专用 `/重启`：先在本群回一句「正在重启」，
+  再把 `{"type": "restart"}` 写进 `staging/`，交给宿主 `deploy/supervisor.py`
+  跑 `deploy/run.sh` 重建容器并做健康探活
 - **双模路由**：群聊模式下同时接收主人私聊消息，路由为 `master_private` 模式
 - 戳一戳：只处理戳到机器人自己的事件，按普通消息入队（不插队）
 - 快速唤醒：命中机器人名字或 @ 到机器人时，跳过防抖并强制回复

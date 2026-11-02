@@ -7,6 +7,8 @@
 不再有模块级全局与 configure_runtime 注入式 setter。
 """
 import asyncio
+import json
+import os
 import time
 
 from config import cfg
@@ -17,6 +19,13 @@ from network.napcat import mentions_self, smart_truncate
 from utils.logger import get_logger
 
 logger = get_logger("napcat_listen")
+
+# 容器与宿主用同一个绝对路径（见 deploy/run.sh）：staging 是唯一可写的交接目录，
+# 重启请求写进去，由宿主 deploy/supervisor.py 轮询后执行 run.sh 重建容器。
+_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+_STAGING_DIR = os.path.join(_ROOT, "staging")
+_SUPERVISOR_STATE = os.path.join(_ROOT, "deploy", "state.json")
+MAX_RESTART_PER_HOUR = int(os.environ.get("YUKI_MAX_RESTART_PER_HOUR", 5))
 
 
 async def start_background_tasks(gateway, pipeline, mode: str):
@@ -97,15 +106,81 @@ def _build_group_message(group_id, raw_message, sender_name, user_id, message_id
     )
 
 
+def _recent_restart_count() -> int:
+    """读宿主 supervisor 的历史，统计最近一小时的重启次数（用于提前拦下超额请求）。"""
+    try:
+        with open(_SUPERVISOR_STATE, encoding="utf-8") as f:
+            history = (json.load(f) or {}).get("history") or []
+    except Exception:
+        return 0
+    now = time.time()
+    return sum(
+        1
+        for h in history
+        if isinstance(h, dict)
+        and h.get("result") in {"restarted", "restart_failed"}
+        and now - float(h.get("ts") or 0) < 3600
+    )
+
+
+def request_container_restart(reason: str = "") -> str:
+    """把重启请求投递给宿主 supervisor（它负责跑 deploy/run.sh 重建容器）。
+
+    容器内没有 docker 权限，只能通过 staging/ 交接；supervisor 每 3 秒扫一次。
+    """
+    task_dir = os.path.join(_STAGING_DIR, f"restart_{time.strftime('%Y%m%d_%H%M%S')}")
+    os.makedirs(task_dir, exist_ok=True)
+    payload = {
+        "type": "restart",
+        "summary": reason or "群聊 /重启 指令",
+        "requested_by": "master",
+        "requested_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+    }
+    with open(os.path.join(task_dir, "request.json"), "w", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=False, indent=2)
+    return task_dir
+
+
+async def _restart_flow(gateway, group_id):
+    """先在本群喊一声“正在重启”，确认发出去了再投递重启请求。"""
+    recent = _recent_restart_count()
+    if recent >= MAX_RESTART_PER_HOUR:
+        logger.warning(f"[Restart] 一小时内已重启 {recent} 次，拒绝本次请求")
+        await gateway.send(
+            group_id, f"一个小时内人家已经重启 {recent} 次啦，先歇一会儿吧~", mode="group"
+        )
+        return
+
+    try:
+        await gateway.send(group_id, f"{cfg.ROBOT_NAME.title()} 正在重启，稍等一下下~", mode="group")
+    except Exception as e:
+        # 消息发不出去也照样重启：卡住的机器更需要重启
+        logger.error(f"[Restart] 重启前通知失败: {e}")
+
+    try:
+        task_dir = request_container_restart(f"{cfg.ROBOT_NAME} 群聊 /重启 指令")
+        logger.warning(f"[Restart] 已投递重启请求: {task_dir}")
+    except Exception as e:
+        logger.error(f"[Restart] 投递重启请求失败: {e}")
+
+
 def handle_group_switch(pipeline, gateway, group_id, gid_str, user_id, raw_msg):
-    """处理群聊开关指令，返回 True 表示已拦截。"""
+    """处理群聊开关/重启指令，返回 True 表示已拦截。"""
     msg_clean = raw_msg.strip()
-    if msg_clean not in {"/关闭", "/开启"}:
+    if msg_clean not in {"/关闭", "/开启", "/重启"}:
         return False
 
     if not cfg.is_master_qq(user_id):
-        hint = "只有哥哥大人才能关掉我哦！" if msg_clean == "/关闭" else "只有哥哥大人才能唤醒我哦！"
+        hint = {
+            "/关闭": "只有哥哥大人才能关掉我哦！",
+            "/开启": "只有哥哥大人才能唤醒我哦！",
+            "/重启": "只有哥哥大人才能重启我哦！",
+        }[msg_clean]
         asyncio.create_task(gateway.send(group_id, hint, mode="group"))
+        return True
+
+    if msg_clean == "/重启":
+        asyncio.create_task(_restart_flow(gateway, group_id))
         return True
 
     opening = msg_clean == "/开启"

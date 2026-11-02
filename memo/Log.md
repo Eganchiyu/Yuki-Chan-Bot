@@ -317,3 +317,12 @@
 - 测试：tests/test_llm_client.py + test_llm_retry.py 20 passed；容器内实测正常请求 0.7s、坏端口触发重建后恢复。
 - 系统设置：xfce4-power-manager dpms-enabled=false，dpms-on-*/blank-on-* (ac+battery)=0 → xset 显示 DPMS is Disabled，不再自动熄屏/锁屏。inactivity 原本就是 0（不挂起）。
 - 待办：合盖动作仍是 4（休眠），合盖仍会断网；journal 未持久化。
+
+## 2026-11-02 18:3x 新增群聊 /重启 指令
+- modules/QQNapcatListen/listen_main.py：handle_group_switch 增加 "/重启"（仅 master）。
+  流程：_restart_flow → 先 await gateway.send 发「正在重启」→ 再往 staging/restart_<ts>/request.json
+  写 {"type": "restart"}；宿主 supervisor 每 3s 轮询，执行 deploy/run.sh 重建容器 + /health 探活。
+- 额度保护：_recent_restart_count() 读 deploy/state.json，近 1 小时重启 ≥ MAX_RESTART_PER_HOUR(5) 时直接拒绝。
+- 端到端验证：18:26:54 投递 → 18:27:00 容器重建 → 18:27:07 supervisor 记录 restarted 且健康；记忆快照 backups/yuki_memory/20261102_182655。
+- 已知：run.sh 用 docker rm -f（SIGKILL），不是优雅停机；靠 supervisor 重启前的记忆快照兜底。NapCat 离线时 /notify 会 500，不影响重启。
+- 测试：test_napcat_gateway / test_napcat_inbound / test_modes 14 passed。
