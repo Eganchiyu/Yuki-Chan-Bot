@@ -66,8 +66,8 @@ class EngineDecisionService:
             return True
 
         if bot_calling_only and any(any(kw in m["raw_text"].lower() for kw in cfg.keywords) for m in message_objs):
-            self.yuki.desire_to_start_topic[cid] *= 0.8
-            logger.info(f"[Decision] 防套娃机制触发：纯 BOT 召唤，静默")
+            self.yuki.desire_to_start_topic[cid] *= 0.75
+            logger.info(f"[Decision] 防套娃机制触发：纯 BOT 召唤，回复欲 x0.75")
             # return False
 
         if current_e >= 85:

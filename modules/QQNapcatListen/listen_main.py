@@ -487,7 +487,8 @@ async def feed_message(
 
     # 被叫到（叫名字或被 @）就跳过防抖并强制回复：一个是关键词命中，
     # 一个是结构化 at 段（必须比对机器人自己的 QQ）
-    called = (
+    # BOT 消息（白名单放行的）永不强制回复，否则两个 BOT 互相召唤会死循环
+    called = not incoming_message.is_bot and (
         cfg.ROBOT_NAME.lower() in incoming_message.raw_text.lower()
         or mentions_self(incoming_message.segments, incoming_message.raw_text, cfg.SELF_QQ)
     )
