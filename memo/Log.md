@@ -302,3 +302,18 @@
 - `core/tools/tools.py` 的 `generate_image` ToolSpec 描述与 `image_paths` 参数说明改为列出这两张固定人设参考图（含外貌/服装要点），替换原来只提 Yuki 单张的措辞。
 - 校验：容器 yuki 内 `_resolve_reference_image` 对两条路径均通过（output 目录白名单 + 5MB 内 + PNG 魔数）；两文件均在 `output/` 下，被 .gitignore 忽略，不进版本库。提交 b6d0823。
 - 状态：代码已提交，需重启 yuki 容器/会话才能让新工具描述生效。
+
+## 2026-11-02 18:2x 再次复现（16:57–17:32）
+- 排除挂起：/sys/power/suspend_stats/success=0；所有 yuki 日志 30s 心跳无 >60s 空洞（进程从未冻结）；journal 无 suspend 记录；xfce4-power-manager inactivity-on-ac=0。
+- 熄屏/锁屏确实在发生但与网络无关：`xset q` DPMS Enabled, Standby 600 / Off 900；light-locker 在跑；xfce4-power-manager 无 dpms-* 键 → 用默认值，"设置了不熄屏"实际没生效。
+- 16:57–17:32 并非只 deepseek 挂：图片下载同样 15s 超时；16:50 api.rua.chat 还完全正常。
+- 18:16 容器内实测 TLS 0.12s / llm_chat 返回 OK → 已自愈，无需重启 → "重启 run.sh 就好" 大概率是巧合。
+- 12:27 NapCat(QQ) 掉线是独立事件：3001 端口 Connect refused。
+- journal 未持久化（/var/log/journal 空）→ 旧 boot 证据全丢；取证需要 sudo 开 Storage=persistent。
+
+## 2026-11-02 18:3x 加固 + 关掉自动熄屏
+- utils/http_client.py: 新增 DedicatedDnsResolver（独立 4 线程池 + 8s 超时），绕开与 asyncio.to_thread 共用默认池的解析排队风险。
+- utils/llm_client.py: 全局会话改用该解析器；chat_completion_raw 拆出 _post_once，连接层异常（Timeout/Connector/OSError/Disconnected）时 reset_global_session() 重建会话并立即重试一次，等价于"轻量重启"。
+- 测试：tests/test_llm_client.py + test_llm_retry.py 20 passed；容器内实测正常请求 0.7s、坏端口触发重建后恢复。
+- 系统设置：xfce4-power-manager dpms-enabled=false，dpms-on-*/blank-on-* (ac+battery)=0 → xset 显示 DPMS is Disabled，不再自动熄屏/锁屏。inactivity 原本就是 0（不挂起）。
+- 待办：合盖动作仍是 4（休眠），合盖仍会断网；journal 未持久化。

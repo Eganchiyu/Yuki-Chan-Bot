@@ -2,9 +2,13 @@
 """统一 HTTP/SSL 客户端工具。"""
 from __future__ import annotations
 
+import asyncio
+import functools
 import os
+import socket
 import ssl
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 import aiohttp
@@ -54,6 +58,73 @@ def create_tcp_connector(**kwargs: Any) -> aiohttp.TCPConnector:
     """创建统一 SSL 配置的 aiohttp TCPConnector。"""
     kwargs.setdefault("ssl", create_ssl_context())
     return aiohttp.TCPConnector(**kwargs)
+
+
+class DedicatedDnsResolver(aiohttp.abc.AbstractResolver):
+    """独立线程池的域名解析器。
+
+    aiohttp 默认的 ThreadedResolver 走 loop.getaddrinfo，用的是事件循环的默认
+    ThreadPoolExecutor —— 与 asyncio.to_thread 共用（8 核只有 12 个 worker）。
+    一旦有 to_thread 任务卡住，所有域名解析就会排队，表现为连接阶段超时。
+    这里给解析单独开一个小线程池，彻底与业务线程隔离。
+    """
+
+    def __init__(self, max_workers: int = 4, timeout: float = 8.0) -> None:
+        self._executor = ThreadPoolExecutor(
+            max_workers=max_workers, thread_name_prefix="dns-resolver"
+        )
+        self._timeout = timeout
+
+    async def resolve(
+        self, host: str, port: int = 0, family: socket.AddressFamily = socket.AF_INET
+    ) -> list:
+        loop = asyncio.get_running_loop()
+        func = functools.partial(
+            socket.getaddrinfo,
+            host,
+            port,
+            family=family,
+            type=socket.SOCK_STREAM,
+            flags=socket.AI_ADDRCONFIG,
+        )
+        infos = await asyncio.wait_for(
+            loop.run_in_executor(self._executor, func), timeout=self._timeout
+        )
+        results = []
+        for fam, _, proto, _, address in infos:
+            if fam == socket.AF_INET6 and len(address) >= 2:
+                results.append(
+                    {
+                        "hostname": host,
+                        "host": address[0],
+                        "port": port,
+                        "family": fam,
+                        "proto": proto,
+                        "flags": socket.AI_NUMERICHOST | socket.AI_NUMERICSERV,
+                    }
+                )
+            else:
+                results.append(
+                    {
+                        "hostname": host,
+                        "host": address[0],
+                        "port": address[1] if len(address) > 1 else port,
+                        "family": fam,
+                        "proto": proto,
+                        "flags": socket.AI_NUMERICHOST | socket.AI_NUMERICSERV,
+                    }
+                )
+        if not results:
+            raise OSError(f"getaddrinfo() 未返回任何地址: {host}")
+        return results
+
+    async def close(self) -> None:
+        self._executor.shutdown(wait=False)
+
+
+def create_dns_resolver(**kwargs: Any) -> DedicatedDnsResolver:
+    """创建独立线程池的解析器（供长连接复用的全局会话使用）。"""
+    return DedicatedDnsResolver(**kwargs)
 
 
 def urlopen(url_or_request: str | urllib.request.Request, **kwargs: Any):

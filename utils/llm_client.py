@@ -6,13 +6,14 @@
 - 全局 aiohttp Session 复用
 - 平台参数适配（sanitize_payload）
 """
+import asyncio
 import time
 from typing import List, Dict, Any, Optional
 
 import aiohttp
 
 from config import cfg
-from utils.http_client import create_tcp_connector
+from utils.http_client import create_dns_resolver, create_tcp_connector
 from utils.logger import get_logger
 
 logger = get_logger("llm_client")
@@ -78,6 +79,7 @@ async def _get_global_session() -> aiohttp.ClientSession:
             limit=10,
             use_dns_cache=True,
             ttl_dns_cache=300,
+            resolver=create_dns_resolver(),
         )
         _global_session = aiohttp.ClientSession(
             connector=connector,
@@ -86,27 +88,39 @@ async def _get_global_session() -> aiohttp.ClientSession:
     return _global_session
 
 
-async def chat_completion_raw(
-    base_url: str,
-    api_key: str,
-    messages: List[Dict[str, Any]],
-    model: str,
-    timeout: float = 60.0,
-    **kwargs,
+# 连接阶段（DNS/建连/TLS 握手）的异常：这类失败换个新会话往往就能自愈
+_CONN_PHASE_ERRORS = (
+    asyncio.TimeoutError,
+    aiohttp.ClientConnectorError,
+    aiohttp.ClientOSError,
+    aiohttp.ServerDisconnectedError,
+)
+
+
+async def reset_global_session(reason: str = "") -> None:
+    """丢弃全局 Session（连带连接池与 DNS 缓存）并重建。
+
+    作用等同一次轻量进程重启：卡死的连接池、过期 IP、异常解析状态全部丢弃，
+    避免出现"只有重启 run.sh 才能恢复"的情况。
+    """
+    global _global_session
+    old, _global_session = _global_session, None
+    logger.warning(f"[LLM] 重建 HTTP 会话（{reason or '连接异常'}）")
+    if old is not None and not old.closed:
+        try:
+            await old.close()
+        except Exception:
+            pass
+
+
+async def _post_once(
+    session: aiohttp.ClientSession,
+    endpoint: str,
+    payload: Dict[str, Any],
+    headers: Dict[str, str],
+    timeout: float,
 ) -> Dict[str, Any]:
-    """发送 OpenAI 兼容格式请求，并返回原始 message，供工具调用流程使用。"""
-    session = await _get_global_session()
-
-    endpoint = f"{_normalize_url(base_url)}/chat/completions"
-
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json",
-    }
-    # 显式禁用 SSE 流式，避免部分 API 默认返回 text/event-stream
-    payload = {"model": model, "messages": messages, "stream": False, **kwargs}
-    payload = _sanitize_payload(model, payload, base_url=base_url)
-
+    """发一次请求；HTTP 错误按原样抛出，连接层错误交给调用方处理。"""
     client_timeout = aiohttp.ClientTimeout(total=timeout, connect=10)
     async with session.post(
         endpoint, json=payload, headers=headers, timeout=client_timeout
@@ -126,6 +140,39 @@ async def chat_completion_raw(
 
         err_info = await resp.text()
         raise Exception(f"HTTP {resp.status}: {err_info}")
+
+
+async def chat_completion_raw(
+    base_url: str,
+    api_key: str,
+    messages: List[Dict[str, Any]],
+    model: str,
+    timeout: float = 60.0,
+    **kwargs,
+) -> Dict[str, Any]:
+    """发送 OpenAI 兼容格式请求，并返回原始 message，供工具调用流程使用。
+
+    连接阶段失败时重建会话并立即重试一次，避免会话/连接池被卡死后只能重启进程。
+    """
+    endpoint = f"{_normalize_url(base_url)}/chat/completions"
+
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
+    # 显式禁用 SSE 流式，避免部分 API 默认返回 text/event-stream
+    payload = {"model": model, "messages": messages, "stream": False, **kwargs}
+    payload = _sanitize_payload(model, payload, base_url=base_url)
+
+    for attempt in range(2):
+        session = await _get_global_session()
+        try:
+            return await _post_once(session, endpoint, payload, headers, timeout)
+        except _CONN_PHASE_ERRORS as exc:
+            if attempt == 0:
+                await reset_global_session(f"{type(exc).__name__}: {exc}")
+                continue
+            raise
 
 
 async def chat_completion(
