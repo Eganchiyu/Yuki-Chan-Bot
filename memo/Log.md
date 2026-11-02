@@ -333,3 +333,8 @@
   新进程在 start_background_tasks 里补发，最多重试 20 次×3s，超过 10 分钟视为过期丢弃。
 - 端到端实测：18:29:28 投递 → 18:29:32 容器重建 → 18:29:39 WS 连上 → 「已向 1057020972 补发重启完成通知」
   → data/restart_notice.json 已被消费删除。
+
+## 2026-11-02 白名单BOT不再强制回复 + 纯BOT发言降欲 0.75
+- listen_main.py：`called` 前置 `not incoming_message.is_bot`，即白名单放行的 BOT 消息即使叫名字/@ 也不带 force_reply，不再跳过防抖，避免两个 BOT 互相召唤死循环。
+- engine_decision.py：防套娃惩罚 `desire *= 0.8` 改为 `0.75`（纯 BOT 发言时降回复欲）。
+- 验证：容器内 tests/test_ice_break_pipeline.py 13 passed；提交 51bbb38。
