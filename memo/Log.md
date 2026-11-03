@@ -372,3 +372,8 @@
 - core/session_pipeline.py::retrieve_memories 之后加 `_merge_recent_recall`：按 chat_id 记录最近两轮各自「新召回」的 top-1，下一轮把这两条带进注入列表，剩余名额用本轮新召回补齐，去重键为 timestamp+正文。
 - 效果：t1 = 5/4/3/2/1；t2 = 带 t1 的 1 + 新召回 top4；t3 = 带 t1 的 1、t2 的 1' + 新召回 top3。
 - 注意：_compute_rag_interest 现在吃的是合并后的列表（含保留条目）；注入顺序经 prompts 的 reversed() 后变为「新召回 → 保留条目」。状态：语法检查 + 逻辑脚本验证通过，未实跑。
+
+## 2026-11-03 召回保留条目落盘
+- 新增 core/recall_cache.py：`RecallCacheStore`（/ `recall_cache_store` 单例）把每个 chat_id 最近两轮召回的 top-1 写到 data/recall_best.json，惰性加载 + 线程锁 + 临时文件 os.replace 原子写。
+- core/session_pipeline.py::_merge_recent_recall 改用它读写，去掉内存字典，重启后保留条目仍在；只留最近两轮。
+- 状态：store 读写/裁剪/落盘用脚本验证通过，pipeline 语法检查通过，未实跑。

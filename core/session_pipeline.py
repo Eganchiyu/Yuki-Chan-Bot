@@ -10,6 +10,7 @@ from typing import Any
 
 from config import cfg
 from core.brain import YukiState
+from core.recall_cache import recall_cache_store
 from core.reply_format import clean_visible_reply
 from core.reply_watch import auto_subscribe, is_human_incoming, resolve
 from core.toolchain import SKIP_REPLY_MARKER
@@ -107,7 +108,6 @@ class SessionPipeline:
         self.last_process_end_time: dict = {}
         self.last_msg_time: dict = {}
         self._recent_msg_times: dict = {}  # chat_id -> 最近真人消息时间戳（用于估算等待）
-        self._recent_recall_best: dict = {}  # chat_id -> 最近两轮召回各自的新 top-1
 
         self.stages = [
             self.prepare_message_batch,
@@ -479,7 +479,7 @@ class SessionPipeline:
     def _merge_recent_recall(self, chat_id: str, new_results: list[dict]) -> list[dict]:
         """把最近两轮各自召回的 top-1 带进本轮，剩余名额用本轮新召回补齐。"""
         top_k = max(1, int(cfg.INJECT_TOP_K))
-        history: list[dict] = self._recent_recall_best.setdefault(chat_id, [])
+        history: list[dict] = recall_cache_store.get(chat_id)
 
         merged: list[dict] = []
         seen: set[str] = set()
@@ -502,6 +502,7 @@ class SessionPipeline:
         if new_results:
             history.append(new_results[0])
             del history[:-2]
+            recall_cache_store.put(chat_id, history)
         return merged
 
     async def retrieve_memories(self, context):
