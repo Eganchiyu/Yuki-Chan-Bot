@@ -155,6 +155,7 @@ async def test_pipeline_enqueue_schedules_prefetch_immediately():
     pipeline._skip_debounce = {}
     pipeline._chat_locks = {}
     pipeline.last_msg_time = {}
+    pipeline._recent_msg_times = {}
     pipeline.yuki = type("Y", (), {"message_buffer": {}})()
 
     msg = IncomingMessage(

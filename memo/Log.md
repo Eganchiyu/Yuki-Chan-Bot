@@ -351,3 +351,9 @@
 - engine_reply：同批工具里有 skip 时不发送也不记录阶段文本（避免「我……<调用skip>」先漏出去）。
 - session_pipeline 新增 _prune_skipped_round：以本轮进入时的快照为基，丢掉本轮追加的阶段文本/工具返回/skip 痕迹，只保留工具期间新到的用户消息（防止模型沉默导致丢消息）。
 - tests/test_skip_tool.py 补 test_skip_leaves_no_trace_in_history（真实 ToolCallManager 跑 skip，断言 history 没有 tool/skip 记录）；全量 206 passed，4 个既有失败与本次无关。
+
+## 2026-11-03 修复 4 个过期测试（全量 211 passed）
+- test_toolchain.test_tool_spec_to_schema：删掉"to_schema 统一拼简练提示"的过时断言（0c15e01 起提示只挂在 delegate_to_maid），新增 test_brevity_hint_only_on_delegate_tool 校验这一点。
+- test_tool_markup / test_reply_format 里的假 registry 补 get_spec（persist_result 接口引入后缺失）。
+- test_vision_prefetch：__new__ 构造的 pipeline 补 _recent_msg_times（_record_human_timestamp 依赖）。
+- 均为测试桩同步，无产品代码改动。

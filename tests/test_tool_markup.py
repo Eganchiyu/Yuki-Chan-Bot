@@ -138,6 +138,7 @@ def test_chat_with_tools_executes_text_form_call():
         tool_registry=type("R", (), {
             "get_tools": lambda self: [],
             "list_functions": lambda self: ["poke"],
+            "get_spec": lambda self, name: None,
         })(),
         tool_manager=_ToolManager(),
         get_process_callback=lambda: None,

@@ -68,8 +68,20 @@ def test_tool_spec_to_schema():
     assert schema["type"] == "function"
     assert schema["function"]["name"] == "sample"
     assert schema["function"]["description"].startswith("测试工具")
-    # 参数简练提示必须下发给模型，否则长参数会被输出上限截断
-    assert "500 字以内" in schema["function"]["description"]
+    assert schema["function"]["parameters"] == {"type": "object", "properties": {}}
+
+
+def test_brevity_hint_only_on_delegate_tool():
+    """参数简练提示必须下发给模型，但只挂在 delegate_to_maid 上。"""
+    from core.tools import TOOL_SPECS
+
+    descriptions = {spec.name: spec.description for spec in TOOL_SPECS}
+    assert "500 字以内" in descriptions["delegate_to_maid"]
+    assert all(
+        "500 字以内" not in text
+        for name, text in descriptions.items()
+        if name != "delegate_to_maid"
+    )
 
 
 def test_registry_registers_tool_specs():
