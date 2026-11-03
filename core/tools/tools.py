@@ -8,6 +8,7 @@ from .tools_media import download_file_tool, generate_image_tool
 from .tools_message import poke_tool, send_master_private_tool, send_qq_file_tool
 from .tools_notebook import update_notebook_tool
 from .tools_rich import parse_rich_message_tool
+from .tools_skip import skip_reply_tool
 from .tools_snapshot import capture_group_snapshot_tool, search_group_snapshots_tool
 
 TOOL_SPECS = [
@@ -60,6 +61,23 @@ TOOL_SPECS = [
             "required": ["content"],
         },
         handler=update_notebook_tool,
+        persist_result=False,
+    ),
+    ToolSpec(
+        name="skip",
+        description=(
+            "跳过本轮回复，保持安静。当这段对话并没有涉及你、群友们在互相聊自己的事、"
+            "或者此刻不适合你发言（话题很沉重、插话会唐突、别人刚说完正事）时调用它，"
+            "本轮就不会发出任何消息。想说话的时候正常回复即可，不需要调用。"
+            "私聊里必须回复，不要使用。"
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "reason": {"type": "string", "description": "一句话说明这轮为什么不说话（只记进日志，不会发出去）"},
+            },
+        },
+        handler=skip_reply_tool,
         persist_result=False,
     ),
     ToolSpec(

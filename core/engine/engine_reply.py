@@ -11,7 +11,7 @@ from core.reply_format import (
     strip_layout_markup,
     strip_meme_tags,
 )
-from core.toolchain import ToolCallManager, ToolContext, ToolRuntime
+from core.toolchain import SKIP_REPLY_MARKER, ToolCallManager, ToolContext, ToolRuntime
 from core.tool_markup import extract_text_tool_calls, strip_tool_call_markup
 from modules.debug.context_snapshot import context_snapshot_store
 from modules.vision.prefetch import resolve_image
@@ -327,6 +327,10 @@ class EngineReplyService:
                     context,
                     finish_reason=response_message.get("_finish_reason") or "",
                 )
+                if context.metadata.get("skip_reply"):
+                    # skip 工具生效：本轮不生成也不要发送任何内容，交给管线收尾
+                    logger.info(f"[ToolChain] {chat_id} 本轮选择 skip，保持安静")
+                    return SKIP_REPLY_MARKER, SKIP_REPLY_MARKER, ""
                 for tool_result_message in tool_result_messages:
                     spec = active_registry.get_spec(tool_result_message.get("name"))
                     if spec is not None and not spec.persist_result:

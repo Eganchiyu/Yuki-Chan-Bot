@@ -12,6 +12,7 @@ from config import cfg
 from core.brain import YukiState
 from core.reply_format import clean_visible_reply
 from core.reply_watch import auto_subscribe, is_human_incoming, resolve
+from core.toolchain import SKIP_REPLY_MARKER
 from modules.debug.context_snapshot import PIPELINE_STAGES, context_snapshot_store
 from modules.vision.prefetch import prefetch_images, resolve_image
 from utils.logger import get_logger
@@ -561,6 +562,16 @@ class SessionPipeline:
             message_objs=context.get("message_objs", []),
         )
         logger.debug(f"[Pipeline] {cfg.ROBOT_NAME.title()} 回复生成完成")
+
+        # 模型用 skip 工具主动保持安静：只保留用户上下文，不发送也不写入 assistant 回复
+        if answer_raw == SKIP_REPLY_MARKER:
+            self.history_manager.replace_session(chat_id, context["session"])
+            self.history_manager.append_to_log(chat_id, cfg.ROBOT_NAME.title(), "（这轮没说话）")
+            logger.info(f"[Pipeline] {cfg.ROBOT_NAME.title()} 调用 skip，本轮保持安静")
+            context["skip_reply"] = True
+            context["stop"] = True
+            self._update_snapshot(context, should_reply=False, answer_text="", skip_reply=True)
+            return context
 
         context["answer_raw"] = answer_raw
         context["answer_text"] = answer_text

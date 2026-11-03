@@ -16,6 +16,9 @@ MAID_GOAL_BREVITY_HINT = (
     "只写关键指令，不要复制整段聊天记录或历史内容。）"
 )
 
+# skip 工具生效后，引擎用它作为「本轮不回复」的最终回复标记，管线见到后不发送任何消息
+SKIP_REPLY_MARKER = "\x00SKIP_REPLY\x00"
+
 
 @dataclass
 class ToolResult:
@@ -223,6 +226,9 @@ class ToolCallManager:
                 if not isinstance(result, ToolResult):
                     raise TypeError("工具必须返回 ToolResult")
                 result.name = result.name or name
+                if isinstance(result.data, dict) and result.data.get("skip_reply"):
+                    # 标记本轮保持安静，由引擎收尾、管线跳过发送
+                    context.metadata["skip_reply"] = True
             except json.JSONDecodeError as e:
                 logger.warning(f"[ToolCall] {name} 参数 JSON 无效: {e} (finish_reason={finish_reason})")
                 if finish_reason == "length":
@@ -265,4 +271,7 @@ class ToolCallManager:
         messages = []
         for tool_call in tool_calls:
             messages.append(await self.execute_tool_call(tool_call, context, finish_reason))
+            if context.metadata.get("skip_reply"):
+                # 已经决定不说话了，同批剩下的工具不再执行，避免跳过之后又发出消息
+                break
         return messages
