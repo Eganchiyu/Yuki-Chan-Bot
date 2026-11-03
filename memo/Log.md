@@ -362,3 +362,13 @@
 - 线上日志：skip 执行成功但紧接着 `[Engine] LLM 调用失败: too many values to unpack (expected 2)`，最后发了一句「暂时连接不上网络」。
 - 原因：chat_with_tools 的契约是 2 元组 (raw, visible)，api_reply 也只拆 2 个；skip 分支我写成了 3 元组。之前那个 "too many values to unpack" 的测试失败其实是真 bug，我误判成测试问题把测试改了。
 - 修复：skip 分支改回 `return SKIP_REPLY_MARKER, SKIP_REPLY_MARKER`；tests/test_skip_tool.py 的断言同步改回 2 元组。全量 211 passed。
+
+## 2026-11-03 日记注入条数改为配置可控
+- 原来 core/session_pipeline.py 里 `n_results=8` 硬编码；rag.retrieval_top_k 只给 search_memory 用，改名易误解。
+- 新增 `rag.inject_top_k`（默认 5）+ `cfg.INJECT_TOP_K`，pipeline 改用它；configs/config.yaml 已同步 `inject_top_k: 5`（该文件被 gitignore）。
+- 状态：语法检查通过；本机 venv 缺 libpython3.11 / 系统 python3 缺 yaml，未能实跑验证，需重启服务确认。commit 3cc39d8。
+
+## 2026-11-03 记忆召回跨轮保留上一轮 top-1
+- core/session_pipeline.py::retrieve_memories 之后加 `_merge_recent_recall`：按 chat_id 记录最近两轮各自「新召回」的 top-1，下一轮把这两条带进注入列表，剩余名额用本轮新召回补齐，去重键为 timestamp+正文。
+- 效果：t1 = 5/4/3/2/1；t2 = 带 t1 的 1 + 新召回 top4；t3 = 带 t1 的 1、t2 的 1' + 新召回 top3。
+- 注意：_compute_rag_interest 现在吃的是合并后的列表（含保留条目）；注入顺序经 prompts 的 reversed() 后变为「新召回 → 保留条目」。状态：语法检查 + 逻辑脚本验证通过，未实跑。

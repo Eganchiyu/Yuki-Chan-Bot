@@ -107,6 +107,7 @@ class SessionPipeline:
         self.last_process_end_time: dict = {}
         self.last_msg_time: dict = {}
         self._recent_msg_times: dict = {}  # chat_id -> 最近真人消息时间戳（用于估算等待）
+        self._recent_recall_best: dict = {}  # chat_id -> 最近两轮召回各自的新 top-1
 
         self.stages = [
             self.prepare_message_batch,
@@ -468,6 +469,41 @@ class SessionPipeline:
     # 阶段四：RAG 检索
     # ---------------------------------------------------------------
 
+    @staticmethod
+    def _recall_key(item: dict) -> str:
+        """召回条目去重键：正文 + 时间戳。"""
+        content = str(item.get("content") or "")
+        meta = item.get("metadata") or {}
+        return f"{meta.get('timestamp', '')}::{content}"
+
+    def _merge_recent_recall(self, chat_id: str, new_results: list[dict]) -> list[dict]:
+        """把最近两轮各自召回的 top-1 带进本轮，剩余名额用本轮新召回补齐。"""
+        top_k = max(1, int(cfg.INJECT_TOP_K))
+        history: list[dict] = self._recent_recall_best.setdefault(chat_id, [])
+
+        merged: list[dict] = []
+        seen: set[str] = set()
+        for item in reversed(history):  # 越近的一轮越先占位
+            key = self._recall_key(item)
+            if key in seen:
+                continue
+            seen.add(key)
+            merged.append(item)
+
+        for item in new_results:
+            if len(merged) >= top_k:
+                break
+            key = self._recall_key(item)
+            if key in seen:
+                continue
+            seen.add(key)
+            merged.append(item)
+
+        if new_results:
+            history.append(new_results[0])
+            del history[:-2]
+        return merged
+
     async def retrieve_memories(self, context):
         """根据输入长度动态检索相关日记。"""
         if not cfg.RAG_ENABLED:
@@ -492,6 +528,7 @@ class SessionPipeline:
             top_k_keywords=dynamic_top_k,
             n_results=cfg.INJECT_TOP_K,
         )
+        relevant_diaries = self._merge_recent_recall(chat_id, relevant_diaries)
         logger.debug(f"[Pipeline] 检索到 {len(relevant_diaries)} 条相关日记")
         logger.info(
             f"[Pipeline] [{chat_id}] 回忆 {len(relevant_diaries)} 条"
