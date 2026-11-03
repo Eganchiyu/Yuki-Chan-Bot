@@ -90,12 +90,22 @@ def _pipeline():
 def test_pipeline_stops_without_sending_on_skip():
     async def run():
         pipeline = _pipeline()
+        snapshot = [
+            {"role": "system", "content": "sys"},
+            {"role": "user", "content": "群友们在聊天"},
+        ]
+        # 本轮工具链追加：阶段文本、skip 痕迹、工具返回、期间新到的用户消息
+        pipeline.history_manager.get_session.return_value = snapshot + [
+            {"role": "assistant", "content": "…", "is_tool_thought": True},
+            {"role": "tool", "content": '{"success": true}', "name": "skip"},
+            {"role": "user", "content": "【工具调用期间新增消息】还有人在吗"},
+        ]
         context = {
             "chat_id": "12345",
             "mode": "group",
             "combined_text": "群友们在聊天",
             "relevant_diaries": [],
-            "session": [{"role": "system", "content": "sys"}, {"role": "user", "content": "群友们在聊天"}],
+            "session": list(snapshot),
         }
         result = await pipeline.generate_reply(context)
 
@@ -103,7 +113,8 @@ def test_pipeline_stops_without_sending_on_skip():
         assert result.get("skip_reply") is True
         assert "answer_text" not in result
         pipeline.sender.send.assert_not_awaited()
-        # 用户消息照常留在上下文里，只是没有 assistant 回复
-        pipeline.history_manager.replace_session.assert_called_once_with("12345", context["session"])
+        # 历史里只留用户消息：阶段文本、工具调用、工具返回都不留痕
+        saved = pipeline.history_manager.replace_session.call_args[0][1]
+        assert saved == snapshot + [{"role": "user", "content": "【工具调用期间新增消息】还有人在吗"}]
 
     asyncio.run(run())

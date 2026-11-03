@@ -294,23 +294,25 @@ class EngineReplyService:
                     ]
                     logger.info(f"[ToolChain] 模型请求工具调用 chat_id={chat_id} tools={tool_names}")
 
-                    sent_content = await self.send_tool_thought(
-                        chat_id,
-                        mode,
-                        response_message.get("content"),
-                        sent_thoughts,
-                        tool_names,
-                    )
-                    if sent_content:
-                        self.history.append_session_message(
+                    # 同批里有 skip 就当作本轮什么都没发生：不发送、也不记录阶段文本
+                    if "skip" not in tool_names:
+                        sent_content = await self.send_tool_thought(
                             chat_id,
-                            "assistant",
-                            sent_content,
-                            is_tool_thought=True,
-                            sent_realtime=True,
-                            save_immediately=False,
-                            return_snapshot=False,
+                            mode,
+                            response_message.get("content"),
+                            sent_thoughts,
+                            tool_names,
                         )
+                        if sent_content:
+                            self.history.append_session_message(
+                                chat_id,
+                                "assistant",
+                                sent_content,
+                                is_tool_thought=True,
+                                sent_realtime=True,
+                                save_immediately=False,
+                                return_snapshot=False,
+                            )
                 else:
                     if response_message.get("_finish_reason") == "content_filter":
                         logger.warning(f"[ToolChain] {chat_id} 回复被内容安全过滤")

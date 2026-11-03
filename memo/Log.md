@@ -338,3 +338,16 @@
 - listen_main.py：`called` 前置 `not incoming_message.is_bot`，即白名单放行的 BOT 消息即使叫名字/@ 也不带 force_reply，不再跳过防抖，避免两个 BOT 互相召唤死循环。
 - engine_decision.py：防套娃惩罚 `desire *= 0.8` 改为 `0.75`（纯 BOT 发言时降回复欲）。
 - 验证：容器内 tests/test_ice_break_pipeline.py 13 passed；提交 51bbb38。
+
+## 2026-11-03 新增 skip 工具（模型主动保持安静）
+- core/tools/tools_skip.py：skip_reply_tool 返回 ToolResult(data={"skip_reply": True})；非 group 模式直接失败（私聊必须回复）。
+- core/toolchain.py：新增 SKIP_REPLY_MARKER；execute_tool_call 见 data.skip_reply 就置 context.metadata["skip_reply"]，execute_tool_calls 随即 break（同批后续工具不再执行，避免跳过之后又发消息）。
+- core/engine/engine_reply.py：工具轮结束后若已 skip，直接返回 SKIP_REPLY_MARKER，不再发起收尾请求。
+- core/session_pipeline.py：generate_reply 收到标记 → replace_session 保留用户消息、记日志、stop=True，跳过 send/finalize，全程不发任何消息。
+- 测试：tests/test_skip_tool.py 4 passed（工具注册/批量中断/私聊拒绝/管线不发消息）。既有 3 个失败（test_tool_spec_to_schema、test_chat_with_tools_executes_text_form_call、test_chat_with_tools_returns_working_notice_when_cleaned_empty）在改动前就已失败。
+- 提交 cd0377f；core/prompts.py 与 tools.py 里 generate_image 描述属之前未提交的改动，未纳入本次提交。
+
+## 2026-11-03 skip 不留痕
+- engine_reply：同批工具里有 skip 时不发送也不记录阶段文本（避免「我……<调用skip>」先漏出去）。
+- session_pipeline 新增 _prune_skipped_round：以本轮进入时的快照为基，丢掉本轮追加的阶段文本/工具返回/skip 痕迹，只保留工具期间新到的用户消息（防止模型沉默导致丢消息）。
+- tests/test_skip_tool.py 补 test_skip_leaves_no_trace_in_history（真实 ToolCallManager 跑 skip，断言 history 没有 tool/skip 记录）；全量 206 passed，4 个既有失败与本次无关。

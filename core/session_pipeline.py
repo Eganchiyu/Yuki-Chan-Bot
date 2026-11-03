@@ -548,6 +548,24 @@ class SessionPipeline:
     # 阶段六：生成回复
     # ---------------------------------------------------------------
 
+    def _prune_skipped_round(self, chat_id: str, context) -> list:
+        """skip 收尾：把本轮工具链追加的内容抹掉，只留下用户消息。
+
+        context["session"] 是进入本轮时的会话快照，之后追加的都是本轮工具链产生的
+        （阶段文本、工具返回、工具调用期间合并的新消息）。阶段文本和工具返回全部丢弃，
+        用户发来的消息保留，避免因为模型选择沉默而丢消息。
+        """
+        snapshot = context["session"]
+        current = self.history_manager.get_session(chat_id)
+        if current[:len(snapshot)] != snapshot:
+            # 快照不是当前会话的前缀（被外部改写），保守起见只保留快照
+            return snapshot
+        kept_users = [
+            message for message in current[len(snapshot):]
+            if message.get("role") == "user"
+        ]
+        return snapshot + kept_users
+
     async def generate_reply(self, context):
         """调用引擎生成回复。"""
         chat_id = context["chat_id"]
@@ -563,9 +581,9 @@ class SessionPipeline:
         )
         logger.debug(f"[Pipeline] {cfg.ROBOT_NAME.title()} 回复生成完成")
 
-        # 模型用 skip 工具主动保持安静：只保留用户上下文，不发送也不写入 assistant 回复
+        # 模型用 skip 工具主动保持安静：本轮工具链痕迹全部丢弃，不发送也不写入 assistant 回复
         if answer_raw == SKIP_REPLY_MARKER:
-            self.history_manager.replace_session(chat_id, context["session"])
+            self.history_manager.replace_session(chat_id, self._prune_skipped_round(chat_id, context))
             self.history_manager.append_to_log(chat_id, cfg.ROBOT_NAME.title(), "（这轮没说话）")
             logger.info(f"[Pipeline] {cfg.ROBOT_NAME.title()} 调用 skip，本轮保持安静")
             context["skip_reply"] = True
