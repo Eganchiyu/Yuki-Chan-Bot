@@ -307,6 +307,11 @@ class RAGConfig:
         comment="检索返回的最大日记条数",
         section="rag"
     )
+    inject_top_k: int = config_field(
+        5,
+        comment="注入聊天上下文的日记条数（RAG 回忆条数）",
+        section="rag"
+    )
     keep_last_dialogue: int = config_field(
         10,
         comment="保留的近期对话条数（短期记忆）",
@@ -889,6 +894,11 @@ class Config:
     def RETRIEVAL_TOP_K(self) -> int:
         """RAG 默认检索条数"""
         return self.rag.retrieval_top_k
+
+    @property
+    def INJECT_TOP_K(self) -> int:
+        """注入上下文的日记条数"""
+        return self.rag.inject_top_k
 
     @property
     def DEBOUNCE_TIME(self) -> int:

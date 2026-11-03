@@ -490,7 +490,7 @@ class SessionPipeline:
             chat_id=chat_id,
             speaker_names=speaker_names,
             top_k_keywords=dynamic_top_k,
-            n_results=8,
+            n_results=cfg.INJECT_TOP_K,
         )
         logger.debug(f"[Pipeline] 检索到 {len(relevant_diaries)} 条相关日记")
         logger.info(
