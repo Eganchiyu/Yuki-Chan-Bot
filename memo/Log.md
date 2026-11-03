@@ -357,3 +357,8 @@
 - test_tool_markup / test_reply_format 里的假 registry 补 get_spec（persist_result 接口引入后缺失）。
 - test_vision_prefetch：__new__ 构造的 pipeline 补 _recent_msg_times（_record_human_timestamp 依赖）。
 - 均为测试桩同步，无产品代码改动。
+
+## 2026-11-03 修 skip 的返回值个数 bug
+- 线上日志：skip 执行成功但紧接着 `[Engine] LLM 调用失败: too many values to unpack (expected 2)`，最后发了一句「暂时连接不上网络」。
+- 原因：chat_with_tools 的契约是 2 元组 (raw, visible)，api_reply 也只拆 2 个；skip 分支我写成了 3 元组。之前那个 "too many values to unpack" 的测试失败其实是真 bug，我误判成测试问题把测试改了。
+- 修复：skip 分支改回 `return SKIP_REPLY_MARKER, SKIP_REPLY_MARKER`；tests/test_skip_tool.py 的断言同步改回 2 元组。全量 211 passed。

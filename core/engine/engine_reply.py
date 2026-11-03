@@ -332,7 +332,7 @@ class EngineReplyService:
                 if context.metadata.get("skip_reply"):
                     # skip 工具生效：本轮不生成也不要发送任何内容，交给管线收尾
                     logger.info(f"[ToolChain] {chat_id} 本轮选择 skip，保持安静")
-                    return SKIP_REPLY_MARKER, SKIP_REPLY_MARKER, ""
+                    return SKIP_REPLY_MARKER, SKIP_REPLY_MARKER
                 for tool_result_message in tool_result_messages:
                     spec = active_registry.get_spec(tool_result_message.get("name"))
                     if spec is not None and not spec.persist_result:
