@@ -185,24 +185,23 @@ TOOL_SPECS = [
             "根据文字描述生成图片。生成后保存到本地 output 目录，返回文件路径。"
             "可选传入参考图（本地路径或 [img:XXX] 索引），让生成结果参考图中的角色/风格/构图。"
             "生成完后必须用 send_qq_file 工具把图片发出来。"
-            "重要：prompt 必须完整详细，包含主体、场景、风格、光影、构图等细节。"
-            "固定人设参考图（画对应人物时把文件放进 image_paths，保持长相、发型、瞳色、发饰和服装一致）："
+            "prompt中文，简短但包含细节，说明高品质和流畅用墨线条等。"
+            "固定人设参考图（画对应人物时把文件放进 image_paths，以此保持长相、发型、瞳色、发饰和服装一致）："
             "Yuki（你自己）= output/assets/character/yuki_reference.png，白色长发、蓝瞳、雪花发饰，"
             "白色披肩+深蓝连衣裙、蓝白荷叶边裙摆、白过膝袜；"
-            "主人（用户）= output/assets/character/master_reference.png，银白短发带蓝色挑染、蓝瞳，"
-            "白色水手领卫衣+深蓝百褶裙、白过膝袜；画两人同框时两张一起传。"
+            "主人（用户）= output/assets/character/master_reference.png，黑色长发、绿瞳、绿色X型发饰，黑绿拼色连帽夹克+白衬衫黑领结、黑色百褶裙、黑色小猫中筒袜配运动鞋；"
+            "画两人同框时两张一起传。"
         ),
         parameters={
             "type": "object",
             "properties": {
                 "prompt": {"type": "string", "description": "图像描述（使用中文描述）"},
-                "size": {"type": "string", "description": "图片尺寸，如 1024*1024、512*512", "default": "1024*1024"},
+                "size": {"type": "string", "description": "图片尺寸，如 1024*1024、1024*1536", "default": "1024*1024"},
                 "image_paths": {
                     "type": "array",
                     "items": {"type": "string"},
                     "description": (
                         "参考图列表（可选，最多4张）。每项是本地图片路径或 [img:XXX] 索引。"
-                        "仅支持 png/jpg/jpeg/webp，单张≤5MB、总计≤15MB；"
                         "本地路径需位于 output/workspace/temp_images 或会话图片目录。"
                         "固定人设参考图：Yuki 本人 output/assets/character/yuki_reference.png，"
                         "主人 output/assets/character/master_reference.png。"
