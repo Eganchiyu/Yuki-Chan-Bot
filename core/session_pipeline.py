@@ -477,33 +477,38 @@ class SessionPipeline:
         return f"{meta.get('timestamp', '')}::{content}"
 
     def _merge_recent_recall(self, chat_id: str, new_results: list[dict]) -> list[dict]:
-        """把最近两轮各自召回的 top-1 带进本轮，剩余名额用本轮新召回补齐。"""
+        """把最近两轮各自召回的 top-1 带进本轮，剩余名额用本轮新召回补齐。
+
+        列表顺序 = 本轮新召回（分数从高到低）+ 保留条目（远→近），
+        经 prompts 的 reversed() 注入后，提示词里是「保留条目（近→远）+ 新召回（低→高）」。
+        """
         top_k = max(1, int(cfg.INJECT_TOP_K))
         history: list[dict] = recall_cache_store.get(chat_id)
 
-        merged: list[dict] = []
+        carried: list[dict] = []
         seen: set[str] = set()
-        for item in reversed(history):  # 越近的一轮越先占位
+        for item in reversed(history):  # 越近的一轮回带得越靠前
             key = self._recall_key(item)
             if key in seen:
                 continue
             seen.add(key)
-            merged.append(item)
+            carried.append(item)
 
+        picked_new: list[dict] = []
         for item in new_results:
-            if len(merged) >= top_k:
+            if len(carried) + len(picked_new) >= top_k:
                 break
             key = self._recall_key(item)
             if key in seen:
                 continue
             seen.add(key)
-            merged.append(item)
+            picked_new.append(item)
 
         if new_results:
             history.append(new_results[0])
             del history[:-2]
             recall_cache_store.put(chat_id, history)
-        return merged
+        return picked_new + carried
 
     async def retrieve_memories(self, context):
         """根据输入长度动态检索相关日记。"""
@@ -529,6 +534,7 @@ class SessionPipeline:
             top_k_keywords=dynamic_top_k,
             n_results=cfg.INJECT_TOP_K,
         )
+        context["recall_new_results"] = relevant_diaries
         relevant_diaries = self._merge_recent_recall(chat_id, relevant_diaries)
         logger.debug(f"[Pipeline] 检索到 {len(relevant_diaries)} 条相关日记")
         logger.info(
@@ -565,7 +571,9 @@ class SessionPipeline:
 
         chat_id = context["chat_id"]
         session = context["session"]
-        rag_interest = self._compute_rag_interest(context.get("relevant_diaries", []))
+        rag_interest = self._compute_rag_interest(
+            context.get("recall_new_results", context.get("relevant_diaries", []))
+        )
 
         if context["mode"] == "group" and not await self.engine.decide_to_reply(
             session,

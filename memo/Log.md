@@ -377,3 +377,8 @@
 - 新增 core/recall_cache.py：`RecallCacheStore`（/ `recall_cache_store` 单例）把每个 chat_id 最近两轮召回的 top-1 写到 data/recall_best.json，惰性加载 + 线程锁 + 临时文件 os.replace 原子写。
 - core/session_pipeline.py::_merge_recent_recall 改用它读写，去掉内存字典，重启后保留条目仍在；只留最近两轮。
 - 状态：store 读写/裁剪/落盘用脚本验证通过，pipeline 语法检查通过，未实跑。
+
+## 2026-11-03 召回顺序反转 + 兴趣度只看新召回
+- _merge_recent_recall 列表顺序改为「新召回(高→低) + 保留条目(远→近)」，经 prompts reversed() 注入后提示词顺序变成「保留条目(近→远) + 新召回(低→高)」，与预期的 1 4' 3' 2' 1' / 1 1' 3'' 2'' 1'' 一致。
+- retrieve_memories 额外写 context["recall_new_results"]（本轮原始召回），decide_reply_action 的 _compute_rag_interest 改用它，群聊兴趣度不再被保留条目拉偏。
+- 状态：语法 + 顺序/去重脚本验证通过，未实跑。
