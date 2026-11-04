@@ -224,6 +224,36 @@ def restart_mihomo_core(wait: float = 24.0) -> bool:
     return False
 
 
+DESKTOP_USER = "asumi"
+DESKTOP_DISPLAY = ":0"
+DESKTOP_XAUTH = "/home/asumi/.Xauthority"
+
+
+def wake_desktop() -> None:
+    """网络出问题时点亮屏幕、解除锁屏、切回桌面 VT，并重新关掉屏保/DPMS。
+
+    机主观察到「点亮屏幕进桌面后就好了」，所以修复时先把桌面恢复到活跃状态。
+    """
+    env = ["env", f"DISPLAY={DESKTOP_DISPLAY}", f"XAUTHORITY={DESKTOP_XAUTH}"]
+    sh(["loginctl", "unlock-sessions"])
+    code, out = sh(["loginctl", "list-sessions", "--no-legend"])
+    for line in out.splitlines():
+        parts = line.split()
+        if len(parts) >= 4 and parts[2] == DESKTOP_USER and parts[3].startswith("seat"):
+            _, vt = sh(["loginctl", "show-session", parts[0], "-p", "VTNr", "--value"])
+            if vt.strip().isdigit() and vt.strip() != "0":
+                sh(["chvt", vt.strip()])
+            break
+    as_user = ["runuser", "-u", DESKTOP_USER, "--"] + env
+    sh(as_user + ["xset", "dpms", "force", "on"])
+    sh(as_user + ["xset", "s", "reset"])
+    sh(as_user + ["xset", "s", "off"])
+    sh(as_user + ["xset", "s", "noblank"])
+    sh(as_user + ["xset", "-dpms"])
+    sh(["pkill", "-x", "light-locker"])
+    log("[修复] 已点亮屏幕、解除锁屏并切回桌面")
+
+
 def flush_cache() -> None:
     for path in ("/cache/dns/flush", "/cache/fakeip/flush"):
         status, _ = mihomo_api("POST", path)
@@ -391,6 +421,10 @@ def remediate(results: dict[str, tuple[bool, str]]) -> tuple[bool, list[str], di
     _gap_state["last"] = time.time()
     _gap_state["hist"].append(_gap_state["last"])
     log("[修复] 触发：" + dump_diagnostics())
+
+    ok, results = _run_step("点亮屏幕并解除锁屏", wake_desktop, actions, results)
+    if ok:
+        return True, actions, results
 
     ok, results = _run_step("重载 mihomo 配置", lambda: reload_mihomo(diag=True, timeout=6.0),
                             actions, results)

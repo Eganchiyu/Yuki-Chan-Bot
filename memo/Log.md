@@ -422,3 +422,15 @@
   tests/test_netforce_command.py 5 项通过，napcat_inbound/gateway/modes 14 项仍通过。
 - 已按 supervisor 通道重启容器（快照 20261104_193404）让指令生效，health ok、napcat_online=true。
 - 提交 1b689ac；docs/architecture.md 3.10 补了说明。
+
+## 2026-11-04 20:2x /刷新 未生效排查 + 关闭熄屏锁屏
+- 多方日志：/刷新 指令链路正常（20:15/20:16 均回写结果），失败在修复动作：20:09 BEACON-LOSS、20:10:32 WiFi 漫游
+  → dispatcher 触发重载 → mihomo 重载卡死（控制接口 10s 超时），期间所有新连接瞬间 SSLEOFError。
+- 修复（73ea17e）：修复阶梯改为 重载(6s 超时) → 接口活着才清缓存重载 → SIGTERM core（mihomo-party 自动拉起，
+  实测 3.4s 恢复）→ WiFi 兜底；dispatcher 只处理 up/dhcp 变化并等 connected+默认路由后再重载；
+  find_core_pid 改 pgrep -x；单元 stdout 置空消除日志双写。
+- 熄屏/锁屏：X 屏保 timeout=600 仍在（xfce power-manager 只管 DPMS），到点黑屏后 light-locker 锁屏。
+  已 xset s off/noblank/-dpms，停掉 light-locker；~/.config/autostart 覆盖 light-locker（Hidden=true）
+  并新增 yuki-no-blank.desktop 登录时关屏保（副本在 deploy/desktop/）。
+- netwatch 修复阶梯第一步新增 wake_desktop：loginctl unlock-sessions、chvt 回桌面 VT、xset dpms force on、
+  重新关屏保、杀 light-locker。root 实测通过。

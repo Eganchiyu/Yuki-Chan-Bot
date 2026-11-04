@@ -1,0 +1,6 @@
+[Desktop Entry]
+Type=Application
+Name=Yuki 保持亮屏
+Comment=关闭 X 屏保黑屏与 DPMS，避免熄屏后被锁屏
+Exec=sh -c "sleep 5; xset s off; xset s noblank; xset -dpms"
+X-GNOME-Autostart-enabled=true
