@@ -477,6 +477,11 @@
   3. 新增 `get_embed_model()` 与 `get_chroma_client()` 进程内单例缓存，让 `MemoryRAG` 与 `StickerManager` 共享同一 `SentenceTransformer` 实例与 `MemeProcessor`，消除启动时重复加载两次 391MB 向量模型的问题（节省 ~400MB 内存，`pytest` 全量耗时从 15.1s 降至 7.9s）。
 - 状态：ModelScope 下载端到端实测通过，`YUKI_DRY_RUN=1` 确认模型只加载一次，`pytest -q` 61 passed。
 
+## 2026-11-04 发布 v1.0.0 Changelog 与版本标签
+- 更新 `docs/changelog.md` 将 `[未发布]` 归档为 `[1.0.0] - 2026-11-04`，补入一键部署、Agent向文档、ModelScope 向量模型直下与进程内单例共享等条目；同步 `pyproject.toml` 版本为 `1.0.0`。
+- 打标签 `v1.0.0` 并推送到远端。
+
+
 
 
 

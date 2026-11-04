@@ -4,11 +4,22 @@
 
 ---
 
-## [未发布] (2026-10 ~ 2026-11)
+## [未发布]
+
+---
+
+## [1.0.0] - 2026-11-04
 
 ### 新增
+- **大众与 Agent 友好的一键部署体系 (`setup.py` + `README.md`)**：
+  - 重写 `setup.py`：消除顶部第三方库硬导入（裸环境即可执行 `--help` 与 `--check --json`），支持交互式向导与 Agent 非交互式 CLI（`-y`、`--llm-api-key`、`--bot-qq`、`--master-qq`、`--groups`、`--set key.path=val`）及环境变量注入
+  - 内置 `--check [--json]` 部署前健康自检：检查 Python 版本、核心依赖、配置文件必填项、RAG 向量模型完整性及 NapCat WebSocket 端口连通性
+  - `README.md` 新增完整的 **Agent 自动化部署指南（5 步非交互式 SOP）** 与大众本地/Docker 双模式部署文档
+- **向量模型国内源极速直下与单实例内存优化 (`utils/download_model.py`)**：
+  - 默认优先走阿里魔搭社区（`modelscope`）国内 CDN 直连流式下载（自动回退 `hf-mirror` → `huggingface`），附带实时进度条，直接写入 `./models/text2vec-base-chinese/`，彻底消除 `~/.cache/huggingface` 双倍磁盘占用（节省 ~391MB 磁盘）
+  - 新增 `get_embed_model()` 与 `get_chroma_client()` 进程内单例缓存，`MemoryRAG` 与 `StickerManager` 共享同一 `SentenceTransformer`、同一 `ChromaDB` 客户端与 `MemeProcessor`，消除重复加载（节省 ~400MB 内存，启动与测试耗时减半）
 - **容器化自进化运行底座 (`deploy/`)**：
-  - `deploy/Dockerfile` + `run.sh`：镜像仅装依赖，代码树与宿主机**同绝对路径 `:ro` 只读挂载**，数据卷独立 `:rw` 挂载
+  - `deploy/Dockerfile` + `run.sh`：镜像仅装依赖，代码树与宿主机**同绝对路径 `:ro` 只读挂载**，数据卷独立 `:rw` 挂载；`deploy/` 脚本默认动态解析仓库根目录（支持 `YUKI_ROOT` 覆盖）
   - `deploy/supervisor.py` + `reviewer.py` + `verify.sh`：路径分级校验、独立模型两级审查（`blocking`/`advisory`）、`yuki_memory` 硬链接快照、5 道校验门（编译/导入/pytest/试启动/探针）、失败自动 `git reset` 回滚
   - `utils/health_server.py`：提供 `/health` 存活探针与 `POST /notify` 重启前群聊/私聊通知端点
   - `deploy/retention.py`：trace 按周归档、大日志截断、`staging/` 清理、记忆快照保留最近 7 份
@@ -31,6 +42,7 @@
   - `generate_image` 工具内置 Yuki 与主人固定人设参考图说明
 
 ### 变更
+- **依赖声明跨平台泛化 (`pyproject.toml`)**：`requires-python` 放宽为 `>=3.11`，移除锁死全量传递依赖的 `==` 约束与残缺 `uv.lock`，改为顶层核心依赖 `>=` 约束
 - **网络接入层收口**：原 `BotConnector`、`MessageSender` 与 `modules/message/` 合并为单一 `network/napcat.py::NapCatGateway`，常驻 `_reader()` 协程严格分离 API `echo` 响应与入站事件流
 - **RAG 打分重构**：同群/发言者/关键词加成改为相对语义分的比例提升，加入 180 天半衰期时间衰减与停用词过滤
 - **思考等级配置**：移除无效的 `model.disable_thinking`，新增 `model.thinking_effort`；DeepSeek 视觉端点固定下发 `reasoning_effort="none"`

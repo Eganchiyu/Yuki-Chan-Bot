@@ -1,6 +1,6 @@
 [project]
 name = "yukiv6"
-version = "0.1.0"
+version = "1.0.0"
 description = "YukiV6 (FrostFrame) - Asynchronous QQ AI Assistant based on OneBot 11 / NapCat"
 readme = "README.md"
 requires-python = ">=3.11"
