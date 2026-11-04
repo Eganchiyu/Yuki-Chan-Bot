@@ -22,6 +22,7 @@ from __future__ import annotations
 import glob
 import json
 import os
+import signal
 import socket
 import ssl
 import subprocess
@@ -149,8 +150,10 @@ def find_wifi_con(dev: str) -> str:
     return ""
 
 
-def reload_mihomo(diag: bool = False) -> bool:
-    status, body = mihomo_api("PUT", "/configs?force=true", {"path": MIHOMO_CONFIG})
+def reload_mihomo(diag: bool = False, timeout: float = 6.0) -> bool:
+    """重载配置。超时（HTTP=0）说明 core 卡住，光靠重载救不回来。"""
+    status, body = mihomo_api("PUT", "/configs?force=true", {"path": MIHOMO_CONFIG},
+                              timeout=timeout)
     ok = status in (204, 200)
     detail = "" if ok else f" HTTP={status} {body[:120]!r}"
     if ok and diag:
@@ -163,6 +166,62 @@ def reload_mihomo(diag: bool = False) -> bool:
                 pass
     log(f"[修复] mihomo 重载配置 {'成功' if ok else '失败'}{detail}")
     return ok
+
+
+def mihomo_api_alive(timeout: float = 3.0) -> bool:
+    status, _ = mihomo_api("GET", "/version", timeout=timeout)
+    return status == 200
+
+
+def find_core_pid() -> int | None:
+    """mihomo core 是 mihomo-party 的 sidecar 子进程（setuid root）。"""
+    # 必须用 -x 精确匹配进程名：-f 会连命令行里带这个字符串的 bash/pgrep 包装进程一起匹配
+    code, out = sh(["pgrep", "-x", "mihomo"])
+    pids = [int(x) for x in out.split() if x.strip().isdigit()]
+    return pids[0] if pids else None
+
+
+def restart_mihomo_core(wait: float = 24.0) -> bool:
+    """硬重启 mihomo core：SIGTERM 后由 mihomo-party 自动拉起（app.asar 里
+    `child.on("close")` 有 Try Restart Core 逻辑），再等新进程 + 探活通过。"""
+    pid = find_core_pid()
+    if not pid:
+        log("[修复] 没找到 mihomo core 进程，跳过重启")
+        return False
+    started = time.time()
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except OSError as exc:
+        log(f"[修复] SIGTERM 失败: {exc}")
+        return False
+    log(f"[修复] 已向 mihomo core(pid={pid}) 发 SIGTERM，等 GUI 自动拉起")
+    deadline = started + 8
+    while time.time() < deadline:
+        time.sleep(0.5)
+        if find_core_pid() != pid:
+            break
+    else:
+        try:
+            os.kill(pid, signal.SIGKILL)
+            log("[修复] core 未在 8s 内退出，已 SIGKILL")
+        except OSError:
+            pass
+    deadline = time.time() + wait
+    noted = False
+    while time.time() < deadline:
+        time.sleep(2)
+        new_pid = find_core_pid()
+        if not new_pid or new_pid == pid or not mihomo_sock():
+            continue
+        results = probe_all()
+        if all(ok for ok, _ in results.values()):
+            log(f"[修复] core 重启成功 pid={new_pid}，探活正常")
+            return True
+        if not noted:
+            log(f"[修复] core 已重启 pid={new_pid}，探活暂未恢复，继续等")
+            noted = True
+    log("[修复] core 重启后仍未恢复")
+    return False
 
 
 def flush_cache() -> None:
@@ -258,25 +317,16 @@ def link_layer_broken(dev: str) -> tuple[bool, str]:
     return False, "链路层正常"
 
 
-def remediation_steps() -> list[tuple[str, object]]:
+def wifi_recovery_steps() -> list[tuple[str, object]]:
+    """最后手段：链路层异常或 mihomo 侧全部救不回来时才动 WiFi。"""
     dev = find_wifi_dev()
     con = find_wifi_con(dev)
-    steps: list[tuple[str, object]] = [
-        ("重载 mihomo 配置", lambda: reload_mihomo(diag=True)),
-        ("清 DNS/fake-ip 缓存后重载", lambda: (flush_cache(), reload_mihomo())[1]),
+    return [
+        (f"nmcli device reapply {dev}",
+         lambda: sh(["nmcli", "device", "reapply", dev], timeout=60)),
+        (f"重连 WiFi {con or dev}",
+         lambda: sh(["nmcli", "connection", "up", con or dev], timeout=90)),
     ]
-    broken, why = link_layer_broken(dev)
-    if broken:
-        log(f"[修复] 链路层异常（{why}），追加 WiFi 修复步骤")
-        steps += [
-            (f"nmcli device reapply {dev}",
-             lambda: sh(["nmcli", "device", "reapply", dev], timeout=60)),
-            (f"重连 WiFi {con or dev}",
-             lambda: sh(["nmcli", "connection", "up", con or dev], timeout=90)),
-        ]
-    else:
-        log(f"[修复] {why}，只重置 mihomo 出站，不动 WiFi")
-    return steps
 
 
 _gap_state = {"last": 0.0, "hist": []}
@@ -307,8 +357,32 @@ def dump_diagnostics() -> str:
     return summary
 
 
+def _run_step(label: str, action, actions: list[str],
+              results: dict[str, tuple[bool, str]]) -> tuple[bool, dict]:
+    """执行一步修复，并在几秒内复验；返回 (是否恢复, 最新探活结果)。"""
+    log(f"[修复] 执行：{label}")
+    actions.append(label)
+    try:
+        action()
+    except Exception as exc:  # noqa: BLE001
+        log(f"[修复] 执行异常 {label}: {type(exc).__name__}: {exc}")
+    for wait in (2, 3, 4):
+        time.sleep(wait)
+        results = probe_all()
+        if all(ok for ok, _ in results.values()):
+            log(f"[修复] 恢复：{label} 后探活全部正常 " +
+                json.dumps({k: v[1] for k, v in results.items()}, ensure_ascii=False))
+            return True, results
+    return False, results
+
+
 def remediate(results: dict[str, tuple[bool, str]]) -> tuple[bool, list[str], dict]:
-    """跑一遍修复阶梯，返回 (是否恢复, 已执行步骤, 最后一次探活结果)。"""
+    """修复阶梯，返回 (是否恢复, 已执行步骤, 最后一次探活结果)。
+
+    顺序：重载配置 → （接口还活着时）清缓存再重载 → 重启 mihomo core → 动 WiFi。
+    2026-11-04 20:10 现场：WiFi 漫游触发重载，重载本身卡死（控制接口 10s 超时），
+    core 卡住期间所有新连接被瞬间 EOF —— 这种只能靠重启 core，重载多少次都没用。
+    """
     actions: list[str] = []
     allowed, why = remediation_allowed()
     if not allowed:
@@ -317,21 +391,33 @@ def remediate(results: dict[str, tuple[bool, str]]) -> tuple[bool, list[str], di
     _gap_state["last"] = time.time()
     _gap_state["hist"].append(_gap_state["last"])
     log("[修复] 触发：" + dump_diagnostics())
-    for label, action in remediation_steps():
-        log(f"[修复] 执行：{label}")
-        actions.append(label)
-        try:
-            action()
-        except Exception as exc:  # noqa: BLE001
-            log(f"[修复] 执行异常 {label}: {type(exc).__name__}: {exc}")
-        for wait in (3, 4):
-            time.sleep(wait)
-            results = probe_all()
-            if all(ok for ok, _ in results.values()):
-                log(f"[修复] 恢复：{label} 后探活全部正常 " +
-                    json.dumps({k: v[1] for k, v in results.items()}, ensure_ascii=False))
-                return True, actions, results
-    results = probe_all()
+
+    ok, results = _run_step("重载 mihomo 配置", lambda: reload_mihomo(diag=True, timeout=6.0),
+                            actions, results)
+    if ok:
+        return True, actions, results
+
+    if mihomo_api_alive():
+        ok, results = _run_step(
+            "清 DNS/fake-ip 缓存并重载",
+            lambda: (flush_cache(), reload_mihomo(timeout=6.0))[1], actions, results)
+        if ok:
+            return True, actions, results
+    else:
+        log("[修复] 控制接口无响应，跳过清缓存，直接重启 core")
+
+    ok, results = _run_step("重启 mihomo core", restart_mihomo_core, actions, results)
+    if ok:
+        return True, actions, results
+
+    dev = find_wifi_dev()
+    broken, why = link_layer_broken(dev)
+    log(f"[修复] mihomo 侧已救不回来，转 WiFi 兜底（{why}）")
+    for label, action in wifi_recovery_steps():
+        ok, results = _run_step(label, action, actions, results)
+        if ok:
+            return True, actions, results
+
     log("[修复] 所有步骤均未恢复，等待下一轮：" +
         json.dumps({k: v[1] for k, v in results.items()}, ensure_ascii=False))
     return False, actions, results
@@ -460,7 +546,10 @@ def cmd_reload(debounce: int) -> int:
     if debounce and now - last < debounce:
         return 0
     open(RELOAD_STAMP, "w").close()
-    ok = reload_mihomo(diag=True)
+    ok = reload_mihomo(diag=True, timeout=6.0)
+    if not ok:
+        log("[修复] 重载失败（core 可能被卡住），转重启 core")
+        ok = restart_mihomo_core()
     return 0 if ok else 1
 
 

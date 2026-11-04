@@ -9,8 +9,8 @@ Type=simple
 ExecStart=/usr/bin/python3 /home/asumi/Yuki/deploy/netwatch.py watch
 Restart=always
 RestartSec=15
-StandardOutput=append:/home/asumi/Yuki/logs/netwatch.out
-StandardError=append:/home/asumi/Yuki/logs/netwatch.out
+StandardOutput=null
+StandardError=journal
 
 [Install]
 WantedBy=multi-user.target

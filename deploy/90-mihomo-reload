@@ -1,15 +1,31 @@
 #!/bin/sh
-# 网卡/漫游/DHCP 变化后让 mihomo 重载配置。
-# 原因：mihomo 的 TUN 默认出站接口在 WiFi 漫游后会失效，重载前所有 IPv4 新建连接全部超时。
-# 不监听 connectivity-change：mihomo 重载本身会触发该事件，会形成重载循环；
-# 隧道健康由 yuki-netwatch.service 探活负责。
+# WiFi 漫游/重连后让 mihomo 重载配置。
+#
+# 为什么必须等链路稳定再重载：2026-11-04 20:10 现场证实，漫游过程中发起的重载会把
+# mihomo core 卡死（控制接口 10s 超时，期间所有新连接被瞬间 EOF），比不重载还糟。
+# 所以这里先轮询到「设备 connected + 有默认路由」，再等 3s 落定，才交给 netwatch 重载；
+# 重载若仍超时，netwatch 会直接重启 core（mihomo-party 会自动拉起）。
+#
+# down 事件不处理：链路没起来时重载没有意义。
 [ -n "$1" ] && [ "$1" = "lo" ] && exit 0
 case "$2" in
-  up|down|dhcp4-change|dhcp6-change) ;;
+  up|dhcp4-change|dhcp6-change) ;;
   *) exit 0 ;;
 esac
+
+DEV="$1"
 (
-  sleep 5
+  i=0
+  while [ "$i" -lt 30 ]; do
+    STATE=$(nmcli -t -f GENERAL.STATE device show "$DEV" 2>/dev/null)
+    ROUTE=$(ip -4 route show default 2>/dev/null)
+    case "$STATE" in
+      *"(connected)"*) [ -n "$ROUTE" ] && break ;;
+    esac
+    sleep 1
+    i=$((i + 1))
+  done
+  sleep 3
   /usr/bin/python3 /home/asumi/Yuki/deploy/netwatch.py reload --debounce 60 \
-    >>/home/asumi/Yuki/logs/netwatch.log 2>&1
+    >/dev/null 2>&1
 ) &
