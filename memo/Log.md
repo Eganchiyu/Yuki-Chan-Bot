@@ -455,3 +455,12 @@
 - 更新 `tests/test_maid.py` 与 `tests/test_pipeline.py` 对齐精简后的核心模块，更新 `_archive/README.md` 索引。
 - 状态：语法编译、核心导入自检与 `pytest` 61 项单测全部通过。
 
+## 2026-11-04 精简并全面更新 `/docs` 文档
+- 移除重复或已过期的 `docs/module-relationship.md`、`docs/module-interface.md`、`docs/development-plan.md`、`docs/Log.md`。
+- 重写 `docs/architecture.md`：更新为容器只读挂载 + 宿主三守护服务（`supervisor`/`maid_runner`/`netwatch`）运行拓扑、最新目录树、8 阶段管线数据流及「代码定位速查表（LLM 交接索引）」。
+- 重写 `docs/toolchain-usage.md`：同步现役 12 个工具（含 `update_notebook`、`skip`）、`persist_result=False`、`_prune_skipped_round` 及 `_archive/` 已归档工具索引。
+- 重写 `docs/contributing.md` 为《开发与 LLM 交接指南》：明确本机 `~/miniconda3/envs/yuki/bin/python` 测试环境、只读容器生效方式、常见开发流程与数据/人格安全红线。
+- 重写 `docs/troubleshooting.md`、`docs/changelog.md` 并微调 `docs/evolution-charter.md`，彻底清除 `rm -rf yuki_memory/`、`data/yuki_log.txt`、`ws_connection.py` 等废旧断言。
+- 状态：`pytest -q` 61 passed，已提交 git。
+
+

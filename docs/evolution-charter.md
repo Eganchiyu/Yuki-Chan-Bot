@@ -22,8 +22,8 @@
 | 级别 | 范围 | 生效方式 |
 |---|---|---|
 | 自由区 | `skills/`、`workspace/`、`temp/` | 立即生效，仅需 git commit 追溯 |
-| 受限区 | `core/`、`utils/`、`modules/`、`network/`、`main.py`、`config.py` | 必须走 校验→试启动→切换→健康检查，失败自动回滚 |
-| 禁区 | `deploy/`、`.git/`、`.gitignore`、`configs/`、`data/`、`yuki_memory/`、`memory/`、`logs/`、`models/`、`maid_venv/`、`core/prompts.py`（人格）、`maid_approval.py` 的硬拦截规则、本准则 | **任何情况下不得改动**，命中即拒绝 |
+| 受限区 | `core/`、`utils/`、`modules/`、`network/`、`main.py`、`config.py`、`init.py` | 必须走 校验→试启动→切换→健康检查，失败自动回滚 |
+| 禁区 | `deploy/`、`.git/`、`.gitignore`、`configs/`、`data/`、`yuki_memory/`、`memory/`、`logs/`、`models/`、`maid_venv/`、`core/prompts.py`（人格）、`core/maid/maid_charter.py`、本准则 | **任何情况下不得改动**，命中即拒绝 |
 
 禁区判定不依赖模型自觉，由工具层白名单强制。
 
@@ -36,11 +36,12 @@
 
 ## 第 3.5 条 独立审查
 
-每个 patch 在写盘前先过一次**独立模型审查**（宿主侧 `deploy/reviewer.py`）：
+每个 patch 在写盘前先过一次**独立模型两级审查**（宿主侧 `deploy/reviewer.py`）：
 
 - 判断维度：是否只服务于任务目标、是否删除/削弱既有功能、是否触碰数据与配置、
   是否有明显正确性问题、是否可回滚、是否引入副作用（外部依赖/阻塞/无界循环/写死路径）。
-- 驳回时**不写盘、不重启**，把问题与具体改法同步回传，允许在同一任务内继续修改。
+- **两级输出**：`blocking`（会引发运行时错误、破坏防护、扩大数据/外发面、无依据引用符号等必修问题）与 `advisory`（命名、注释、风格建议）。**仅 `blocking` 非空时驳回**。
+- 驳回时**不写盘、不重启**，把问题与具体改法同步回传（写入 `staging/<task>/review.json`），允许在同一任务内继续修改（同一补丁最多驳回 3 次）。
 - 审查驳回不计入失败冷却（那是正常迭代），但审查次数单独限流。
 - 审查不是安全边界：禁区判定、5 道校验门、快照回滚仍然独立生效。
 

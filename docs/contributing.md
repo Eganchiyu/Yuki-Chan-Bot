@@ -1,439 +1,81 @@
-# YukiV6 贡献指南
+# 开发与 LLM 交接指南
 
-欢迎参与 YukiV6 项目开发！本指南将帮助你快速上手并参与贡献。
+本文档面向后续接手本项目的 LLM Agent 与开发者，提供环境事实、开发闭环、测试命令与安全红线。
 
 ---
 
-## 一、开发环境搭建
+## 一、LLM 交接必读（环境事实）
 
-### 1.1 系统要求
+1. **工作目录与生产形态**：
+   - 宿主机项目根路径：`/home/asumi/Yuki`
+   - 线上 Yuki 运行在 Docker 容器 `yuki`（镜像 `yuki:base`）内，**容器与宿主机使用完全相同的绝对路径挂载**（`/home/asumi/Yuki:/home/asumi/Yuki:ro`），否则 `file:///` 发送本地图片/表情包会因宿主机 NapCat 找不到路径而静默失败。
+   - 容器内代码树是 `:ro` 只读挂载；修改宿主机上的 Python 源码后，**必须重启 `yuki` 容器**（`bash deploy/run.sh` 或经 `staging/` 请求重启）才会在线上生效。
+2. **Python 解释器（极其重要）**：
+   - 本机唯一完整可用的 Python + pytest 环境是：**`~/miniconda3/envs/yuki/bin/python`**（Python 3.11 + pytest 9.2 + chromadb + aiohttp）。
+   - **不要用** `/usr/bin/python3`（无项目依赖与 pytest），**不要用** `./maid_venv/bin/python`（跨机残留，缺 `libpython3.11.so`）。
+3. **安全红线（参见 `docs/evolution-charter.md`）**：
+   - **数据优先**：`yuki_memory/`、`data/`、`memory/` 是不可再生资产，**严禁删除、清空、覆盖或重建**。
+   - **人格硬禁区**：未经机主本人明确要求，任何自动/半自动流程不得修改 `core/prompts.py` 中的人格设定与 `configs/config.yaml`。
+4. **开发日志**：
+   - 每次完成有效开发或排障后，在 `/home/asumi/Yuki/memo/Log.md` 末尾追加简短记录（做了什么、验证结果、当前状态）。
 
-- **Python 版本**：≥ 3.10
-- **操作系统**：Windows 10/11、Linux、macOS
-- **Git**：用于版本控制
+---
 
-### 1.2 环境准备
+## 二、测试与校验
+
+测试套件位于 `tests/`（共 11 个测试文件，全部离线 mock，无需网络和真实 API Key）：
 
 ```bash
-# 1. 克隆仓库
-git clone https://github.com/your-username/YukiV6.git
-cd YukiV6
-
-# 2. 创建虚拟环境
-python -m venv venv
-
-# 3. 激活虚拟环境
-# Windows
-venv\Scripts\activate
-
-# Linux/macOS
-source venv/bin/activate
-
-# 4. 安装依赖
-pip install -r requirements.txt
-
-# 5. 运行配置向导
-python setup.py
-```
-
-### 1.3 开发工具推荐
-
-- **IDE**：VS Code、PyCharm、Trae
-- **代码格式化**：Black、isort
-- **代码检查**：flake8、pylint
-- **测试框架**：pytest
-
----
-
-## 二、代码规范
-
-### 2.1 命名规范
-
-**文件命名**：
-- 使用小写字母和下划线：`history_manager.py`
-- 测试文件以 `test_` 开头：`test_toolchain.py`
-- 联网/真实 API 的测试不写进套件（用 mock 替代），保证 `pytest` 默认全绿
-- 配置文件使用小写字母：`config.py`
-
-**类命名**：
-- 使用 PascalCase：`YukiEngine`, `MemoryRAG`
-- 单例类以功能命名：`ProviderRegistry`, `MemoryRAG`
-
-**函数/方法命名**：
-- 使用 snake_case：`get_tools()`, `scan_and_register()`
-- 私有方法以 `_` 开头：`_initialize()`, `_load_blacklist()`
-- 异步方法不加 `async_` 前缀，通过 `async def` 声明
-
-**变量命名**：
-- 使用 snake_case：`chat_id`, `group_active_state`
-- 常量使用大写：`MAX_RETRIES`, `DEBOUNCE_TIME`
-- 私有变量以 `_` 开头：`_functions`, `_handlers`
-
-### 2.2 代码风格
-
-**缩进**：
-- 使用 4 空格缩进
-- 不使用 Tab
-
-**行长度**：
-- 建议每行不超过 100 字符
-- 长行使用换行或括号包裹
-
-**导入顺序**：
-```python
-# 1. 标准库
-import asyncio
-import os
-
-# 2. 第三方库
-import chromadb
-from sentence_transformers import SentenceTransformer
-
-# 3. 项目内部模块
-from config import cfg
-from utils.logger import get_logger
-```
-
-**注释**：
-- 使用中文注释（与项目文档保持一致）
-- 复杂逻辑必须添加注释
-- 函数/方法使用 docstring 说明用途
-
-### 2.3 异步编程规范
-
-**异步函数**：
-- 使用 `async def` 声明
-- 使用 `await` 调用异步函数
-
-**并发控制**：
-- 使用 `asyncio.Lock()` 保护共享状态
-- 使用 `asyncio.create_task()` 创建后台任务
-- 避免在异步函数中使用阻塞操作
-
-**错误处理**：
-- 使用 `try/except` 捕获异常
-- 记录错误日志
-- 提供降级方案
-
----
-
-## 三、Git 工作流
-
-### 3.1 分支管理
-
-**主分支**：
-- `main`: 生产环境代码
-- `develop`: 开发分支
-
-**功能分支**：
-- `feature/<功能名>`: 新功能开发
-- `fix/<问题名>`: Bug 修复
-- `docs/<文档名>`: 文档更新
-
-**分支命名**：
-- 使用小写字母和连字符
-- 例如：`feature/function-call`, `fix/memory-leak`
-
-### 3.2 提交信息格式
-
-```
-<type>(<scope>): <subject>
-
-<body>
-
-<footer>
-```
-
-**类型（type）**：
-- `feat`: 新功能
-- `fix`: Bug 修复
-- `docs`: 文档更新
-- `style`: 代码格式调整（不影响逻辑）
-- `refactor`: 代码重构
-- `perf`: 性能优化
-- `test`: 测试相关
-- `chore`: 构建/工具相关
-
-**范围（scope）**：
-- 可选，表示影响范围
-- 例如：`core`, `modules`, `providers`, `docs`
-
-**主题（subject）**：
-- 简短描述，不超过 50 字符
-- 使用中文
-- 不以句号结尾
-
-**示例**：
-```
-feat(core): 实现 FunctionRegistry 注册中心
-
-- 支持批量扫描注册
-- 支持单个注册/注销
-- 支持获取 tools 列表
-
-Closes #123
-```
-
-### 3.3 提交前检查清单
-
-提交前必须完成以下检查：
-
-- [ ] **代码风格**：符合项目命名规范
-- [ ] **Gitignore**：敏感文件未被提交
-- [ ] **测试通过**：相关测试全部通过
-- [ ] **文档更新**：修改了文档（如有必要）
-- [ ] **Changelog 更新**：记录了重要变更
-- [ ] **无敏感信息**：API Key、密码等未暴露
-
----
-
-## 四、开发流程
-
-### 4.1 新功能开发
-
-1. **创建功能分支**
-   ```bash
-   git checkout develop
-   git pull origin develop
-   git checkout -b feature/your-feature-name
-   ```
-
-2. **开发功能**
-   - 编写代码
-   - 添加测试
-   - 更新文档
-
-3. **提交代码**
-   ```bash
-   git add .
-   git commit -m "feat(module): 添加新功能"
-   ```
-
-4. **推送分支**
-   ```bash
-   git push origin feature/your-feature-name
-   ```
-
-5. **创建 Pull Request**
-   - 在 GitHub 上创建 PR
-   - 填写 PR 描述
-   - 等待代码审查
-
-### 4.2 Bug 修复
-
-1. **创建修复分支**
-   ```bash
-   git checkout develop
-   git pull origin develop
-   git checkout -b fix/bug-description
-   ```
-
-2. **修复 Bug**
-   - 定位问题
-   - 修复代码
-   - 添加测试
-
-3. **提交代码**
-   ```bash
-   git add .
-   git commit -m "fix(module): 修复 Bug 描述"
-   ```
-
-4. **推送并创建 PR**
-   ```bash
-   git push origin fix/bug-description
-   ```
-
-### 4.3 代码审查
-
-**审查要点**：
-- 代码风格是否符合规范
-- 是否有潜在的 Bug
-- 是否有安全隐患
-- 是否有性能问题
-
-**审查流程**：
-1. 提交 PR
-2. 等待审查者审查
-3. 根据反馈修改代码
-4. 审查通过后合并
-
----
-
-## 五、测试规范
-
-### 5.1 测试要求
-
-**必须测试的场景**：
-- 核心功能
-- 边界条件
-- 错误处理
-- 并发场景
-
-**测试文件位置**：
-- 测试文件放在 `tests/` 目录
-- 文件名以 `test_` 开头
-
-### 5.2 测试命名
-
-```python
-def test_search_diary_returns_results():
-    """测试搜索日记返回结果"""
-    pass
-
-def test_search_diary_with_empty_query():
-    """测试空查询的处理"""
-    pass
-```
-
-### 5.3 运行测试
-
-测试统一用 pytest，解释器用 `~/miniconda3/envs/yuki/bin/python`（仓库根目录的
-`maid_venv` 缺 libpython3.11 不可用，系统 python3 没装项目依赖）。
-
-```bash
-# 运行所有测试（全部离线，无需网络/API Key）
+# 1. 本机运行全量测试（推荐）
 ~/miniconda3/envs/yuki/bin/python -m pytest -q
 
-# 运行特定测试文件
-~/miniconda3/envs/yuki/bin/python -m pytest tests/test_config.py
+# 2. 运行单个测试文件或用例
+~/miniconda3/envs/yuki/bin/python -m pytest tests/test_toolchain.py -q
+~/miniconda3/envs/yuki/bin/python -m pytest tests/test_memory.py -k "recall" -q
 
-# 运行并显示详细输出
-~/miniconda3/envs/yuki/bin/python -m pytest -v
+# 3. 在只读容器环境中运行测试
+docker run --rm -v /home/asumi/Yuki:/home/asumi/Yuki:ro -w /home/asumi/Yuki yuki:base python -m pytest -q
 
-# 运行并生成覆盖率报告
-python -m pytest --cov=.
+# 4. 跑完整 5 道自进化校验门（compileall / import / pytest / YUKI_DRY_RUN / health）
+bash deploy/verify.sh
 ```
+
+**测试编写约定**：
+- 新增测试按模块归入现有 11 个 `tests/test_*.py` 文件（见 `tests/README.md`）。
+- 涉及文件落盘一律使用 `tmp_path` 或 `monkeypatch`，不得污染 `data/`、`logs/`、`yuki_memory/`，确保在 `:ro` 挂载的容器内也能全绿通过。
 
 ---
 
-## 六、文档规范
+## 三、常见开发任务手册
 
-### 6.1 必须维护的文档
+### 3.1 新增配置项
+1. 打开 `config.py`，在对应 `@dataclass`（如 `ModelConfig`、`RAGConfig`）添加字段，并在 `_ATTR_MAP` 中添加 `("ATTR_NAME", (("section", "key"), default_val, "中文注释"))`。
+2. 如需特殊类型转换，在 `Config` 类中增加 `@property`。
+3. 业务代码直接通过 `from config import cfg; cfg.ATTR_NAME` 读取（支持每秒自动检查 mtime 热重载）。
 
-| 文档 | 路径 | 更新时机 |
-|------|------|----------|
-| 架构文档 | `docs/architecture.md` | 模块结构变更时 |
-| 开发规划 | `docs/development-plan.md` | 计划变更时 |
-| 更新日志 | `docs/changelog.md` | 每次提交时 |
-| README | `README.md` | 项目说明变更时 |
+### 3.2 新增主模型 Function Call 工具
+1. 在 `core/tools/tools_*.py` 中实现异步函数 `async def xxx_tool(context: ToolContext, ...) -> ToolResult`。
+2. 在 `core/tools/tools.py` 的 `TOOL_SPECS` 中注册 `ToolSpec`。若工具输出不需要写入持久化对话历史（如内部状态更新），设 `persist_result=False`。
+3. 在 `tests/test_toolchain.py` 补充离线单测。
 
-### 6.2 文档更新规则
+### 3.3 新增小女仆技能 (`skills/`)
+- `skills/` 在容器内是读写挂载，修改后**立即生效，无需重启容器**。
+- 每个技能由 `skills/<name>.py`（可执行脚本或函数）和 `skills/<name>.md`（第一行为技能简介，后续为调用说明）组成。
 
-**Changelog 更新**：
-- 每次提交必须更新 `docs/changelog.md`
-- 记录在 `[未发布]` 部分
-- 发布版本时，将 `[未发布]` 替换为版本号
+### 3.4 修改入站指令或唤醒规则
+- 群聊/私聊斜杠指令（`/开启`、`/关闭`、`/重启`、`/刷新`、`/help`）、`@` 唤醒、白名单 BOT 过滤、戳一戳均在 `modules/QQNapcatListen/listen_main.py`。
+- 对应单测在 `tests/test_napcat.py`。
 
-**架构文档更新**：
-- 新增/删除模块时更新
-- 模块职责变更时更新
-- 数据流变更时更新
-
----
-
-## 七、安全规范
-
-### 7.1 敏感信息保护
-
-**禁止提交的信息**：
-- API Key / Secret
-- 数据库密码
-- 私钥文件
-- 配置文件中的敏感字段
-
-**保护措施**：
-- 使用 `.gitignore` 排除敏感文件
-- 使用环境变量存储敏感配置
-- 定期轮换 API Key
-
-### 7.2 代码安全
-
-**输入验证**：
-- 验证所有外部输入
-- 防止 SQL 注入、XSS 等攻击
-- 限制输入长度和类型
-
-**错误处理**：
-- 不暴露内部错误详情
-- 记录详细错误日志
-- 提供友好的错误提示
+### 3.5 修改宿主守护或部署脚本 (`deploy/`)
+- 修改 `deploy/supervisor.py`、`deploy/reviewer.py`、`deploy/maid_runner.py`、`deploy/netwatch.py` 后，需机主执行 `sudo systemctl restart yuki-supervisor`（或对应服务名）才会生效。
+- 让线上 `yuki` 容器加载最新代码：
+  - 宿主机有 docker 权限时：直接运行 `bash deploy/run.sh`（约 7~10 秒完成重建）。
+  - 容器内部或无 docker 权限时：往 `staging/restart_<时间戳>/request.json` 写入 `{"type": "restart"}`，由宿主 `yuki-supervisor` 在 3 秒内自动快照并重建容器。
 
 ---
 
-## 八、问题反馈
+## 四、代码与 Git 规范
 
-### 8.1 Bug 报告
-
-**Bug 报告模板**：
-
-```
-## Bug 描述
-[简短描述 Bug]
-
-## 复现步骤
-1. [步骤 1]
-2. [步骤 2]
-3. [步骤 3]
-
-## 预期行为
-[描述预期行为]
-
-## 实际行为
-[描述实际行为]
-
-## 环境信息
-- 操作系统：[操作系统]
-- Python 版本：[版本]
-- 项目版本：[版本]
-
-## 错误日志
-[粘贴相关错误日志]
-
-## 补充信息
-[其他相关信息]
-```
-
-### 8.2 功能建议
-
-**功能建议模板**：
-
-```
-## 功能描述
-[简短描述功能]
-
-## 需求背景
-[描述为什么需要这个功能]
-
-## 预期效果
-[描述功能实现后的效果]
-
-## 实现思路
-[可选：提供实现思路]
-
-## 补充信息
-[其他相关信息]
-```
-
----
-
-## 九、联系与支持
-
-### 9.1 获取帮助
-
-- **文档**：查阅 `docs/` 目录下的文档
-- **Issue**：在 GitHub 上创建 Issue
-- **讨论**：在 GitHub Discussions 中讨论
-
-### 9.2 参与贡献
-
-- **代码贡献**：提交 PR
-- **文档贡献**：完善文档
-- **测试贡献**：编写测试
-- **问题反馈**：报告 Bug 或提出建议
-
----
-
-**文档版本**：v1.0  
-**最后更新**：2026-06-04  
-**维护人员**：项目开发团队
+- **代码风格**：Python 3.11+，4 空格缩进，内部模块统一使用 `from utils.logger import get_logger` 记录日志，阻塞操作在异步链路中必须用 `asyncio.to_thread()` 包装。
+- **Git 提交**：只 `git add` 本次任务修改的具体文件路径，**严禁 `git add -A` 或 `git add .`**（防止把 `staging/`、`output/`、临时产物或他人未提交改动卷入提交）。
+- **提交信息**：`<type>(<scope>): <简短中文或英文说明>`（如 `feat(tools): ...`、`fix(pipeline): ...`、`docs: ...`）。

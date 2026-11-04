@@ -1,240 +1,53 @@
-# YukiV6 更新日志
+# Yuki 更新日志
 
-所有 notable changes 都会记录在这个文件中。
-
-格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)，
-并且本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
+本项目重要架构与功能演进记录（日常开发明细见 `memo/Log.md`）。
 
 ---
 
-## [未发布]
+## [未发布] (2026-10 ~ 2026-11)
 
 ### 新增
-- 新增回复标记格式容错 `core/reply_format.py`：统一处理模型把内部标记括号写错的情况（`[layout]...[/layout]`、`[layout]...</layout>`、`【MEME:情绪】`、`[meme:...]`、全角括号等），把变体归一化为规范的 `<layout>` / `[MEME:情绪]`
-- 发送前清洗兼容错格式标记：布局块一律剥离不发送（混用括号、未闭合开标签都在内），表情包标记归一化后仍能正常切分检索，避免错格式被当成正文发出
-- 历史写入归一化：`HistoryManager` 落盘前对 `assistant` 消息调用 `normalize_reply_markup()`，保留规范 `<layout>`、统一 `[MEME:x]`（用户原文不改写）
-- 历史启动修复：`HistoryManager.preload()` 预载时批量修复 `chat_history.json` 里既有的错格式标记并原子回写，断开「模型看到自己的错误示例→继续写错」的循环
-- LLM 空回复/请求失败立即重试：`llm_chat_raw()` 在主备故障转移之外最多重试 `model.llm_max_retries` 次（默认 3，不含首次请求）；出现过空回复后，后续重试在末尾追加「请不要输出空字符」；重试耗尽按原因返回「输出了空字符」或「暂时连接不上网络」
-- 区分「清洗致空」与「模型真空回复」：清洗只作用于发送文本，LLM 层看到的仍是原始 content，因此回复被标记清洗干净不会触发空回复重试；若本轮已执行过工具、最终回复被清洗为空，则发送「工作中......」占位（history 仍保留归一化后的 `<layout>` 盘算），不再误报空字符
-- 日志控制台与文件分级：控制台默认只输出 INFO 及以上，`debug: true` 不再把控制台刷成 DEBUG 瀑布；文件始终记录 DEBUG 明细。控制台级别可用 `YUKI_LOG_CONSOLE_LEVEL`（`DEBUG`/`20` 等）单独覆盖，`YUKI_LOG_CONSOLE_VERBOSE=1` 可放行项目内高频 DEBUG
-- 控制台长信息结构化短输出：多行长消息折叠为单行「摘要 + 规模标注」（如 `… (+39 行, 2.7KB)`），前缀 + 内嵌 `dict`/`list` 字面量压缩为键值摘要，明细只留在日志文件
-- 新增多模式基础框架 `core.modes`，将默认 QQ 群聊包装为 `QQChatMode`，并提供全局唯一聚焦模式状态管理
-- 新增浏览器交互占位模块 `modules/browser_interaction`，支持进入浏览器模式、记录步骤、占位扫描和完成后返回来源会话
-- 新增模式级工具注册 `ToolRegistryProvider`，支持普通 QQChatMode 与浏览器模式暴露不同工具组
-- GitHub Push 卡片补充 Compare API 提交详情、提交评论数、文件数量、代码增删统计和比较链接
-- GitHub 仓库监控新增 Pillow 事件小卡片渲染，并复用 WebSocket 图片发送逻辑推送到指定群聊
-- 新增 `get_master_status` 工具，返回主人在线状态、活跃状态和当前聚焦窗口标题
-- 增强 LiveYukiL2D minimal 桌宠的待机微笑张嘴、标准眼睛参数眨眼回退与轻微风场物理效果
-- 新增 `docs/core-technical-debt.md`，梳理 `core/` 模块当前技术债、影响范围、整改优先级与短期落地清单
-- 新增 `skills/video_understanding.py` 视频理解 skill：读取视频信息、均匀采样 4 帧、拼接四宫格压缩后调用配置中的视觉模型进行概括或问答，并加入文件类型、大小、时长、提示词长度和请求超时限制
-- 新增主人私聊双模系统（`master_private` 模式）：群聊运行时自动接受主人私聊消息，维护独立的私聊上下文，使用专属个人助手 prompt，必回、无防抖、带完整工具链
-- 新增 `get_yuki_setting_master_private()` 主人私聊专用 prompt，身份为专属小助手而非代管模式
-- 新增 `config.py` 中 `StructuredMemoryConfig` 配置组，支持通过 `config.yaml` 控制结构化记忆开关和召回数量参数（`enabled`、`max_profiles`、`max_facts`、`max_summaries`），默认关闭
-- 新增跨平台光标查询 `modules/LiveYukiL2D/liveyuki_l2d/cursor.py`：Windows 走 `GetCursorPos`，X11/XWayland 走 libX11 `XQueryPointer`，Wayland 走合成器（hyprctl / Hyprland IPC）
-- 新增普通图片原生视觉输入：`model.llm_native_vision_enabled` 开启后，收到的普通图片不再外挂转写，而是作为 imageUrl 图块直接交给主模型理解，提升截图、文字图等内容的还原度；表情包仍走转写以节省视觉开销
-- 新增 `model.backup_native_vision_enabled`：主线路失败切备用时，若备用模型不支持视觉，按需把图片附件转写为文本再发送，避免备用线路 400
-- 新增原生视觉限额配置：`native_vision_max_images`（单次张数）、`native_vision_history_turns`（保留轮数）、`native_vision_max_size` / `native_vision_quality`（压缩参数）与图片下载大小/超时限制
-- 新增 `docs/android-bridge-plan.md`：评估 Yuki 远程访问主人手机 adb（无 root）的可行性，明确 shell 级权限边界、端口漂移补偿方案，选型 Termux 自连 + SSH 中继 + Tailscale 架构，并给出分阶段路线与安全体系
-- 新增入站图片预取 `modules/vision/prefetch.py`：`SessionPipeline.enqueue_message()` 收到带图消息时立即后台下载并做视觉处理，把下载与图像理解的耗时从「开始回复」的关键路径前置到防抖等待期间；管线 normalize 阶段与工具链待合并消息经 `resolve_image()` 复用同一结果，同一 URL（区分表情包/普通图片）只下载理解一次，结果按 `model.image_prefetch_ttl` 过期、按 `model.image_prefetch_max_entries` 限量
-- 新增图片预取配置：`model.image_prefetch_enabled`（默认开启，关闭后退回原有同步处理）、`image_prefetch_ttl`（默认 60 秒）、`image_prefetch_max_entries`（默认 64）
-- **自进化运行底座（容器化 + 受控自改）**：
-  - 新增 `deploy/Dockerfile`：镜像只装依赖不装代码，代码树以只读卷挂入，改动由宿主守护进程施加
-  - 新增 `deploy/run.sh`：容器与宿主**同绝对路径**挂载、数据目录单独读写卷、`--network host` 直连宿主 NapCat、以宿主 uid 运行（否则 staging 属主为 root，宿主无法回写结果）
-  - 新增 `utils/health_server.py` 与 `main.py` 探针接入：独立线程标准库 HTTP 服务，返回 `ready`/`napcat_online`/`maid_queued`/`maid_running`
-  - 新增 `YUKI_DRY_RUN=1` 试启动模式：完整初始化自检但跳过 NapCat 接管、配置回写与历史落盘
-  - 新增 `deploy/verify.sh`：5 道校验门（编译 / 导入 / 单测 / 试启动 / 探针），临时容器断网 + tmpfs 数据，失败输出可回灌给模型
-  - 新增 `deploy/test_gate.py` 与 `deploy/test_baseline.json`：测试门改为基线差集，只对「本次改动新增的失败」报警
-  - 新增 `deploy/supervisor.py`：宿主守护进程，串联「路径分级 → 模型审查 → 记忆快照 → 应用 → git commit → 校验 → 重启 → 健康检查 → 失败回滚」
-  - 新增 `deploy/reviewer.py`：宿主侧独立模型审查（相关性/删功能/数据安全/正确性/回滚性/副作用），驳回不写盘不重启并把意见同步回传
-  - 新增 `deploy/retention.py`：trace 保留 7 天后按周归档（总量上限 200MB）、大日志截断、staging 3 天清理、记忆快照留 7 份
-  - 新增 `deploy/yuki-supervisor.service` + `deploy/install-service.sh`：守护进程常驻（systemd）与每日保留 cron
-  - 新增 `docs/evolution-charter.md` 与 `core/maid/maid_charter.py`：自进化准则与路径分级（自由区/受限区/禁区）、限额、验证门，作为 prompt 与工具判定的单一来源
-- 小女仆新增自改工具：`propose_patch`（写 staging 候选）、`verify_patch`（容器内 AST 快检）、`request_self_reload`（提交并同步等待结果）、`read_evolution_result`（读历史结果）
-- 小女仆新增 `restart_yuki`：请求重启容器（重载配置/重连 NapCat/清内存），由守护进程执行快照→重建→探活，限 5 次/小时
-- 新增 `core/maid/maid_worklog.py`：`list_previous_work` / `read_work_trace` 支持跨任务交接，配合既有 `resume_task` 续做复杂改造
-- `logs/self_evolve.jsonl`：每次自改记录摘要、结果、commit，作为可追溯台账
+- **容器化自进化运行底座 (`deploy/`)**：
+  - `deploy/Dockerfile` + `run.sh`：镜像仅装依赖，代码树与宿主机**同绝对路径 `:ro` 只读挂载**，数据卷独立 `:rw` 挂载
+  - `deploy/supervisor.py` + `reviewer.py` + `verify.sh`：路径分级校验、独立模型两级审查（`blocking`/`advisory`）、`yuki_memory` 硬链接快照、5 道校验门（编译/导入/pytest/试启动/探针）、失败自动 `git reset` 回滚
+  - `utils/health_server.py`：提供 `/health` 存活探针与 `POST /notify` 重启前群聊/私聊通知端点
+  - `deploy/retention.py`：trace 按周归档、大日志截断、`staging/` 清理、记忆快照保留最近 7 份
+- **小女仆 DeepSeek Harness 后端 (`core/maid/` + `deploy/maid_runner.py`)**：
+  - 小女仆执行体全面切换为宿主侧 `dsh --profile yuki-maid --json`，通过 `tasks/dsh/<id>/` 文件协议通信
+  - `core/maid/maid_resume.py`：容器重启后自动扫描已完成但未带 `reported.ok` 的任务并补报
+- **网络看门狗与运维指令**：
+  - `deploy/netwatch.py`（`yuki-netwatch.service`）+ NM `90-mihomo-reload`：30s 探活 `direct`/`proxy` 路径，阶梯式重载/重启 mihomo 解决 WiFi 漫游后 IPv4 出站挂死问题
+  - 主人专属 `/刷新` 指令（群聊/私聊通用）：经 `data/netforce_pending/` + `yuki-netforce.path` 触发宿主真实探活并回报原会话
+  - 主人专属 `/重启` 指令：先回复「正在重启」并落盘 `data/restart_notice.json`，经 `staging/` 交由宿主重建容器，新进程连上 NapCat 后自动补发「重启完成」
+  - `utils/http_client.py` 新增 `DedicatedDnsResolver`（独立 4 线程 DNS 解析池），`utils/llm_client.py` 在连接层异常时自动重建全局 aiohttp Session 重试
+- **对话与工具能力**：
+  - 新增 `skip` 工具（`core/tools/tools_skip.py`）：群聊不适合插话时主动跳过本轮回复，管线通过 `_prune_skipped_round` 抹去本轮工具痕迹
+  - 新增 `update_notebook` 工具与 `core/notebook.py`：维护全局小本本（`data/notebook.json`，上限 512 字），在上下文中作为潜意识底色注入且工具结果不落盘历史（`persist_result=False`）
+  - 新增跨轮召回缓存 `core/recall_cache.py`（`data/recall_best.json`）：按 `chat_id` 保留最近两轮召回的 top-1 并排在注入最前，群聊兴趣度计算仅看本轮新召回；新增 `rag.inject_top_k`（默认 5）配置
+  - 新增回复自动订阅 `core/reply_watch.py`：回复后按问句/触发词/精力/生物钟/活跃度自动评分订阅“等回音”，超时无人接话时注入提醒（最多 2 次）
+  - 新增入站图片预取 `modules/vision/prefetch.py`：消息入队即后台下载并做视觉处理，与普通图片原生多模态输入（`llm_native_vision_enabled`）协同
+  - 新增回复标记容错 `core/reply_format.py` 与文本工具调用还原 `core/tool_markup.py`：自动剥离 `<layout>`、归一化 `[MEME:情绪]`、还原正文中的 DSML/`<tool_call>` 调用
+  - 支持多主人 QQ 号配置 `target.masters`（`cfg.MASTER_QQS` / `cfg.is_master_qq()`）及 `master_private` 双模私聊通道
+  - `generate_image` 工具内置 Yuki 与主人固定人设参考图说明
 
 ### 变更
-- 日志降噪：`websockets` 纳入 `NOISY_NAMESPACES`（逐帧收发与 keepalive ping/pong 压到 WARNING，实测占单日日志一半以上）；`VERBOSE_NAMESPACES` 修正为实际 logger 名（原 `protocol`/`listener`/`modules.napcat` 与真实命名不符，等于空转）
-- 控制台降噪过滤器 `ConsoleNoiseFilter` 挂到 console handler：项目内高频 namespace 的 DEBUG 只进文件不进控制台
-- 高频 INFO 降级为 DEBUG：`[Pipeline]` 阶段流水、`[Activity]` 活跃度波动与降温、`[Brain]` 欲望计算、`[Engine]` 破冰巡检明细、`[ToolCall]` 执行前后、`[MemeCache]`/`[ImageStore]` 例行读写；保留收消息、发送完成、决策结论、日记触发与全部 WARNING/ERROR
-- 日志折行优先停在分隔符（`, `、` | `、`，`）处，不再从 ASCII token 中间切开；`_truncate_display` 改为按显示宽度纯裁剪，避免在第一个空格处草率收尾
-- 窄屏元数据不再从中间截断：放不下时按「时间+级别+位置 → 级别+位置 → 位置」逐级降级
-- `PrettyFormatter` 增加单条记录行数上限（`YUKI_LOG_FILE_MAX_LINES`，默认 60），异常堆栈不受限制
-- 修复日志格式化器窄屏布局遗漏元数据，并增强对应的宽度与行前缀回归测试
-- NapCat 接入层合并为单一文件 `network/napcat.py`（`NapCatGateway` 同时承担原 `BotConnector` 与 `MessageSender`），删除 `ws_connection.py` / `ws_sender.py`
-- NapCat 读端改为常驻 reader + 帧路由：`echo` 命中挂起请求则唤醒调用方，带 `post_type` 的帧进事件队列，其余丢弃。**出站不再依赖有人消费事件流**，API 响应也不再混进事件流（此前 `send_request()` 的 Future 只有在 `listen()` 被迭代时才会被 resolve）
-- `modules/message/` 三个文件（`CQProtocol` / `CQParser` / `GetMeta`）并入 `network/napcat.py`：CQ 码替换、群成员与消息查询、合并转发解析统一收口为网关方法
-- 入站适配层 `listen_main.py` 去掉 9 个模块级全局与 `configure_runtime()` 注入式 setter，依赖收敛为 `napcat_listen(gateway, pipeline)`
-- 删除 `SessionPipeline.wake_quickly()`：被叫到时改为在真实入队上一次到位（`debounce_flag=False` + `force_reply=True`），不再起"幽灵"入队任务再由真实入队 cancel 它
-- 被叫到的判定新增"被 @"：以结构化 `at` 段为准（`messagePostFormat=array`），`raw_text` 兜底且容忍 `[CQ:at,qq=x,name=y]`，`@全体成员` 不算
-- 戳一戳恢复"只处理戳到机器人自己"的过滤（原注释里的过滤误写为 `cfg.TARGET_QQ`），并统一按普通消息入队，不再插队
-- `main.py` 新增单实例守卫（`data/yuki.lock` 上的 flock，进程退出自动释放；`YUKI_ALLOW_MULTI_INSTANCE=1` 可覆盖），避免两个实例同时消费 NapCat 事件
-- QZone 监控与 GitHub 监控的启动改为配置开关（`qzone_monitor.enabled` 默认 false、`github_monitor.enabled` 默认 false），替代原先整段注释与 `getattr` 兜底
-- 新增 `pytest` 异步模式配置（`pyproject.toml` 的 `asyncio_mode = "auto"`），修复 13 个未标注 `@pytest.mark.asyncio` 的用例被误判失败
-- 修复 QZone 监控会破坏主连接的问题：它原来在缺少连接时临时自建 `connector.listen()` 再在 finally 里 `close()`，既抢事件又会关掉主监听的连接；网关的常驻 reader 已能独立完成请求-响应，这段临时 listener 逻辑整体删除
-- NapCat 接入层的传输契约与入站策略加入回归测试：`tests/test_napcat_gateway.py`（本地假 OneBot 服务器验证帧路由、重连、CQ 解析）与 `tests/test_napcat_inbound.py`（被叫到/戳一戳过滤）
-- 将 `modules/system_state` 合并进 `core/tools/tools_status.py`（主人状态监控 + `get_master_status` 工具统一收口），并删除该独立模块
-- DeepSeek 等模型返回空字符时，发送阶段拦截并发送占位提示「Yuki回复了空字符」，避免静默无回复
-- 小女仆终端/技能执行超时的进程树终止适配 Linux：POSIX 下以独立进程组（`start_new_session` + `os.killpg`）整组 `SIGKILL`，Windows 保留 `taskkill /T` 路径
-- 主人状态监控适配 Linux：空闲检测改用 systemd-logind（兼容 X11/Wayland），前台窗口改为查询 X11 `_NET_ACTIVE_WINDOW`，保留 Windows（Win32）原始路径
-- 移除 GPS-VPS 手机定位功能：删除 `modules/system_state/gps_receiver.py`，`get_master_status` 不再返回 GPS 定位结果
-- 真实运行代码暂时关闭浏览器模式工具注入，保留浏览器模块及注册代码供后续启用
-- LLM 回复生成保留 `finish_reason` 等安全过滤信号，被内容安全过滤时发送 `Filtered`，避免空回复静默吞掉
-- 聊天历史中的图片改为“纯文本 + 轻量附件引用”存储：`image_attachments` 只记录索引与唯一 ID，Base64 不落盘；请求前才组装多模态消息，历史、日记与日志仍按文本处理
-- `ImageStore` 登记改为磁盘文件名使用唯一 ID、短索引循环复用：`read_attachment` 校验索引与 ID 一致，避免 `[img:XXX]` 被复用后关联到错误图片；文件先写临时文件再 `os.replace` 原子落盘
-- 工具调用间隙合并的新消息也复用同一套图片处理逻辑，避免绕过原生视觉与转写分流
-- Live2D 桌宠改为**默认关闭**：开关优先级为环境变量 `YUKI_DESKTOP_PET`（1/0）> `modules/LiveYukiL2D/config.json` 的 `desktopPet.enabled`（默认 false），后者此前是没人读的死配置
-- `main.py` 的桌宠启动改为在线程里执行（`asyncio.to_thread`）：原来它同步阻塞事件循环，起 aiohttp 服务最长要等 3 秒，把 NapCat 监听整体推迟
-- `modules/LiveYukiL2D/desktop.py` 重写启动方式：直接用当前平台的 Electron 二进制，不再走 `npm run desktop`；启动前做平台自检（Linux 上发现 Windows 版 `electron.exe` 直接报错并给出重装命令）；子进程 stdout/stderr 接入项目日志，异常退出记录退出码，不再静默"已启动"
-- `desktop.py` 不再在模块级导入 `server`（aiohttp 依赖），开关判断与环境自检可在无 aiohttp 环境下单独跑
-- 桌宠 Electron 主进程补齐 Linux 适配：始终置顶层级按平台区分（`screen-saver` 仅 macOS 有效）；原生 Wayland 下追加 `GlobalShortcutsPortal` 特性并记录全局快捷键注册失败原因；主进程按帧轮询真实全局光标并推送给渲染进程
-- 修复 Linux 上鼠标穿透彻底失效：Electron 的 `setIgnoreMouseEvents(..., { forward: true })` 只在 Windows/macOS 生效，窗口一旦忽略鼠标就收不到 `pointermove`，永久卡在穿透状态。改为由主进程推送全局光标、渲染进程做命中判定，并对状态做去重避免 IPC 刷屏
-- 修复 Chromium 全局光标在 Hyprland/XWayland 下不更新的问题：`screen.getCursorScreenPoint()` 会停在窗口开始忽略鼠标时的坐标，改为优先读 Hyprland IPC（一次 unix socket 往返，不创建进程），`hyprctl` 与 Chromium 查询依次兜底
-- 修复桌宠模型命中判定：原 `isHitOnModel` 用 model 矩阵去反算 view 变换后的坐标，两者不是同一坐标空间；且 Yuki 模型没有配置 `HitAreas`，`anyhitTest` 依赖的 `isHit` 在本仓库根本未定义。改为记录每帧真实绘制的 MVP，把可见 drawable 顶点投到画布像素做包围盒判定，结果与画面一致
-- 修复桌宠表情/语音表情静默失效：`WebSDK/src/main.ts` 用 `require('./lappadapter')` 动态取 adapter，Rollup 无法静态分析导致整块被 tree-shake 掉，浏览器里 `require` 又是 undefined（控制台只剩一句 `require is not defined`）。改为静态 import，并移除 `lappadapter.ts` 中未使用的 Node `util` 导入
-- `GET /api/cursor` 去掉 `ctypes.windll.user32`（Windows 专有），改用跨平台实现，取不到时返回 `available: false` 而不是抛异常
-- 小女仆 terminal 默认允许常规写入、依赖安装和 git 操作，仅保留高风险命令拦截
-- 小女仆专属虚拟环境启动前会验证 Python 是否可用，检测到旧解释器丢失或环境损坏时自动重建
-- GitHub 仓库监控的单仓库推送目标改为 `chat_ids` 列表，支持一个仓库推送到多个群聊
-- 统一项目网络连接 SSL 配置，新增 `utils.http_client` 作为 certifi CA 入口，并覆盖 aiohttp、urllib、httpx、requests 和 wss WebSocket 调用
-- 表情包发送阶段的情绪判断改为本地规则，避免每次 `[MEME]` 检索额外调用 LLM 导致发送延迟
-- 旧 RAG 日记召回取消按群聊硬隔离，改为全局召回后对当前群聊日记和当前发言者姓名进行加权重排
-- Prompt 注入全局模式状态，使 QQChatMode 收到新消息时能感知当前浏览器等聚焦模式是否运行
-- `search_group_snapshots` 未提供关键词时改为随机返回本群一定数量截屏，并补充文件名便于自由 roam 后发送
-- 调整 minimal Live2D 呼吸幅度、鼠标跟随灵敏度与阻尼，使头部和身体待机动作更自然
-- 将 `core/maid.py` 解耦为边界判定、通用常量、运行时工具、外部工具、提示词、主循环和 Worker 模块，保留 `core.maid` 兼容导出
-- 将 `core/engine.py` 解耦为回复工具链、回复决策、日记摘要和后台监控 service，保留 `YukiEngine` 门面调用方式不变
-- 将 `core/tools.py` 解耦为 `core/tools/` 包：按职责拆分为状态、定时、日记、小女仆、消息、富文本、截屏、媒体、检索、空间、浏览器、网易云等子服务，`TOOL_SPECS` 汇总于 `core/tools/tools.py`，并保留 `core.tools` 导入路径与公开 handler 名称不变
-- 二次重新评估 `docs/core-technical-debt.md`：将当前重点调整为历史并发一致性、消息失败恢复、后台任务生命周期、Maid 执行边界和核心行为测试缺口，并更新 P0/P1/P2 整改顺序与状态清单
-- 统一 `ToolResult` 工具结果协议，使用稳定错误码，增加参数校验、超时保护和异常脱敏
-- 删除 `HistoryManager` 的 `get_chat` / `append_chat` 历史兼容别名，统一使用 session 级接口
-- 删除 `prompts.py` 中废弃的重复上下文构建实现，保留唯一生效路径
-- 将空闲日记摘要回写收敛为 `HistoryManager.replace_session()`，避免后台巡检通过全量 `load()`/`save()` 覆盖其他会话的并发更新
-- 重构 `core` 会话数据流：历史管理器返回独立 session 快照并提供原子替换接口，工具上下文不再持有完整历史字典，小女仆 Worker 迁移到 `core/maid.py`
-- 收敛 `core` 会话历史写入入口：新增 `HistoryManager.get_session()` 与 `append_session_message()`，让工具链、小女仆回调和主人私聊同步统一通过会话级接口落盘，减少跨模块直接改 `history_dict`
-- 移除 `YukiEngine._append_session_message()` 私有重复写入逻辑，工具链阶段性文本、工具结果和工具期间新增消息统一委托 `HistoryManager` 写入
-- 移除 `modules/LiveYukiL2D/main.py` 未使用薄入口，保留 `desktop.py` 与 `server.py` 的启动/服务职责边界
-- 合并 LiveYukiL2D 桌宠启动入口，将 Electron 启动逻辑统一迁入 `modules/LiveYukiL2D/desktop.py`
-- 简化 `modules/LiveYukiL2D/desktop.py` 桌宠窗口启动与桌面 API 逻辑，移除多余包装并复用鼠标穿透配置值
-- `napcat_listen()` 支持群聊模式下同时接收主人私聊消息，路由为 `master_private` 模式
-- `SessionPipeline.decide_reply_action()` 对 `master_private` 模式跳过精力决策，强制回复
-- `SessionPipeline.prepare_message_batch()` 对 `master_private` 模式跳过防抖，立即处理
-- `SessionPipeline.send_reply()` 和 `YukiEngine._send_tool_thought()` 对 `master_private` 模式使用私聊 API（`send_private_msg`）发送
-- `sync_system_prompts()` 对主人 QQ 号的 chat_id 注入 `master_private` prompt 而非代管 prompt
-- `_chat_with_tools()` 将 `history_manager` 传入 ToolContext metadata，供工具写入跨会话历史
-- `YukiMemoryRetriever` 改为从 `cfg.structured_memory` 读取开关和召回数量，移除 `enabled` 参数硬编码
-- `SessionPipeline.retrieve_memories()` 移除重复的 `top_k` 硬编码，统一由 retriever 从配置读取
-- 新增 `modules/debug/context_snapshot.py`、`modules/debug/webui_server.py` 和 `scripts/debug_tools/start_context_debug_webui.py`，提供本地只读 Context Debug WebUI、快照 API、自动刷新页面、上下文复制/导出与敏感字段脱敏
-- Debug WebUI 支持通过 `YUKI_CONTEXT_DEBUG_WEBUI=1` 在主程序进程内后台启动，共享实时 snapshot store，避免独立进程无法读取主程序内存快照
-- `SessionPipeline` 与 `YukiEngine.api_reply()` 接入轻量 debug snapshot，记录输入合并、回复决策、旧 RAG/Yuki-Memory 召回、完整 LLM messages 与 pipeline 阶段耗时，不改变主回复流程
-- 新增 `docs/context-debug-webui-plan.md`，规划用于实时观察 Yuki 状态、完整 LLM 构建上下文、旧 RAG 与 Yuki-Memory 召回结果的本地 Debug WebUI
-- 新增 `docs/yuki-memory-runtime-guide.md`，记录 Yuki-Memory 当前开发状态、操作手册、函数说明、离线处理流程和下一步计划
-- 新增 `docs/yuki-memory-plugin-guide.md`，记录 Yuki-Memory 插件接入方式、接口示例、扩展点和接入禁忌
-- 新增 `modules/yuki_memory/retriever.py`，为主流程提供 Yuki-Memory 结构化上下文检索适配层，支持 profile/fact/summary 分层召回并失败回退旧 RAG
-- 新增 `build_structured_memory_prompt()`，在回复上下文中注入结构化长期记忆，同时保留旧 `MemoryRAG.search_diaries()` 回忆作为补充
-- 新增 `modules/yuki_memory/consolidator.py` 多层压缩整理器，支持原始对话→粗样本→重叠 buffer 摘要→结构化候选→短日记→可选写入 `yuki_memory` 的旁路管线
-- 新增 `scripts/03_RAG_Tools/consolidate_runtime_memory.py`，支持从聊天历史中对指定群聊 dry-run 多层整理，并可通过 `--base-url`/`--api-key`/`--model` 指定测试 LLM
-- 更新 `docs/development-plan.md`，新增 Yuki-Memory 分阶段开发计划并标注当前程序运行状态
-- 增强 `scripts/03_RAG_Tools/backfill_memory_candidates.py`，支持 chat_id 过滤、随机抽样、时间排序、batch 进度、失败重试、错误 JSONL、统计报告、`--base-url`/`--api-key`/`--model` 自定义 API 配置，以及鉴权/key 过期错误立即暂停与连续失败熔断
-- 使用小米 MiMo `mimo-v2.5-pro` 完成 20 条小批量候选提取验证：20 条日记→87 条候选，类型分布 fact 36/event 27/relationship 11/profile 10/preference 2/todo 1，全部 low risk，0 失败
-- 新增 `scripts/03_RAG_Tools/review_memory_candidates.py`，支持候选自动审核、低价值过滤、同主体同类型相似去重，并输出 approved / needs_review / rejected / review_report
-- 新增 `scripts/03_RAG_Tools/import_memory_candidates.py`，支持将审核通过候选转换为 `MemoryRecord` 并 dry-run/真实导入 `yuki_memory` collection
-- 阶段 D/E 管线已用当前主群聊 650 条提取结果验证：2248 条候选审核为 approved 1779 / needs_review 336 / rejected 133，导入 dry-run 1779 条 0 失败
-- 阶段 C 主群聊结构化候选提取持续后台运行，当前 `chat_id=1057020972` 已输出 705 / 1955 条日记结果，错误 1 条；使用 `--resume` 和 `--max-consecutive-failures 5` 保证可暂停、可续跑、鉴权失败可停机提示
-- 新增 `modules/yuki_memory/` 第一阶段骨架，提供 `MemoryRecord`、`YukiMemoryStore` 和 `LegacyDiaryMigrator`，支持独立保存/检索标准记忆
+- **网络接入层收口**：原 `BotConnector`、`MessageSender` 与 `modules/message/` 合并为单一 `network/napcat.py::NapCatGateway`，常驻 `_reader()` 协程严格分离 API `echo` 响应与入站事件流
+- **RAG 打分重构**：同群/发言者/关键词加成改为相对语义分的比例提升，加入 180 天半衰期时间衰减与停用词过滤
+- **思考等级配置**：移除无效的 `model.disable_thinking`，新增 `model.thinking_effort`；DeepSeek 视觉端点固定下发 `reasoning_effort="none"`
+- **BOT 防套娃**：白名单 BOT 消息不再触发点名强制回复与防抖跳过，纯 BOT 发言回复欲乘 `0.75` 惩罚
+- **测试套件整合 (`tests/`)**：整合重写为 11 个全离线 pytest 测试模块，清除需联网或残留临时文件的旧测试，本机与只读容器内 `pytest -q` 全绿
 
-### 移除
-- 清理 `modules/LiveYukiL2D/liveyuki_l2d` 中未接入的独立 LLM 管线、运行时状态和未使用协议 helper
-- 移除语音转写功能（`parse_Audio_CQ_codes`、`fetch_ptt_text` 调用），修复运行异常问题
-- 移除 `CQParser.sender` 延迟初始化依赖
-- 移除 `CQProtocol.extract_audio_file_ids` 方法
-- 移除 `session_pipeline.py` 中 `voice_message_id` 提取逻辑
-- 移除 `main.py` 中 `parser.sender = sender` 赋值
-- 新增 `scripts/03_RAG_Tools/migrate_legacy_diaries_to_yuki_memory.py`，支持将旧日记备份 dry-run、limit、resume 迁移到 `yuki_memory` collection
-- 新增 `tests/test_yuki_memory_store.py`，覆盖 yuki-memory metadata、存储检索、旧日记转换和迁移脚本
-- 新增 `scripts/03_RAG_Tools/backfill_memory_candidates.py`，支持从日记备份中离线 dry-run/断点续跑提取结构化长期记忆候选
-- 增强 `scripts/03_RAG_Tools/export_memory.py`，导出全量记忆时同步生成日记数量、重复项、长度、时间范围和 metadata 标准字段统计
-- 新增 `MemoryRAG.save_memory()` 标准化记忆写入接口，支持 `type/status/confidence/importance/supersedes/source_ids` 等 Hy-Memory Lite 元数据
-- 新增 `tests/test_toolchain.py`，覆盖 `ToolSpec`、`FunctionRegistry` 和 `ToolCallManager` 的最小 smoke test
-- 新增 `docs/toolchain-usage.md`，整理 `core/toolchain.py` 与 `core/tools.py` 的调用流程、标准工具清单、扩展步骤和排查建议
-- 破冰流程主管道集成测试：新增 `tests/test_ice_break_pipeline.py`，覆盖纯函数、提示词注入、管道阶段、监控集成和端到端传播共 12 个 smoke test
-- 工具链新增 Tavily 网络搜索适配，支持通过 `TAVILY_API_KEY` 环境变量调用实时网页搜索
-- 工具链定时任务升级为精确定时唤醒，到点后通过主管道触发 Yuki 回复
-
-### 变更
-- 将 LiveYukiL2D 鼠标视觉跟踪逻辑独立到 `frontend/minimal/src/mouse_tracker.ts`，降低入口耦合并便于后续调整坐标和跟随策略
-- 优化 LiveYukiL2D 鼠标视觉跟踪：缓存桌面坐标、按渲染帧消费最新位置，以 Live2D 头部视觉中心进行相对定位并使用时间无关的指数平滑，降低 IPC/布局查询开销并改善跟手性
-- 收紧 `review_memory_candidates.py` 审核规则：event importance<3 直接拒绝、importance<=3 需匹配低价值关键词；fact/preference/relationship importance<=1 归入 needs_review；全量审核 approved 从 9950 降至 4297，event 从 3614 降至 397
-- 增强 `YukiMemoryRetriever._dedupe()`，按 (type, subject) 分组去重，每组只保留 importance/confidence/score 最优条目，避免同主体重复记忆污染上下文
-- 增强 `build_structured_memory_prompt()`，增加跨类型内容相似度去重（阈值 0.82），将重复表述压缩为单条最优记忆
-- 收紧 `ToolContext` 运行时依赖，工具通过 `context.sender` 与 `context.yuki` 访问必要对象，不再直接依赖完整 `YukiEngine`
-- 简化 `ToolCallManager` 状态管理，移除未使用的 session 追踪状态，并改为读取 `cfg.timing.tool_call_delay_seconds`
-- 调整工具链多轮调用输出行为：工具调用轮次中的模型阶段性文本会实时发送，并从最终聚合回复中移除，避免最后统一释放导致重复或延迟输出
-- 优化 QQ 文件发送工具，支持图片、语音和普通文件自动识别，并从群聊 prompt 中移除手写本地 CQ 文件码说明
-- 小女仆委托统一保留 function-call 工具路径，移除 prompt 中的标签式委托说明
-- **破冰流程主管道化重构**：
-  - `ice_break_monitor` 不再直接调用独立的 `break_ice()`，改为通过 `process_callback` 触发主管道 `process_loop(ice_break=True)`
-  - `SessionPipeline` 全链路支持 `ice_break` 上下文标记：`prepare_message_batch` 跳过防抖并构建合成输入、`normalize_incoming_content` 跳过消息规范化、`decide_reply_action` 跳过决策强制回复、`finalize_conversation` 递增破冰失败计数
-  - `build_chat_context` 新增 `ice_break` 参数，破冰模式下注入专用指令到系统消息中
-  - 新增 `get_ice_break_instructions()` 纯函数，替代原 `build_ice_break_prompt()` 的指令构建逻辑
-  - `main_process` 和 `process_loop` 新增 `ice_break` 参数透传
-  - 破冰回复现在享受完整的工具链能力（表情包搜索、小女仆委托、RAG 记忆检索等）
-
-### 修复
-- 修复控制台日志在中文、Emoji 和长 JSON 场景下因显示宽度误判导致的二次折行与错位
-- 屏蔽机器人自己发出的戳一戳事件，避免回灌消息管线导致重复触发对话
-- 合并同一人连续戳同一目标的戳一戳消息为一条并累计「x次数」，压缩上下文占用
-- 修复普通对话流程只将当前用户消息放入临时上下文、未写入 `chat_history.json`，导致后续 LLM 调用缺少用户历史记录的问题
-- 修复小女仆快速查询日记时硬编码 `core/yuki_memory` 导致重复创建空 ChromaDB 的问题
-- 修复启动后台任务时小女仆 Worker 导入到同名模块导致 `'module' object is not callable` 的问题
-- 修复退出清理阶段调用不存在的 `cfg._save_raw()` 导致配置保存报错的问题
-- 修复 GitHub PushEvent 的 Events API 不返回 commits 详情导致通知显示 0 条提交的问题，改用 Compare API 获取并展示提交信息
-- 修复 `prompts.py` 中 f-string 内中文引号导致的语法错误
-- 修复后台定时、破冰和小女仆回调可能绕过普通消息缓冲入口的问题，统一经 `SessionPipeline.enqueue_message()` 串行调度
-- 修复点名缩短防抖使用全局状态的问题，改为按 `chat_id` 隔离防抖时间
-- 修正生物钟与活跃度衰减注释，使说明与代码实际时间一致，并复用生物钟权重计算逻辑
-- 修复容器化后表情包/文件/语音发不出去：`send_local_image` 等使用 `file:///<绝对路径>` 交给宿主 NapCat 读取，容器内路径为 `/app/...` 而宿主无该路径，发送静默失败（`send()` 不等响应，日志仅显示「发送完成」）。改为容器与宿主挂载同一绝对路径并统一工作目录
-- 修复只读代码挂载导致 `compileall` 无法写 `.pyc` 而校验门失败：容器内改用 `PYTHONPYCACHEPREFIX` 重定向字节码缓存到 tmpfs，并排除第三方参考副本
-- 修复 `/health` 的 `napcat_online` 恒为 `true`：原读取 `engine.napcat_online` 乐观默认值，改为 `NapCatGateway.connected`（真实 WebSocket 状态）
-
-- **自进化流程改为「模型审查 + 同步接续」**：
-  - 硬限额由 3 文件 / 200 行放宽到 10 文件 / 1000 行，行数仅作防呆，放行判断交给独立模型审查
-  - `request_self_reload` 改为异步同步轮询 `result.json`（默认 ≤180s）：审查驳回、应用失败、校验失败均不重启进程，模型可在同一 session 内继续修改；通过审查后进入重启才中断（重启后用 `resume_task` 续做）
-  - 审查驳回不计入失败冷却（视为正常迭代），重启请求单独限流
-  - `supervisor` 的 git 提交只 `git add` 补丁涉及的路径，不再 `git add -A`，避免把 staging、运行时状态与人工未提交改动卷进自改提交
-  - `skills/` 从 `.gitignore` 移除并纳入跟踪（原状态为 0 个文件被跟踪，技能改动完全无法追溯）
-  - `maid_prompt` 注入自进化准则与全部自改/交接工具说明，并明确「驳回后按意见修改，不许原样重提」
-  - `maid_charter` 增加删除比例保护（单文件缩水超 50% 视为误删）与敏感改动标记（向量/记忆相关改动额外留档）
-
-### 移除
-- 剥离并卸载 Live2D 桌宠：删除 `modules/LiveYukiL2D/`（含前端/后端/模型），`main.py` 去掉 `start_desktop_pet_if_enabled()` 与 `run_runtime()` 启动调用，`session_pipeline.send_answer()`、`engine_reply.send_tool_thought()` 去掉 Live2D `broadcast` 分支，`decide_reply_action()` 强制回复集合去掉 `desktop_pet`，`utils/logger.py` 去掉 `desktop_pet` 命名空间，`deploy/run.sh` 去掉 `YUKI_DESKTOP_PET=0`，`README.md`/`.gitignore`/`.dockerignore` 同步清理
-- 剥离并卸载浏览器交互聚焦模式：删除 `modules/browser_interaction/`、`core/modes.py` 的 `BrowserInteractionMode` 与注册、`core/prompts.get_yuki_setting_browser_interaction()` 及 `core/brain` 分支、`core/tools/_archived/tools_browser.py`、`engine_reply` 的 `record_step` 分支；`tests/test_modes.py` 重写为「已无聚焦模式可注册」断言 + RAG 打分测试
-- 归档：功能源码与复原手册统一放在 `_archive/`（`_archive/docs/live2d-archive.md`、`_archive/docs/browser-interaction-archive.md`、`_archive/docs/removal.diff`），`frontend/minimal/node_modules` 与 `reference/Open-LLM-VTuber` 未归档（可再生/第三方）
-- 移除 `YukiEngine.break_ice()` 独立破冰方法（约 55 行）
-- 移除 `build_ice_break_prompt()` 函数（已被 `get_ice_break_instructions` + `build_chat_context` 替代）
+### 归档与移除
+- **记忆库清理**：彻底删除弃用的 `yuki_memory` collection（7830 条结构化记忆实验数据）并 `VACUUM`，ChromaDB 仅保留现役 `diaries` 与 `stickers`（详见 `docs/database-profile.md`）
+- **未挂载代码统一归档至 `_archive/`**：
+  - 剥离并归档 Live2D 桌宠（`_archive/LiveYukiL2D/`）与浏览器交互聚焦模式（`_archive/modules/browser_interaction/`、`_archive/focus_modes/`）
+  - 归档旧版容器内小女仆内置循环（`_archive/maid_legacy/`）
+  - 从主模型卸载并归档低频/未就绪工具：网易云点歌（`_archive/ncm_tools/`）、QQ 空间说说工具（`_archive/qzone_tool/`）、网页/高德搜索（`_archive/search_tools/`）、主人桌面状态（`_archive/master_status/`）、定时任务（`_archive/timer_tool/`）、昵称解析（`_archive/user_resolve_tool/`）
+  - 精简 `/docs` 目录，移除过期或重复的 `module-relationship.md`、`module-interface.md`、`development-plan.md`、`docs/Log.md`
 
 ---
 
 ## [0.10.0] - 2026-06-05
 
-### 新增
-- **硬编码敏感信息清理**：
-  - 在 `config.py` 中新增 `TargetConfig.whitelist` 字段和 `Config.TARGET_WHITELIST` 属性，支持白名单 QQ 号配置
-  - 将 `modules/QQNapcatListen/listen_main.py` 中硬编码的 QQ 号白名单改为从配置读取
-  - 将 `core/history_manager.py` 中硬编码的真实姓名改为从 `cfg.MASTER_NAME` 和 `cfg.ROBOT_NAME` 动态读取
-  - 将 `modules/memory/rag.py` 和 `setup.py` 中的黑名单默认值改为从配置读取主人名称
-  - 将 `scripts/03_RAG_Tools/yuki_memoryDB_tool.py` 中硬编码的 API Key 和 URL 改为从配置读取
-  - 将 `scripts/01_api_test_tools/` 目录下多个测试脚本中的硬编码 API URL 改为从配置读取
-  - 将 `modules/label.py` 中硬编码的绝对路径改为动态获取项目根目录
-  - 将 `network/ws_sender.py` 中硬编码的测试群号改为从配置读取
-  - 清理 `core/engine.py` 中包含本机路径和 IP 地址的注释代码块
-  - 更新 `blacklist.txt`、`modules/memory/blacklist.txt`、`scripts/03_RAG_Tools/blacklist.txt`，将真实姓名替换为通用占位符
-  - 更新 `scripts/01_api_test_tools/teatop.py` 中的测试 Prompt，移除真实姓名
-  - 更新 `.gitignore`，添加 `manual_stickers.json`、`temp_expression.png`、`window_list.txt` 防止敏感数据文件被提交
-
-### 变更
-- **工具链与小女仆协同第一阶段重构**：
-  - 新增 `core/toolchain.py`，提供 `FunctionRegistry`、`ToolCallManager`、`ToolContext` 与 `ToolResult`
-  - 新增 `core/tools.py`，将日记查询、定时任务、小女仆委托、主人私密发送、浏览器搜索、QQ 文件发送、外部内容注入包装为统一工具接口
-  - `YukiEngine.api_reply()` 接入 OpenAI 兼容 tools 多轮调用流程，保留原有标签式委托与表情包搜索兼容逻辑
+- 新增 `core/toolchain.py` 与 `core/tools.py`，接入 OpenAI 兼容 Function Call 工具链
+- 清理仓库硬编码敏感信息，统一收敛至 `configs/config.yaml` 与 `config.py`

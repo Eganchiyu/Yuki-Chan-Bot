@@ -1,595 +1,81 @@
-# YukiV6 故障排查指南
+# Yuki 运维与故障排查指南
 
-本指南提供 YukiV6 常见错误及解决方案。
-
----
-
-## 一、启动问题
-
-### 1.1 程序启动后立即退出
-
-**症状**：运行 `python main.py` 后程序立即退出，无错误信息。
-
-**可能原因**：
-1. Python 版本过低
-2. 依赖未完整安装
-3. 配置文件缺失
-4. 模块导入错误
-
-**排查步骤**：
-
-```bash
-# 1. 检查 Python 版本
-python --version
-# 确保版本 ≥ 3.10
-
-# 2. 检查依赖安装
-pip list | grep -E "aiohttp|websockets|openai|chromadb"
-# 确保所有依赖已安装
-
-# 3. 检查配置文件
-ls configs/config.yaml
-# 确保配置文件存在
-
-# 4. 查看详细错误信息
-python main.py 2>&1 | tee startup_error.log
-```
-
-**解决方案**：
-
-```bash
-# 升级 Python
-# 从 https://www.python.org/downloads/ 下载最新版本
-
-# 重新安装依赖
-pip install -r requirements.txt
-
-# 运行配置向导
-python setup.py
-
-# 检查模块导入
-python -c "import config; import core.engine; import utils.llm_client"
-```
-
-### 1.2 模块导入错误
-
-**症状**：`ModuleNotFoundError: No module named 'xxx'`
-
-**可能原因**：
-1. 虚拟环境未激活
-2. 依赖未安装
-3. Python 路径问题
-
-**排查步骤**：
-
-```bash
-# 1. 检查虚拟环境
-# Windows
-where python
-# 应指向 venv\Scripts\python.exe
-
-# Linux/macOS
-which python
-# 应指向 venv/bin/python
-
-# 2. 检查依赖
-pip list | grep <module-name>
-```
-
-**解决方案**：
-
-```bash
-# 激活虚拟环境
-# Windows
-venv\Scripts\activate
-
-# Linux/macOS
-source venv/bin/activate
-
-# 安装缺失依赖
-pip install <module-name>
-
-# 或重新安装所有依赖
-pip install -r requirements.txt
-```
+> **红线警告**：`yuki_memory/` 与 `data/` 是不可再生核心数据资产。排查任何故障时**严禁执行 `rm -rf yuki_memory/` 或清空 `data/chat_history.json`**。如需回滚记忆库，请使用 `backups/yuki_memory/` 下的快照。
 
 ---
 
-## 二、连接问题
+## 一、核心状态与日志速查
 
-### 2.1 无法连接到 NapCatQQ
-
-**症状**：日志显示 `WebSocket connection failed` 或 `Connection refused`
-
-**可能原因**：
-1. NapCatQQ 未运行
-2. WebSocket 地址错误
-3. 端口被占用
-4. 防火墙阻止
-
-**排查步骤**：
+### 1.1 检查容器与宿主服务状态
 
 ```bash
-# 1. 检查 NapCatQQ 是否运行
-# Windows
-tasklist | findstr napcat
+# 1. 查看生产容器状态
+docker ps -a --filter name=yuki
 
-# Linux
-ps aux | grep napcat
+# 2. 查看容器内健康探针（ready / napcat_online / maid 队列）
+curl -s http://127.0.0.1:8778/health
 
-# 2. 检查端口是否监听
-netstat -tulpn | grep 3001
-
-# 3. 测试连接
-# Windows
-Test-NetConnection -ComputerName 127.0.0.1 -Port 3001
-
-# Linux
-telnet 127.0.0.1 3001
+# 3. 查看宿主三大守护服务
+systemctl status yuki-supervisor yuki-maid-runner yuki-netwatch --no-pager
 ```
 
-**解决方案**：
+### 1.2 日志文件位置（均在 `logs/` 下）
 
-1. 启动 NapCatQQ
-2. 检查配置文件中的 WebSocket 地址：
-   ```yaml
-   connection:
-     napcat_ws_url: "ws://127.0.0.1:3001"
-   ```
-3. 确保端口 3001 未被占用
-4. 检查防火墙设置
-
-### 2.2 同一个 NapCat 上挂了两个 Yuki 实例
-
-**症状**：群里偶发重复回复；`ss -tnp | grep 3001` 看到多条来自 `python` 的连接；
-Context Debug WebUI（8777）连不上。
-
-**原因**：两个 `python main.py` 都在消费同一条 NapCat 事件流，各自跑一遍管线。
-
-**排查**：
-
-```bash
-# 看有几条连到 3001 的客户端连接，以及是谁
-ss -tnp | grep 3001
-
-# 看有几个 main.py
-ps -eo pid,stat,etime,cmd | grep "main.py" | grep -v grep
-```
-
-注意被 SIGSTOP 挂起（`STAT` 为 `T`）的进程仍会占着 WebSocket 与端口，需要显式 kill。
-
-**解决方案**：
-
-1. 只保留一个实例：`kill <多余的 pid>`
-2. 启动时会自动检查 `data/yuki.lock`（flock，随进程退出释放），已有实例在跑
-   会直接中止并提示，不会再出现静默双开
-3. 确实需要并行跑第二个实例（例如调试）时设置 `YUKI_ALLOW_MULTI_INSTANCE=1`
-
-### 2.3 WebSocket 连接断开
-
-**症状**：日志显示 `WebSocket disconnected` 或 `Connection lost`
-
-**可能原因**：
-1. 网络不稳定
-2. NapCatQQ 重启
-3. 心跳超时
-
-**排查步骤**：
-
-```bash
-# 查看连接日志
-grep -i "websocket" data/yuki_log.txt | tail -20
-
-# 检查网络连接
-ping 127.0.0.1
-```
-
-**解决方案**：
-
-1. 程序会自动重连，等待即可
-2. 检查网络稳定性
-3. 检查 NapCatQQ 状态
+| 日志路径 | 内容说明 |
+|---|---|
+| `logs/yuki.log` / `logs/yuki_<时间戳>.log` | Yuki 主程序全量 DEBUG 日志（排查对话、工具、报错首选） |
+| `logs/supervisor.log` | 宿主自改/重启守护日志 |
+| `logs/maid_runner.log` | 宿主小女仆 DSH 执行器日志 |
+| `logs/netwatch.log` & `logs/netwatch_diag_*.json` | 网络看门狗探活、修复阶梯与现场路由快照 |
+| `logs/self_evolve.jsonl` | 历次代码自改的摘要、状态与 commit 台账 |
+| `logs/task_index.jsonl` & `logs/trace_*.md` | 小女仆历次任务索引与详细执行轨迹 |
 
 ---
 
-## 三、API 调用问题
+## 二、常见故障与处理
 
-### 3.1 LLM API 调用失败
+### 2.1 外部 API 全部 Connection Timeout，但 NapCat 收发正常
 
-**症状**：日志显示 `API request failed` 或 `LLM chat failed`
+- **原因**：NapCat 走本地回环/IPv6 长连接，而外部 API（DeepSeek、图片下载等）走宿主机 mihomo TUN 的 IPv4 出站。WiFi 漫游后 mihomo 默认出站接口可能失效，或 mihomo 重载卡死。
+- **自动恢复**：宿主 `yuki-netwatch.service` 每 30s 探活 `direct`（DeepSeek）与 `proxy`（gstatic），失败时自动按阶梯执行「重载 mihomo → 清缓存重载 → SIGTERM 重启 mihomo core → 重连 WiFi」；客户端侧 `utils/llm_client.py` 也会自动重建 aiohttp Session 并使用独立 DNS 线程池重试。
+- **手动触发恢复**：
+  - 在 QQ 群聊或私聊（主人号）发送：`/刷新`（触发 `yuki-netforce.path` 真实探活并回报结果）。
+  - 或在宿主机终端执行：`sudo python3 deploy/netwatch.py force`。
 
-**可能原因**：
-1. API Key 错误
-2. API 地址不可访问
-3. 网络问题
-4. API 配额用尽
+### 2.2 修改了代码或配置，但线上没生效
 
-**排查步骤**：
+- **原因**：生产容器 `yuki` 将代码树以 `:ro` 只读挂载，且部分启动期对象在进程启动时初始化。
+- **解决**：
+  - QQ 群聊（主人号）发送 `/重启`（会先回复「正在重启」，容器重建连上 NapCat 后自动补发「重启完成」）；
+  - 或宿主机执行 `bash deploy/run.sh`；
+  - 若修改的是 `deploy/` 下的宿主脚本（`supervisor.py`、`maid_runner.py`、`netwatch.py`），需执行 `sudo systemctl restart yuki-supervisor`（或对应服务）。
 
-```bash
-# 1. 检查 API Key
-grep "llm_api_key" configs/config.yaml
+### 2.3 启动报错「已有 Yuki 实例在运行（data/yuki.lock 被占用）」或群里重复回复
 
-# 2. 测试 API 连接
-curl -X POST "https://api.deepseek.com/v1/chat/completions" \
-  -H "Authorization: Bearer YOUR_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"model":"deepseek-chat","messages":[{"role":"user","content":"test"}]}'
+- **原因**：`main.py` 通过 `data/yuki.lock` 的 `flock` 防止双开同时消费同一条 NapCat 事件流。
+- **排查**：
+  ```bash
+  ps -eo pid,stat,etime,cmd | grep "main.py" | grep -v grep
+  ss -tnp | grep 3001
+  ```
+- **解决**：确认只有一个生产容器在跑，杀掉多余的宿主机 `python main.py` 进程（注意 `STAT=T` 被挂起的进程也会占锁，需 `kill -9`）。并行调试时可设 `YUKI_ALLOW_MULTI_INSTANCE=1`。
 
-# 3. 查看 API 日志
-grep -i "api" data/yuki_log.txt | tail -20
-```
+### 2.4 表情包 / 本地图片发送成功但群里没收到
 
-**解决方案**：
+- **原因**：NapCat 运行在宿主机，Yuki 发送本地图片时传递 `file:///<绝对路径>`，且 `gateway.send()` 不等待响应回包。若容器内外绝对路径不一致或文件不存在，NapCat 会静默丢弃。
+- **排查**：确认容器由 `bash deploy/run.sh` 启动（挂载为 `-v /home/asumi/Yuki:/home/asumi/Yuki:ro`），且目标图片在宿主机同路径下真实存在、权限可读。
 
-1. 检查 API Key 是否正确
-2. 检查 API 地址是否可访问
-3. 检查网络连接
-4. 检查 API 配额
+### 2.5 小女仆任务卡住、超时或重启后未汇报
 
-### 3.2 API 响应超时
+- **排查**：
+  1. 检查宿主执行器是否存活：`systemctl status yuki-maid-runner`（若未运行，容器内等待 90s 无事件会报 `runner_unavailable`）。
+  2. 查看任务目录 `tasks/dsh/<task_id>/` 下的 `request.json`、`events.jsonl`、`result.json`。
+- **补报机制**：若任务执行期间 `yuki` 容器发生重启，新容器启动后 `core/maid/maid_resume.py` 会每 30s 扫描已完成但无 `reported.ok` 标记的任务并自动补报。
 
-**症状**：日志显示 `Request timeout` 或 `TimeoutError`
+### 2.6 运行 pytest 报缺库或 `libpython3.11.so` 找不到
 
-**可能原因**：
-1. 网络延迟高
-2. API 响应慢
-3. 超时配置过短
-
-**排查步骤**：
-
-```bash
-# 测试网络延迟
-ping api.deepseek.com
-
-# 检查超时配置
-grep -A 5 "request_timeout" configs/config.yaml
-```
-
-**解决方案**：
-
-1. 增加超时配置：
-   ```yaml
-   timing:
-     request_timeout:
-       total: 120  # 增加总超时时间
-       connect: 20  # 增加连接超时时间
-       sock_read: 60  # 增加读取超时时间
-   ```
-2. 检查网络连接
-3. 联系 API 提供商
-
-### 3.3 工具调用失败
-
-**症状**：日志显示 `[ToolCall] xxx 执行失败`
-
-**可能原因**：
-1. 工具参数错误
-2. 工具函数异常
-3. 权限问题
-
-**排查步骤**：
-
-```bash
-# 查看工具调用日志
-grep "[ToolCall]" data/yuki_log.txt | tail -20
-
-# 查看具体错误
-grep -A 5 "执行失败" data/yuki_log.txt
-```
-
-**解决方案**：
-
-1. 检查工具参数是否正确
-2. 检查工具函数实现
-3. 检查文件权限
-4. 查看详细错误日志
-
----
-
-## 四、内存与性能问题
-
-### 4.1 内存占用过高
-
-**症状**：程序内存占用持续增长，系统变慢。
-
-**可能原因**：
-1. 对话历史过大
-2. 向量数据库膨胀
-3. 内存泄漏
-
-**排查步骤**：
-
-```bash
-# 查看内存使用
-ps -p $(pgrep -f main.py) -o pid,vsz,rss,comm
-
-# 检查对话历史大小
-ls -lh data/chat_history.json
-
-# 检查向量数据库大小
-du -sh yuki_memory/
-```
-
-**解决方案**：
-
-```bash
-# 1. 清理对话历史
-# 手动编辑 data/chat_history.json，删除旧对话
-
-# 2. 清理向量数据库
-rm -rf yuki_memory/
-# 程序会自动重建
-
-# 3. 重启程序
-pkill -f main.py
-python main.py
-```
-
-### 4.2 CPU 占用过高
-
-**症状**：程序 CPU 占用持续较高。
-
-**可能原因**：
-1. 频繁的 API 调用
-2. 向量检索频繁
-3. 死循环
-
-**排查步骤**：
-
-```bash
-# 查看 CPU 使用
-top -p $(pgrep -f main.py)
-
-# 查看进程状态
-ps -p $(pgrep -f main.py) -o pid,stat,comm
-
-# 查看日志频率
-wc -l data/yuki_log.txt
-tail -f data/yuki_log.txt
-```
-
-**解决方案**：
-
-1. 检查是否有死循环
-2. 减少 API 调用频率
-3. 优化向量检索
-4. 重启程序
-
----
-
-## 五、数据问题
-
-### 5.1 对话历史丢失
-
-**症状**：程序重启后对话历史丢失。
-
-**可能原因**：
-1. 文件写入失败
-2. 文件路径错误
-3. 权限问题
-
-**排查步骤**：
-
-```bash
-# 检查文件是否存在
-ls -lh data/chat_history.json
-
-# 检查文件权限
-ls -l data/
-
-# 检查磁盘空间
-df -h
-```
-
-**解决方案**：
-
-1. 检查文件路径配置：
-   ```yaml
-   paths:
-     history_file: "./data/chat_history.json"
-   ```
-2. 确保目录存在且有写入权限
-3. 检查磁盘空间
-
-### 5.2 记忆检索失败
-
-**症状**：RAG 记忆检索返回空结果。
-
-**可能原因**：
-1. 向量数据库未初始化
-2. 嵌入模型未加载
-3. 数据库损坏
-
-**排查步骤**：
-
-```bash
-# 检查向量数据库目录
-ls -lh yuki_memory/
-
-# 检查嵌入模型目录
-ls -lh models/text2vec-base-chinese/
-
-# 查看 RAG 日志
-grep -i "rag\|memory" data/yuki_log.txt | tail -20
-```
-
-**解决方案**：
-
-```bash
-# 1. 重新下载嵌入模型
-python utils/download_model.py
-
-# 2. 重建向量数据库
-rm -rf yuki_memory/
-python main.py  # 程序会自动重建
-
-# 3. 检查配置
-grep -A 5 "rag" configs/config.yaml
-```
-
----
-
-## 六、小女仆问题
-
-### 6.1 小女仆任务不执行
-
-**症状**：小女仆任务提交后无响应。
-
-**可能原因**：
-1. 任务队列满
-2. 小女仆进程异常
-3. 权限问题
-
-**排查步骤**：
-
-```bash
-# 查看小女仆日志
-grep -i "maid" data/yuki_log.txt | tail -20
-
-# 查看任务队列状态
-grep "task_queue" data/yuki_log.txt
-```
-
-**解决方案**：
-
-1. 检查任务队列状态
-2. 重启程序
-3. 查看详细错误日志
-
-### 6.2 小女仆技能执行失败
-
-**症状**：小女仆技能执行报错。
-
-**可能原因**：
-1. 技能脚本错误
-2. 依赖缺失
-3. 权限问题
-
-**排查步骤**：
-
-```bash
-# 查看技能日志
-grep -i "skill" data/yuki_log.txt | tail -20
-
-# 检查技能目录
-ls -lh skills/
-```
-
-**解决方案**：
-
-1. 检查技能脚本
-2. 安装缺失依赖
-3. 检查文件权限
-
----
-
-## 七、配置问题
-
-### 7.1 配置不生效
-
-**症状**：修改配置后程序行为未改变。
-
-**可能原因**：
-1. 配置文件路径错误
-2. 配置未重新加载
-3. 配置格式错误
-
-**排查步骤**：
-
-```bash
-# 检查配置文件路径
-grep "config.yaml" config.py
-
-# 检查配置文件内容
-cat configs/config.yaml
-
-# 检查配置加载日志
-grep -i "config" data/yuki_log.txt | tail -20
-```
-
-**解决方案**：
-
-1. 确认配置文件路径正确
-2. 重新加载配置：
-   ```python
-   from config import cfg
-   cfg.reload()
-   ```
-3. 检查配置格式
-
-### 7.2 配置同步失败
-
-**症状**：运行 `python config.py sync` 失败。
-
-**可能原因**：
-1. 配置文件损坏
-2. 权限问题
-3. 格式错误
-
-**排查步骤**：
-
-```bash
-# 检查配置文件
-python -c "import yaml; yaml.safe_load(open('configs/config.yaml'))"
-
-# 检查文件权限
-ls -l configs/
-```
-
-**解决方案**：
-
-1. 恢复备份配置：
-   ```bash
-   cp configs/config.yaml.backup configs/config.yaml
-   ```
-2. 运行配置向导：
-   ```bash
-   python setup.py
-   ```
-
----
-
-## 八、获取帮助
-
-### 8.1 查看日志
-
-```bash
-# 查看最新日志
-tail -f data/yuki_log.txt
-
-# 查看错误日志
-grep -i "error" data/yuki_log.txt
-
-# 查看警告日志
-grep -i "warning" data/yuki_log.txt
-```
-
-### 8.2 收集诊断信息
-
-```bash
-# 收集系统信息
-python --version
-pip list
-uname -a  # Linux/macOS
-systeminfo  # Windows
-
-# 收集项目信息
-git log --oneline -5
-cat configs/config.yaml | grep -v "api_key\|secret\|password"
-```
-
-### 8.3 报告问题
-
-报告问题时请提供：
-1. 错误现象描述
-2. 复现步骤
-3. 相关日志
-4. 系统环境信息
-5. 配置文件（隐藏敏感信息）
-
----
-
-**文档版本**：v1.0  
-**最后更新**：2026-06-04  
-**维护人员**：项目开发团队
+- **原因**：仓库下的 `maid_venv/` 是跨机残留不可用，系统 `/usr/bin/python3` 未装项目依赖。
+- **解决**：固定使用 `~/miniconda3/envs/yuki/bin/python -m pytest -q`，或使用容器镜像测试：
+  ```bash
+  docker run --rm -v /home/asumi/Yuki:/home/asumi/Yuki:ro -w /home/asumi/Yuki yuki:base python -m pytest -q
+  ```
