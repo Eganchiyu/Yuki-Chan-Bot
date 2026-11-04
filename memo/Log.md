@@ -434,3 +434,9 @@
   并新增 yuki-no-blank.desktop 登录时关屏保（副本在 deploy/desktop/）。
 - netwatch 修复阶梯第一步新增 wake_desktop：loginctl unlock-sessions、chvt 回桌面 VT、xset dpms force on、
   重新关屏保、杀 light-locker。root 实测通过。
+
+## 2026-11-04 整合重写 tests/ 测试套件
+- 将原 22 个碎片化测试文件整合重写为 11 个按领域内聚的模块：`test_config.py`、`test_logger.py`、`test_llm_client.py`、`test_napcat.py`、`test_vision.py`、`test_memory.py`、`test_reply_format.py`、`test_toolchain.py`、`test_pipeline.py`、`test_maid.py`、`test_github_monitor.py`。
+- 移除针对已归档 `core/tools/_archived` 的冗余测试（`test_system_state.py` 及 `manage_timer_task_tool` 用例）、清理 `test_ice_break_pipeline.py` 尾部手写 runner 死代码、消除跨文件重复假对象，统一使用 `pytest-asyncio` 自动模式、`tmp_path` 与 `monkeypatch`。
+- 新增 `core/recall_cache.py`（跨轮 top-1 召回持久化与管线合并）和 `core/notebook.py`（小本本截断与损坏容错）探测用例。
+- 状态：`pytest` 全量 61 项内聚测试全绿（耗时从 ~21s 降至 ~11s），`deploy/test_gate.py` 通过。

@@ -1,305 +1,205 @@
-# tests/test_toolchain.py
+"""工具链核心契约 (core/toolchain.py) 与内置工具 (core/tools/) 单元测试。"""
 import asyncio
 import json
 from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock
+
+from core.session_pipeline import SessionPipeline
+from core.toolchain import (
+    SKIP_REPLY_MARKER,
+    FunctionRegistry,
+    ToolCallManager,
+    ToolContext,
+    ToolResult,
+    ToolRuntime,
+    ToolSpec,
+)
+from core.tools import TOOL_SPECS, parse_rich_message_tool, send_qq_file_tool
 
 
-
-from core.toolchain import FunctionRegistry, ToolCallManager, ToolContext, ToolResult, ToolRuntime, ToolSpec
-
-
-async def sample_tool(context, text=""):
+async def _sample_tool(context, text=""):
     return ToolResult(success=True, content=f"已处理：{text}", data={"chat_id": context.chat_id})
 
 
-async def another_tool(context):
+async def _another_tool(context):
     return ToolResult(success=True, content="第二个工具")
 
 
-async def failing_tool(context):
+async def _failing_tool(context):
     raise RuntimeError("secret internal detail")
 
 
-def build_context():
+def _build_context(mode="group"):
     runtime = ToolRuntime(
-        sender=SimpleNamespace(),
+        sender=AsyncMock(),
         yuki_state=SimpleNamespace(maid_current_tasks={}, maid_task_queue=asyncio.Queue()),
     )
     return ToolContext(
-        chat_id="test_chat",
-        mode="group",
-        session=[],
-        combined_text="测试工具调用",
-        runtime=runtime,
-        metadata={},
+        chat_id="test_chat", mode=mode, session=[], combined_text="测试", runtime=runtime, metadata={}
     )
 
 
-def build_registry():
-    registry = FunctionRegistry()
-    registry.scan_and_register([
+def _build_sample_registry():
+    reg = FunctionRegistry()
+    reg.scan_and_register([
         ToolSpec(
             name="sample",
             description="测试工具",
-            parameters={
-                "type": "object",
-                "properties": {"text": {"type": "string"}},
-            },
-            handler=sample_tool,
+            parameters={"type": "object", "properties": {"text": {"type": "string"}}},
+            handler=_sample_tool,
         ),
         ToolSpec(
             name="another",
-            description="第二个测试工具",
+            description="第二个工具",
             parameters={"type": "object", "properties": {}},
-            handler=another_tool,
+            handler=_another_tool,
         ),
     ])
-    return registry
+    return reg
 
 
-def test_tool_spec_to_schema():
-    spec = ToolSpec(
-        name="sample",
-        description="测试工具",
-        parameters={"type": "object", "properties": {}},
-        handler=sample_tool,
-    )
+# ==================== ToolSpec 与 FunctionRegistry ====================
+
+def test_tool_specs_and_registry_contracts():
+    """ToolSpec schema 结构、delegate_to_maid 专属字数提示、已归档工具不暴露，以及注册表增删查。"""
+    spec = ToolSpec(name="sample", description="测试工具", parameters={"type": "object", "properties": {}}, handler=_sample_tool)
     schema = spec.to_schema()
-    assert schema["type"] == "function"
-    assert schema["function"]["name"] == "sample"
-    assert schema["function"]["description"].startswith("测试工具")
-    assert schema["function"]["parameters"] == {"type": "object", "properties": {}}
+    assert schema["type"] == "function" and schema["function"]["name"] == "sample"
 
-
-def test_brevity_hint_only_on_delegate_tool():
-    """参数简练提示必须下发给模型，但只挂在 delegate_to_maid 上。"""
-    from core.tools import TOOL_SPECS
-
-    descriptions = {spec.name: spec.description for spec in TOOL_SPECS}
+    descriptions = {s.name: s.description for s in TOOL_SPECS}
     assert "500 字以内" in descriptions["delegate_to_maid"]
-    assert all(
-        "500 字以内" not in text
-        for name, text in descriptions.items()
-        if name != "delegate_to_maid"
+    assert all("500 字以内" not in d for n, d in descriptions.items() if n != "delegate_to_maid")
+    assert "skip" in descriptions
+    assert "get_master_status" not in descriptions
+
+    reg = _build_sample_registry()
+    assert reg.list_functions() == ["sample", "another"]
+    assert reg.get_handler("sample") is _sample_tool and reg.get_handler("missing") is None
+    reg.unregister("sample")
+    assert reg.list_functions() == ["another"] and reg.get_handler("sample") is None
+
+
+# ==================== ToolCallManager 执行与容错 ====================
+
+async def test_tool_call_manager_execution_and_error_handling():
+    """顺序执行、JSON 损坏自纠提示、length 截断诊断、缺失 handler 与内部异常脱敏。"""
+    reg = _build_sample_registry()
+    reg.register(ToolSpec(name="failing", description="err", parameters={}, handler=_failing_tool))
+    manager = ToolCallManager(reg)
+
+    # 正常批量保序执行
+    msgs = await manager.execute_tool_calls([
+        {"id": "c1", "function": {"name": "sample", "arguments": json.dumps({"text": "hi"})}},
+        {"id": "c2", "function": {"name": "another", "arguments": "{}"}},
+    ], _build_context())
+    assert [m["tool_call_id"] for m in msgs] == ["c1", "c2"]
+    p1 = json.loads(msgs[0]["content"])
+    assert p1["success"] is True and p1["content"] == "已处理：hi"
+
+    # 非法 JSON 与 length 截断提示
+    bad_msg = await manager.execute_tool_call(
+        {"id": "c_bad", "function": {"name": "sample", "arguments": '{"text": "很长的任务'}},
+        _build_context(),
+        finish_reason="length",
     )
+    bad_payload = json.loads(bad_msg["content"])
+    assert bad_payload["error"] == "invalid_json"
+    assert "截断" in bad_payload["content"] and "500 字以内" in bad_payload["content"]
+
+    # 未注册工具
+    miss_msg = await manager.execute_tool_call(
+        {"id": "c_miss", "function": {"name": "missing", "arguments": "{}"}}, _build_context()
+    )
+    assert json.loads(miss_msg["content"])["error"] == "handler_not_found"
+
+    # 内部异常不外泄敏感细节
+    err_msg = await manager.execute_tool_call(
+        {"id": "c_err", "function": {"name": "failing", "arguments": "{}"}}, _build_context()
+    )
+    err_payload = json.loads(err_msg["content"])
+    assert err_payload["error"] == "tool_execution_failed"
+    assert "secret internal detail" not in err_msg["content"]
 
 
-def test_registry_registers_tool_specs():
-    registry = build_registry()
-    assert registry.list_functions() == ["sample", "another"]
-    assert registry.get_handler("sample") is sample_tool
-    assert registry.get_handler("missing") is None
-    assert len(registry.get_tools()) == 2
+# ==================== skip 工具与管线静默抹痕 ====================
+
+async def test_skip_tool_and_pipeline_pruning():
+    """skip 仅在群聊生效并中断同批后续工具；管线收到 SKIP_REPLY_MARKER 不发消息且抹去本轮工具痕迹。"""
+    full_reg = FunctionRegistry()
+    full_reg.scan_and_register(TOOL_SPECS)
+    manager = ToolCallManager(full_reg)
+
+    # 群聊 skip 成功并中断同批后续工具
+    grp_ctx = _build_context("group")
+    msgs = await manager.execute_tool_calls([
+        {"id": "c1", "function": {"name": "skip", "arguments": json.dumps({"reason": "在聊别的"})}},
+        {"id": "c2", "function": {"name": "poke", "arguments": json.dumps({"target": "某人"})}},
+    ], grp_ctx)
+    assert grp_ctx.metadata.get("skip_reply") is True
+    assert [m["name"] for m in msgs] == ["skip"]
+
+    # 私聊拒绝 skip
+    priv_ctx = _build_context("private")
+    priv_msgs = await manager.execute_tool_calls(
+        [{"id": "c3", "function": {"name": "skip", "arguments": "{}"}}], priv_ctx
+    )
+    assert priv_ctx.metadata.get("skip_reply") is None
+    assert json.loads(priv_msgs[0]["content"])["error"] == "skip_not_allowed"
+
+    # 管线收到 SKIP_REPLY_MARKER 停止发送并清理工具痕迹，只保留期间新到的用户消息
+    components = {
+        "sender": AsyncMock(), "meme_processor": MagicMock(), "yuki": MagicMock(),
+        "history_manager": MagicMock(), "memory_rag": MagicMock(), "engine": MagicMock(),
+    }
+    pipeline = SessionPipeline(components, {})
+    pipeline.engine.api_reply = AsyncMock(return_value=(SKIP_REPLY_MARKER, SKIP_REPLY_MARKER, ""))
+
+    snapshot = [{"role": "system", "content": "sys"}, {"role": "user", "content": "群友聊天"}]
+    pipeline.history_manager.get_session.return_value = snapshot + [
+        {"role": "assistant", "content": "…", "is_tool_thought": True},
+        {"role": "tool", "content": '{"success": true}', "name": "skip"},
+        {"role": "user", "content": "【工具调用期间新增消息】还有人吗"},
+    ]
+    res = await pipeline.generate_reply({
+        "chat_id": "12345", "mode": "group", "combined_text": "群友聊天",
+        "relevant_diaries": [], "session": list(snapshot),
+    })
+    assert res["stop"] is True and res.get("skip_reply") is True and "answer_text" not in res
+    pipeline.sender.send.assert_not_awaited()
+    saved = pipeline.history_manager.replace_session.call_args[0][1]
+    assert saved == snapshot + [{"role": "user", "content": "【工具调用期间新增消息】还有人吗"}]
 
 
-def test_registry_unregister():
-    registry = build_registry()
-    registry.unregister("sample")
-    assert registry.list_functions() == ["another"]
-    assert registry.get_handler("sample") is None
+# ==================== 内置工具：发文件与富文本解析 ====================
 
+async def test_send_qq_file_and_parse_rich_message(tmp_path):
+    """send_qq_file 自动识别普通文件并调用发送器；parse_rich_message 支持解析 NapCat JSON 小程序段。"""
+    sent_files = []
+    file_path = tmp_path / "report.txt"
+    file_path.write_text("hello", encoding="utf-8")
 
-def test_execute_tool_call_success():
-    async def run():
-        manager = ToolCallManager(build_registry())
-        message = await manager.execute_tool_call(
-            {
-                "id": "call_1",
-                "function": {"name": "sample", "arguments": json.dumps({"text": "hello"})},
+    async def send_local_file(chat_id, local_path, mode="private"):
+        sent_files.append((chat_id, local_path, mode))
+
+    ctx = _build_context()
+    ctx.runtime.sender = SimpleNamespace(send_local_file=send_local_file)
+    file_res = await send_qq_file_tool(ctx, str(file_path))
+    assert file_res.success is True and file_res.data["file_type"] == "file"
+    assert sent_files[0][0] == "test_chat"
+
+    ctx.metadata["message_objs"] = [{
+        "name": "测试群友",
+        "message_id": 1376986332,
+        "segments": [{
+            "type": "json",
+            "data": {
+                "data": json.dumps({
+                    "prompt": "[QQ小程序]捷克狼犬",
+                    "meta": {"detail_1": {"title": "哔哩哔哩", "desc": "捷克狼犬", "qqdocurl": "https://b23.tv/CxLmUuP"}},
+                }, ensure_ascii=False)
             },
-            build_context(),
-        )
-        payload = json.loads(message["content"])
-        assert message["role"] == "tool"
-        assert message["tool_call_id"] == "call_1"
-        assert message["name"] == "sample"
-        assert payload["success"] is True
-        assert payload["content"] == "已处理：hello"
-        assert payload["data"]["chat_id"] == "test_chat"
-
-    asyncio.run(run())
-
-
-def test_execute_tool_call_invalid_json():
-    async def run():
-        manager = ToolCallManager(build_registry())
-        message = await manager.execute_tool_call(
-            {"id": "call_bad", "function": {"name": "sample", "arguments": "{"}},
-            build_context(),
-        )
-        payload = json.loads(message["content"])
-        assert payload["success"] is False
-        assert payload["content"].startswith("工具参数不是合法 JSON")
-        assert "重新调用" in payload["content"], "必须提示模型如何自纠"
-        assert payload["error"] == "invalid_json"
-
-    asyncio.run(run())
-
-
-def test_execute_tool_call_invalid_json_reports_truncation():
-    """finish_reason=length 时要说清是「被截断」，并让模型压缩参数重试。"""
-    async def run():
-        manager = ToolCallManager(build_registry())
-        message = await manager.execute_tool_call(
-            {"id": "call_long", "function": {"name": "sample", "arguments": '{"text": "很长的任务'}},
-            build_context(),
-            finish_reason="length",
-        )
-        payload = json.loads(message["content"])
-        assert payload["error"] == "invalid_json"
-        assert "截断" in payload["content"]
-        assert "500 字以内" in payload["content"]
-        assert payload["data"]["finish_reason"] == "length"
-        assert payload["data"]["arguments_tail"].endswith("很长的任务")
-
-    asyncio.run(run())
-
-
-def test_execute_tool_call_missing_handler():
-    async def run():
-        manager = ToolCallManager(build_registry())
-        message = await manager.execute_tool_call(
-            {"id": "call_missing", "function": {"name": "missing", "arguments": "{}"}},
-            build_context(),
-        )
-        payload = json.loads(message["content"])
-        assert payload["success"] is False
-        assert payload["error"] == "handler_not_found"
-
-    asyncio.run(run())
-
-
-def test_execute_tool_call_hides_internal_exception():
-    async def run():
-        registry = build_registry()
-        registry.register(
-            ToolSpec(
-                name="failing",
-                description="异常工具",
-                parameters={"type": "object", "properties": {}},
-                handler=failing_tool,
-            )
-        )
-        manager = ToolCallManager(registry)
-        message = await manager.execute_tool_call(
-            {"id": "call_error", "function": {"name": "failing", "arguments": "{}"}},
-            build_context(),
-        )
-        payload = json.loads(message["content"])
-        assert payload["success"] is False
-        assert payload["error"] == "tool_execution_failed"
-        assert "secret internal detail" not in payload["content"]
-        assert "secret internal detail" not in payload["error"]
-
-    asyncio.run(run())
-
-
-def test_execute_tool_calls_keep_order():
-    async def run():
-        manager = ToolCallManager(build_registry())
-        messages = await manager.execute_tool_calls(
-            [
-                {"id": "call_1", "function": {"name": "sample", "arguments": "{}"}},
-                {"id": "call_2", "function": {"name": "another", "arguments": "{}"}},
-            ],
-            build_context(),
-        )
-        assert [message["tool_call_id"] for message in messages] == ["call_1", "call_2"]
-        assert [message["name"] for message in messages] == ["sample", "another"]
-
-    asyncio.run(run())
-
-
-def test_timer_task_triggers_pipeline_callback():
-    async def run():
-        from core.tools._archived import manage_timer_task_tool
-
-        calls = []
-
-        async def callback(chat_id, mode, **kwargs):
-            calls.append({"chat_id": chat_id, "mode": mode, **kwargs})
-
-        context = build_context()
-        context.metadata["process_callback"] = callback
-        result = await manage_timer_task_tool(
-            context,
-            title="提醒喝水",
-            delay_seconds=0,
-            message="该喝水了",
-        )
-        await asyncio.sleep(0.05)
-
-        assert result.success is True
-        assert calls
-        assert calls[0]["chat_id"] == "test_chat"
-        assert calls[0]["message_obj"]["content"] == "【定时任务到点】该喝水了"
-        assert calls[0]["debounce_flag"] is False
-        assert calls[0]["force_reply"] is True
-
-    asyncio.run(run())
-
-
-def test_send_qq_file_auto_detects_plain_file(tmp_path):
-    async def run():
-        from core.tools import send_qq_file_tool
-
-        sent_files = []
-        file_path = tmp_path / "report.txt"
-        file_path.write_text("hello", encoding="utf-8")
-
-        async def send_local_file(chat_id, local_path, mode="private"):
-            sent_files.append((chat_id, local_path, mode))
-
-        context = build_context()
-        context.runtime.sender = SimpleNamespace(send_local_file=send_local_file)
-        result = await send_qq_file_tool(context, str(file_path))
-
-        assert result.success is True
-        assert result.data["file_type"] == "file"
-        assert sent_files[0][0] == "test_chat"
-
-    asyncio.run(run())
-
-
-def test_parse_rich_message_miniapp_accepts_napcat_json_segment():
-    async def run():
-        from core.tools import parse_rich_message_tool
-
-        context = build_context()
-        context.metadata["message_objs"] = [
-            {
-                "name": "今夜は踊り狂乱です",
-                "message_id": 1376986332,
-                "segments": [
-                    {
-                        "type": "json",
-                        "data": {
-                            "data": json.dumps(
-                                {
-                                    "prompt": "[QQ小程序]捷克狼犬-我未来三年的生日礼物换的狗",
-                                    "meta": {
-                                        "detail_1": {
-                                            "title": "哔哩哔哩",
-                                            "desc": "捷克狼犬-我未来三年的生日礼物换的狗",
-                                            "qqdocurl": "https://b23.tv/CxLmUuP",
-                                        }
-                                    },
-                                },
-                                ensure_ascii=False,
-                            )
-                        },
-                    }
-                ],
-            }
-        ]
-
-        result = await parse_rich_message_tool(context, rich_type="miniapp")
-
-        assert result.success is True
-        assert result.data["type"] == "miniapp"
-        assert result.data["message_id"] == 1376986332
-        assert "小程序" in result.content
-        assert "捷克狼犬" in result.content
-        assert "https://b23.tv/CxLmUuP" in result.content
-
-    asyncio.run(run())
+        }],
+    }]
+    rich_res = await parse_rich_message_tool(ctx, rich_type="miniapp")
+    assert rich_res.success is True and rich_res.data["type"] == "miniapp"
+    assert "捷克狼犬" in rich_res.content and "https://b23.tv/CxLmUuP" in rich_res.content

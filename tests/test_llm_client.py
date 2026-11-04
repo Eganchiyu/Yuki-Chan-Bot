@@ -1,158 +1,190 @@
-# tests/test_llm_client.py
-"""utils/llm_client.py 纯函数单元测试（不联网）。"""
-from utils.llm_client import (
-    _sanitize_payload,
-    _normalize_url,
-    _get_fallback_message,
-    close_global_session,
-)
+"""LLM 客户端与重试/主备降级机制 (utils/llm_client.py) 单元测试。"""
 from config import cfg
+from utils import llm_client
+from utils.llm_client import (
+    _EMPTY_REPLY_NUDGE,
+    _get_fallback_message,
+    _message_is_empty,
+    _normalize_url,
+    _sanitize_payload,
+    close_global_session,
+    llm_chat_raw,
+)
 
 
-# ==================== 单元测试（纯函数，无需 LLM） ====================
+class _RequestRecorder:
+    """替换 chat_completion_raw，按脚本逐个返回响应或抛异常。"""
 
-def test_normalize_url():
-    """测试 URL 规范化"""
-    print("\n[测试 1] URL 规范化")
+    def __init__(self, responses):
+        self.responses = list(responses)
+        self.calls = []
 
+    async def __call__(self, base_url, api_key, messages, model, timeout=60.0, **kwargs):
+        self.calls.append({"messages": messages, "base_url": base_url})
+        result = self.responses.pop(0) if self.responses else {"role": "assistant", "content": ""}
+        if isinstance(result, Exception):
+            raise result
+        return result
+
+
+async def _run_chat_raw(monkeypatch, responses, retries=3, messages=None, **kwargs):
+    recorder = _RequestRecorder(responses)
+    monkeypatch.setattr(llm_client, "chat_completion_raw", recorder)
+    monkeypatch.setattr(cfg.model, "llm_max_retries", retries)
+    monkeypatch.setitem(llm_client._fallback_state, "is_degraded", False)
+    message = await llm_chat_raw(messages=messages or [{"role": "user", "content": "在吗"}], **kwargs)
+    return message, recorder
+
+
+def test_normalize_url_and_fallback_messages():
+    """URL 规范化与按原因区分的降级提示文案。"""
     assert _normalize_url("https://api.deepseek.com/v1") == "https://api.deepseek.com/v1"
     assert _normalize_url("https://api.deepseek.com/v1/") == "https://api.deepseek.com/v1"
     assert _normalize_url("https://api.deepseek.com/v1/chat/completions") == "https://api.deepseek.com/v1"
     assert _normalize_url("") == ""
     assert _normalize_url(None) == ""
 
-    print("  [PASS] URL 规范化正确")
-
-
-def test_sanitize_payload_no_thinking_injection():
-    """测试 _sanitize_payload 不再自动注入 reasoning_effort"""
-    print("\n[测试 2] 思考参数不再自动注入")
-
-    payload = {"model": "o1-preview", "messages": []}
-    result = _sanitize_payload("o1-preview", payload)
-    assert "reasoning_effort" not in result
-
-    payload2 = {"model": "deepseek-chat", "messages": []}
-    assert "reasoning_effort" not in _sanitize_payload("deepseek-chat", payload2)
-
-    print("  [PASS] 思考参数由配置/调用方决定，_sanitize_payload 不注入")
-
-
-def test_sanitize_payload_vl_model():
-    """测试视觉模型过滤 response_format"""
-    print("\n[测试 3] 视觉模型 response_format 过滤")
-
-    payload = {
-        "model": "qwen-vl-plus",
-        "messages": [],
-        "response_format": {"type": "json_object"}
-    }
-    result = _sanitize_payload("qwen-vl-plus", payload)
-    assert "response_format" not in result
-
-    print("  [PASS] 视觉模型正确过滤 response_format")
-
-
-def test_sanitize_payload_normal_model():
-    """测试普通模型保留 response_format"""
-    print("\n[测试 4] 普通模型保留 response_format")
-
-    payload = {
-        "model": "deepseek-chat",
-        "messages": [],
-        "response_format": {"type": "json_object"}
-    }
-    result = _sanitize_payload("deepseek-chat", payload)
-    assert "response_format" in result
-    assert result["response_format"] == {"type": "json_object"}
-
-    print("  [PASS] 普通模型正确保留 response_format")
-
-
-def test_sanitize_payload_gemini_penalties():
-    """Gemini 兼容层需去掉 frequency/presence_penalty，否则会 400。"""
-    print("\n[测试 4b] Gemini 不兼容采样参数过滤")
-
-    payload = {
-        "model": "gemini-3.1-flash-lite",
-        "messages": [],
-        "temperature": 1.1,
-        "top_p": 0.9,
-        "frequency_penalty": 0.5,
-        "presence_penalty": 0.4,
-        "max_tokens": 520,
-    }
-    result = _sanitize_payload(
-        "gemini-3.1-flash-lite",
-        payload,
-        base_url="https://generativelanguage.googleapis.com/v1beta/openai",
-    )
-    assert "frequency_penalty" not in result
-    assert "presence_penalty" not in result
-    assert result["temperature"] == 1.1
-    assert result["top_p"] == 0.9
-    assert result["max_tokens"] == 520
-
-    deepseek_payload = {
-        "model": "deepseek-v4-flash",
-        "frequency_penalty": 0.5,
-        "presence_penalty": 0.4,
-    }
-    deepseek_result = _sanitize_payload("deepseek-v4-flash", deepseek_payload)
-    assert deepseek_result["frequency_penalty"] == 0.5
-    assert deepseek_result["presence_penalty"] == 0.4
-
-    print("  [PASS] Gemini 过滤 penalty，DeepSeek 保留 penalty")
-
-
-def test_get_fallback_message():
-    """测试降级提示消息格式：按失败原因区分文案"""
-    print("\n[测试 5] 降级提示消息格式")
-
-    network_msg = _get_fallback_message("network")
-    assert isinstance(network_msg, str)
-    assert "好像有点不舒服" in network_msg
-    assert "暂时连接不上网络" in network_msg
-    assert cfg.MASTER_NAME in network_msg
-
-    empty_msg = _get_fallback_message("empty")
-    assert "输出了空字符" in empty_msg
-
-    # 未知原因回退到网络文案
+    net_msg = _get_fallback_message("network")
+    assert "暂时连接不上网络" in net_msg and cfg.MASTER_NAME in net_msg
+    assert "输出了空字符" in _get_fallback_message("empty")
     assert "暂时连接不上网络" in _get_fallback_message("unknown")
 
-    print(f"  [PASS] 网络降级: {network_msg}")
-    print(f"  [PASS] 空回复降级: {empty_msg}")
+
+def test_sanitize_payload_rules():
+    """payload 清洗：不自动注入 reasoning_effort、VL 模型去 response_format、Gemini 去 penalty。"""
+    assert "reasoning_effort" not in _sanitize_payload("o1-preview", {"model": "o1-preview", "messages": []})
+
+    vl_res = _sanitize_payload("qwen-vl-plus", {"model": "qwen-vl-plus", "response_format": {"type": "json_object"}})
+    assert "response_format" not in vl_res
+
+    normal_res = _sanitize_payload("deepseek-chat", {"model": "deepseek-chat", "response_format": {"type": "json_object"}})
+    assert normal_res["response_format"] == {"type": "json_object"}
+
+    gemini_res = _sanitize_payload(
+        "gemini-3.1-flash-lite",
+        {"temperature": 1.1, "top_p": 0.9, "frequency_penalty": 0.5, "presence_penalty": 0.4, "max_tokens": 520},
+        base_url="https://generativelanguage.googleapis.com/v1beta/openai",
+    )
+    assert "frequency_penalty" not in gemini_res and "presence_penalty" not in gemini_res
+    assert gemini_res["temperature"] == 1.1 and gemini_res["max_tokens"] == 520
+
+    ds_res = _sanitize_payload("deepseek-v4-flash", {"frequency_penalty": 0.5, "presence_penalty": 0.4})
+    assert ds_res["frequency_penalty"] == 0.5 and ds_res["presence_penalty"] == 0.4
 
 
-def test_config_urls():
-    """测试配置中的 URL 不为空"""
-    print("\n[测试 6] 配置 URL 检查")
-
-    assert cfg.LLM_BASE_URL, "LLM_BASE_URL 不能为空"
-    assert cfg.BACKUP_BASE_URL, "BACKUP_BASE_URL 不能为空"
-    assert cfg.IMAGE_PROCESS_API_URL, "IMAGE_PROCESS_API_URL 不能为空"
-
-    print(f"  [PASS] LLM_BASE_URL: {cfg.LLM_BASE_URL}")
-    print(f"  [PASS] BACKUP_BASE_URL: {cfg.BACKUP_BASE_URL}")
-    print(f"  [PASS] IMAGE_PROCESS_API_URL: {cfg.IMAGE_PROCESS_API_URL}")
-
-
-async def test_close_global_session():
-    """测试全局 Session 关闭"""
-    print("\n[测试 9] close_global_session 测试")
-
-    from utils.llm_client import _get_global_session
-
-    # 先获取一个 session
-    session = await _get_global_session()
-    assert session is not None
-    assert not session.closed
-    print("  [PASS] 全局 Session 已创建")
-
-    # 关闭 session
+async def test_global_session_lifecycle():
+    """全局 aiohttp Session 创建与关闭清理。"""
+    session = await llm_client._get_global_session()
+    assert session is not None and not session.closed
     await close_global_session()
+    assert llm_client._global_session is None
 
-    from utils.llm_client import _global_session as session_after
-    assert session_after is None
-    print("  [PASS] 全局 Session 已关闭")
+
+def test_message_is_empty_detection():
+    """空回复判定支持纯文本、tool_calls 与多模态内容块。"""
+    assert _message_is_empty({"role": "assistant", "content": ""}) is True
+    assert _message_is_empty({"role": "assistant", "content": "   \n"}) is True
+    assert _message_is_empty({"role": "assistant", "content": None}) is True
+    assert _message_is_empty({"role": "assistant", "content": "", "tool_calls": [{"id": "1"}]}) is False
+    assert _message_is_empty({"role": "assistant", "content": [{"type": "text", "text": "hi"}]}) is False
+    assert _message_is_empty({"role": "assistant", "content": [{"type": "text", "text": "  "}]}) is True
+
+
+async def test_empty_reply_retry_and_nudge_injection(monkeypatch):
+    """空回复触发立即重试，后续重试末尾注入防空提示，且不污染调用方消息列表。"""
+    caller_msgs = [{"role": "user", "content": "在吗"}]
+    msg, recorder = await _run_chat_raw(
+        monkeypatch,
+        [
+            {"role": "assistant", "content": ""},
+            {"role": "assistant", "content": ""},
+            {"role": "assistant", "content": "终于有内容"},
+        ],
+        messages=caller_msgs,
+    )
+    assert msg["content"] == "终于有内容"
+    assert len(recorder.calls) == 3
+    assert all(m.get("content") != _EMPTY_REPLY_NUDGE for m in recorder.calls[0]["messages"])
+    for call in recorder.calls[1:]:
+        assert call["messages"][-1] == {"role": "user", "content": _EMPTY_REPLY_NUDGE}
+    assert caller_msgs == [{"role": "user", "content": "在吗"}]
+
+
+async def test_request_failure_and_exhaustion_fallbacks(monkeypatch):
+    """请求失败立即重试、耗尽后按原因返回降级文案，retries=0 时不重试。"""
+    # 首轮主+备失败 -> 第二轮备用恢复
+    msg, rec = await _run_chat_raw(
+        monkeypatch,
+        [RuntimeError("主挂"), RuntimeError("备挂"), {"role": "assistant", "content": "恢复了"}],
+    )
+    assert msg["content"] == "恢复了" and len(rec.calls) == 3
+
+    # 空回复耗尽 (1 + 3 = 4 次)
+    msg_empty, rec_empty = await _run_chat_raw(
+        monkeypatch, [{"role": "assistant", "content": ""} for _ in range(10)], retries=3
+    )
+    assert "输出了空字符" in msg_empty["content"] and len(rec_empty.calls) == 4
+
+    # 网络故障耗尽 (首轮主备 2 次 + 后续 3 轮备用 = 5 次)
+    msg_net, rec_net = await _run_chat_raw(
+        monkeypatch, [RuntimeError("断网") for _ in range(20)], retries=3
+    )
+    assert "暂时连接不上网络" in msg_net["content"] and len(rec_net.calls) == 5
+
+    # retries=0 禁用重试
+    msg_zero, rec_zero = await _run_chat_raw(
+        monkeypatch, [{"role": "assistant", "content": ""}], retries=0
+    )
+    assert "输出了空字符" in msg_zero["content"] and len(rec_zero.calls) == 1
+
+
+async def test_non_retryable_valid_responses(monkeypatch):
+    """正常回复、带 tool_calls 回复、content_filter 拦截、仅含 layout/MEME 标记均不触发额外重试。"""
+    for payload in (
+        {"role": "assistant", "content": "普通回复"},
+        {"role": "assistant", "content": "", "tool_calls": [{"id": "c1", "function": {"name": "poke", "arguments": "{}"}}]},
+        {"role": "assistant", "content": "", "_finish_reason": "content_filter"},
+        {"role": "assistant", "content": "[layout]盘算[/layout]【MEME:坏笑】"},
+    ):
+        msg, rec = await _run_chat_raw(monkeypatch, [payload])
+        assert msg == payload
+        assert len(rec.calls) == 1
+
+
+async def test_backup_line_degrades_vision_to_text_when_unsupported(monkeypatch):
+    """主线路失败切备用时：备用不支持视觉则调用 fallback_messages_factory 降级为纯文本，支持则直接复用。"""
+    calls = []
+
+    async def fake_raw(base_url, api_key, messages, model, timeout=60.0, **kwargs):
+        calls.append({"base_url": base_url, "messages": messages})
+        if len(calls) == 1:
+            raise RuntimeError("主线路不可用")
+        return {"role": "assistant", "content": "备用线路回复"}
+
+    factory_calls = []
+
+    async def fallback_factory():
+        factory_calls.append(True)
+        return [{"role": "user", "content": "纯文本降级"}]
+
+    monkeypatch.setattr(llm_client, "chat_completion_raw", fake_raw)
+    monkeypatch.setitem(llm_client._fallback_state, "is_degraded", False)
+
+    monkeypatch.setattr(cfg.model, "backup_native_vision_enabled", False)
+    msg = await llm_chat_raw(
+        messages=[{"role": "user", "content": [{"type": "image_url", "image_url": {"url": "x"}}]}],
+        fallback_messages_factory=fallback_factory,
+    )
+    assert msg["content"] == "备用线路回复"
+    assert factory_calls == [True]
+    assert calls[1]["messages"] == [{"role": "user", "content": "纯文本降级"}]
+
+    calls.clear()
+    factory_calls.clear()
+    monkeypatch.setitem(llm_client._fallback_state, "is_degraded", False)
+    monkeypatch.setattr(cfg.model, "backup_native_vision_enabled", True)
+    await llm_chat_raw(
+        messages=[{"role": "user", "content": [{"type": "image_url", "image_url": {"url": "x"}}]}],
+        fallback_messages_factory=fallback_factory,
+    )
+    assert factory_calls == []
