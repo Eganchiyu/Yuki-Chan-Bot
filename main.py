@@ -50,7 +50,7 @@ def initialize_components():
 
     logger.info("[System] 开始初始化表情包系统...")
     from modules.stickers.manager import StickerManager
-    sticker_manager = StickerManager()
+    sticker_manager = StickerManager(vl_processor=meme_processor)
 
     engine = YukiEngine(memory_rag, history_manager, yuki, sender)
     engine.sticker_manager = sticker_manager

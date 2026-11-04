@@ -517,7 +517,12 @@ def is_model_ready() -> bool:
     return os.path.exists(cfg_json) and has_weights
 
 
-def ensure_model(interactive: bool = True, force: bool = False, skip: bool = False) -> bool:
+def ensure_model(
+    interactive: bool = True,
+    force: bool = False,
+    skip: bool = False,
+    source: str = "auto",
+) -> bool:
     """确保本地嵌入模型就绪。"""
     if skip:
         print("⏭️  已跳过模型下载 (--skip-model)")
@@ -535,15 +540,15 @@ def ensure_model(interactive: bool = True, force: bool = False, skip: bool = Fal
 
     try:
         from utils.download_model import download_model
-        download_model(force=True if not interactive else force)
+        download_model(force=True if not interactive else force, source=source)
         return is_model_ready()
     except ImportError as e:
         print(f"⚠️ 依赖尚未安装，无法下载模型: {e}")
         return False
     except Exception as e:
         print(f"❌ 模型下载失败: {e}")
-        print("💡 若国内网络访问 HuggingFace 超时，可设置镜像环境变量后重试：")
-        print("   HF_ENDPOINT=https://hf-mirror.com python setup.py --non-interactive --skip-deps")
+        print("💡 可指定国内魔搭源或 HF 镜像源重试：")
+        print("   python setup.py --non-interactive --skip-deps --model-source modelscope")
         return False
 
 
@@ -673,6 +678,7 @@ def quick_setup(mode: int = 0, args: Optional[argparse.Namespace] = None) -> int
     install_deps = bool(getattr(args, "install_deps", False))
     skip_model = bool(getattr(args, "skip_model", False))
     force_model = bool(getattr(args, "force_model", False))
+    model_source = str(getattr(args, "model_source", "auto") or "auto")
 
     print("\n>>> 步骤 1/5: 建立目录结构")
     ensure_dirs()
@@ -694,7 +700,7 @@ def quick_setup(mode: int = 0, args: Optional[argparse.Namespace] = None) -> int
         config_yaml(mode)
 
     print("\n>>> 步骤 5/5: 准备 RAG 嵌入模型 (text2vec-base-chinese)")
-    ensure_model(interactive=interactive, force=force_model, skip=skip_model)
+    ensure_model(interactive=interactive, force=force_model, skip=skip_model, source=model_source)
 
     return run_check(as_json=False)
 
@@ -737,6 +743,12 @@ def build_parser() -> argparse.ArgumentParser:
         "--force-model",
         action="store_true",
         help="强制重新下载 RAG 嵌入模型",
+    )
+    parser.add_argument(
+        "--model-source",
+        default="auto",
+        choices=["auto", "modelscope", "hf-mirror", "huggingface"],
+        help="向量模型下载源（默认 auto：自动优先使用国内 ModelScope 源）",
     )
 
     # 常用配置项快捷参数

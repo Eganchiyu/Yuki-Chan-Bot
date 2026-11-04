@@ -14,10 +14,9 @@ with warnings.catch_warnings():
     warnings.simplefilter("ignore", UserWarning)
     import jieba
     import jieba.analyse
-from sentence_transformers import SentenceTransformer
-
 from config import cfg
 from modules.vision.processor import MemeProcessor
+from utils.download_model import get_chroma_client, get_embed_model
 from utils.http_client import create_tcp_connector
 from utils.llm_client import vision_chat
 from utils.logger import get_logger
@@ -61,11 +60,11 @@ EMOTION_KEYWORDS = {
 
 
 class StickerManager:
-    def __init__(self):
-        self.vl_processor = MemeProcessor()
-        self.model = SentenceTransformer(cfg.EMBED_MODEL)
+    def __init__(self, vl_processor: Optional[MemeProcessor] = None):
+        self.vl_processor = vl_processor or MemeProcessor()
+        self.model = get_embed_model(cfg.EMBED_MODEL)
 
-        self.client = chromadb.PersistentClient(path=cfg.VECTOR_DB_PATH)
+        self.client = get_chroma_client(cfg.VECTOR_DB_PATH)
         self.collection = self.client.get_or_create_collection(
             name="stickers",
             metadata={"hnsw:space": "cosine"}

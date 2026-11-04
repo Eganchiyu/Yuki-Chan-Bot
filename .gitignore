@@ -83,7 +83,7 @@ logs/
 core/tasks
 *.log
 temp_images/
-memory/
+/memory/
 
 # ============================================
 # 7. 配置文件（只保留 README.md）

@@ -10,9 +10,8 @@ import chromadb
 with warnings.catch_warnings():
     warnings.simplefilter("ignore", UserWarning)
     import jieba.analyse
-from sentence_transformers import SentenceTransformer
-
 from config import cfg
+from utils.download_model import get_chroma_client, get_embed_model
 from utils.logger import get_logger
 
 logger = get_logger("rag")
@@ -51,8 +50,8 @@ class MemoryRAG:
 
     def _initialize(self):
         logger.info("[RAG] 初始化记忆库...")
-        self.model = SentenceTransformer(cfg.EMBED_MODEL)
-        self.client = chromadb.PersistentClient(path=cfg.VECTOR_DB_PATH)
+        self.model = get_embed_model(cfg.EMBED_MODEL)
+        self.client = get_chroma_client(cfg.VECTOR_DB_PATH)
         self.collection = self.client.get_or_create_collection(
             name="diaries",
             metadata={"hnsw:space": "cosine"}  # 核心：使用余弦相似度进行向量匹配

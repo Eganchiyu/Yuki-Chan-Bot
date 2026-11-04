@@ -470,5 +470,13 @@
 - 更新 `README.md`：重写大众部署指南（本地直跑 + Docker 进阶），新增完整的「Agent 自动化部署指南（Agent向文档）」5 步非交互式 SOP，同步现役 12 个工具与最新文档索引。
 - 状态：裸 Python 与 conda 环境验证 `--check` 通过，`pytest -q` 61 passed。
 
+## 2026-11-04 克隆实测与消除向量模型双倍磁盘/双倍内存占用
+- 在 `~/githubmono/Yuki-Chan-Bot` 从零克隆实测，定位并修复 3 个真实部署阻塞点：
+  1. `uv.lock`（锁死 `==3.11.15` 且无包列表）从 git 移除，`.python-version` 放宽为 `3.11`，`pyproject.toml` 精简为顶层直接依赖 `>=` 约束，解决跨平台/跨小版本装包报错。
+  2. 重写 `utils/download_model.py`：默认优先走国内魔搭社区 ModelScope API 直连源（实测 13.16 MB/s，29s 完成，自动回退 `hf-mirror` / `huggingface`），直接流式写入 `./models/text2vec-base-chinese/` 并带实时进度条，不再经 `~/.cache/huggingface` 产生第二份 391MB 磁盘副本；同时已清理本机 `~/.cache/huggingface` 冗余副本（释放 391MB）。
+  3. 新增 `get_embed_model()` 与 `get_chroma_client()` 进程内单例缓存，让 `MemoryRAG` 与 `StickerManager` 共享同一 `SentenceTransformer` 实例与 `MemeProcessor`，消除启动时重复加载两次 391MB 向量模型的问题（节省 ~400MB 内存，`pytest` 全量耗时从 15.1s 降至 7.9s）。
+- 状态：ModelScope 下载端到端实测通过，`YUKI_DRY_RUN=1` 确认模型只加载一次，`pytest -q` 61 passed。
+
+
 
 

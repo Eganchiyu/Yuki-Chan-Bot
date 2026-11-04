@@ -112,11 +112,8 @@ python setup.py
 2. **安装 Python 依赖**：自动调用 `uv sync` 或 `pip` 安装 `pyproject.toml` 中的依赖。
 3. **生成配置文件**：自动生成带中文注释的 `configs/config.yaml` 和 `blacklist.txt`。
 4. **交互式填写关键配置**：引导填写 LLM API Key、NapCat WebSocket 地址、机器人 QQ 号、主人 QQ 号与监听群号。
-5. **下载 RAG 嵌入模型**：自动从 HuggingFace 下载 `shibing624/text2vec-base-chinese`（约 400MB）到 `./models/text2vec-base-chinese`。
-   > 💡 **国内网络提示**：若下载模型较慢或超时，可使用 HuggingFace 镜像站：
-   > ```bash
-   > HF_ENDPOINT=https://hf-mirror.com python setup.py
-   > ```
+5. **下载 RAG 嵌入模型**：自动从国内魔搭社区（ModelScope）或 HuggingFace 镜像站下载 `text2vec-base-chinese`（约 391MB）到 `./models/text2vec-base-chinese`（只下载最小必需文件，不占用双倍缓存）。
+   > 💡 **下载源切换提示**：默认按 `modelscope`（阿里云国内直连）→ `hf-mirror` → `huggingface` 自动故障切换，也可手动指定：`python setup.py --model-source modelscope`。
 
 #### Step 3：自检与启动
 
@@ -252,9 +249,9 @@ python3 setup.py --check --json
       --set rag.inject_top_k=5 \
       --set timing.debounce_time=25
     ```
-- **模型下载故障处理**：若 HuggingFace 连接超时，设置镜像环境变量重试：
+- **模型下载源指定**：默认优先走国内 `modelscope` 直连源（无需代理且不占 `~/.cache/huggingface` 双倍磁盘），也可显式指定：
   ```bash
-  HF_ENDPOINT=https://hf-mirror.com "$PY_BIN" setup.py --non-interactive --skip-deps
+  "$PY_BIN" setup.py --non-interactive --skip-deps --model-source modelscope
   ```
 
 ### Step 4：启动前三级验证门（Agent 必跑）
