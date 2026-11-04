@@ -41,8 +41,7 @@ class EngineReplyService:
         self.yuki = yuki
         self.history = history
         self.sender = sender
-        self.tool_registry_provider = tool_registry
-        self.tool_registry = tool_registry.get_registry() if hasattr(tool_registry, "get_registry") else tool_registry
+        self.tool_registry = tool_registry
         self.tool_manager = tool_manager
         self.get_process_callback = get_process_callback
         self.get_image_store = get_image_store
@@ -232,18 +231,13 @@ class EngineReplyService:
                 "message_objs": message_objs or [],
             },
         )
-        active_registry = (
-            self.tool_registry_provider.get_registry(mode)
-            if hasattr(self.tool_registry_provider, "get_registry")
-            else self.tool_registry
-        )
+        active_registry = self.tool_registry
         active_tool_manager = ToolCallManager(active_registry, max_rounds=self.tool_manager.max_rounds)
         valid_tool_names = (
             set(active_registry.list_functions())
             if hasattr(active_registry, "list_functions")
             else set()
         ) or None
-        self.tool_manager.start_session(str(chat_id), combined_text)
 
         async def build_backup_messages():
             """备用线路不支持视觉时，按需把图片附件转写为文本。"""
@@ -257,122 +251,118 @@ class EngineReplyService:
         sent_thoughts = set()
         tools_executed = False
 
-        try:
-            for _ in range(active_tool_manager.max_rounds):
-                response_message = await llm_chat_raw(
-                    messages=tool_messages,
-                    model=cfg.LLM_MODEL,
-                    temperature=0.9,
-                    top_p=0.8,
-                    frequency_penalty=0.3,
-                    presence_penalty=0.2,
-                    max_tokens=1024,
-                    tools=active_registry.get_tools(),
-                    tool_choice="auto",
-                    fallback_messages_factory=fallback_factory,
-                )
-                tool_calls = response_message.get("tool_calls") or []
-                if not tool_calls:
-                    # 模型偶尔把工具调用写成正文文本（DSML/<tool_call> 标记）：
-                    # 还原成真实调用继续执行，避免标记外泄且任务落空。
-                    text_calls, cleaned_content = extract_text_tool_calls(
-                        response_message.get("content"), valid_tool_names
-                    )
-                    if text_calls:
-                        logger.warning(
-                            f"[ToolChain] {chat_id} 工具调用被写成正文文本，已解析为真实调用: "
-                            f"{[c['function']['name'] for c in text_calls]}"
-                        )
-                        response_message["content"] = cleaned_content
-                        response_message["tool_calls"] = text_calls
-                        tool_calls = text_calls
-                if tool_calls:
-                    tools_executed = True
-                    tool_names = [
-                        call.get("function", {}).get("name", "")
-                        for call in tool_calls
-                    ]
-                    logger.info(f"[ToolChain] 模型请求工具调用 chat_id={chat_id} tools={tool_names}")
-
-                    # 同批里有 skip 就当作本轮什么都没发生：不发送、也不记录阶段文本
-                    if "skip" not in tool_names:
-                        sent_content = await self.send_tool_thought(
-                            chat_id,
-                            mode,
-                            response_message.get("content"),
-                            sent_thoughts,
-                            tool_names,
-                        )
-                        if sent_content:
-                            self.history.append_session_message(
-                                chat_id,
-                                "assistant",
-                                sent_content,
-                                is_tool_thought=True,
-                                sent_realtime=True,
-                                save_immediately=False,
-                                return_snapshot=False,
-                            )
-                else:
-                    if response_message.get("_finish_reason") == "content_filter":
-                        logger.warning(f"[ToolChain] {chat_id} 回复被内容安全过滤")
-                        return "Filtered", "Filtered"
-                    # 写回历史保留归一化标记；可见文本为空且已执行过工具时用工作中占位
-                    return self.finalize_answer(
-                        strip_tool_call_markup(response_message.get("content")),
-                        tools_executed,
-                    )
-
-                tool_messages.append(response_message)
-                tool_result_messages = await active_tool_manager.execute_tool_calls(
-                    tool_calls,
-                    context,
-                    finish_reason=response_message.get("_finish_reason") or "",
-                )
-                if context.metadata.get("skip_reply"):
-                    # skip 工具生效：本轮不生成也不要发送任何内容，交给管线收尾
-                    logger.info(f"[ToolChain] {chat_id} 本轮选择 skip，保持安静")
-                    return SKIP_REPLY_MARKER, SKIP_REPLY_MARKER
-                for tool_result_message in tool_result_messages:
-                    spec = active_registry.get_spec(tool_result_message.get("name"))
-                    if spec is not None and not spec.persist_result:
-                        # 结果只在本轮对话内可见，不回写历史，避免污染长期上下文
-                        continue
-                    self.history.append_session_message(
-                        chat_id,
-                        "tool",
-                        tool_result_message.get("content"),
-                        name=tool_result_message.get("name"),
-                        tool_call_id=tool_result_message.get("tool_call_id"),
-                        save_immediately=False,
-                        return_snapshot=False,
-                    )
-                tool_messages.extend(tool_result_messages)
-                remaining_budget = max(
-                    0,
-                    cfg.model.native_vision_max_images - self._used_image_slots(tool_messages),
-                )
-                await self.merge_pending_messages(chat_id, tool_messages, image_budget=remaining_budget)
-
-            logger.warning(f"[ToolChain] {chat_id} 工具调用轮次用尽，转为纯文本收尾")
-            # 收尾请求不再带 tools，必须明确要求只输出文字，否则模型会把调用写成标记
-            closing_messages = tool_messages + [{
-                "role": "user",
-                "content": "（本轮工具调用次数已用尽，请直接用文字回复用户，不要再输出任何工具调用、"
-                           "参数 JSON 或类似标记。）",
-            }]
-            fallback_raw = await llm_chat(
-                messages=closing_messages,
+        for _ in range(active_tool_manager.max_rounds):
+            response_message = await llm_chat_raw(
+                messages=tool_messages,
                 model=cfg.LLM_MODEL,
-                temperature=0.8,
+                temperature=0.9,
                 top_p=0.8,
+                frequency_penalty=0.3,
+                presence_penalty=0.2,
                 max_tokens=1024,
+                tools=active_registry.get_tools(),
+                tool_choice="auto",
                 fallback_messages_factory=fallback_factory,
             )
-            return self.finalize_answer(fallback_raw, tools_executed)
-        finally:
-            active_tool_manager.finish_session(str(chat_id))
-            self.tool_manager.finish_session(str(chat_id))
+            tool_calls = response_message.get("tool_calls") or []
+            if not tool_calls:
+                # 模型偶尔把工具调用写成正文文本（DSML/<tool_call> 标记）：
+                # 还原成真实调用继续执行，避免标记外泄且任务落空。
+                text_calls, cleaned_content = extract_text_tool_calls(
+                    response_message.get("content"), valid_tool_names
+                )
+                if text_calls:
+                    logger.warning(
+                        f"[ToolChain] {chat_id} 工具调用被写成正文文本，已解析为真实调用: "
+                        f"{[c['function']['name'] for c in text_calls]}"
+                    )
+                    response_message["content"] = cleaned_content
+                    response_message["tool_calls"] = text_calls
+                    tool_calls = text_calls
+            if tool_calls:
+                tools_executed = True
+                tool_names = [
+                    call.get("function", {}).get("name", "")
+                    for call in tool_calls
+                ]
+                logger.info(f"[ToolChain] 模型请求工具调用 chat_id={chat_id} tools={tool_names}")
+
+                # 同批里有 skip 就当作本轮什么都没发生：不发送、也不记录阶段文本
+                if "skip" not in tool_names:
+                    sent_content = await self.send_tool_thought(
+                        chat_id,
+                        mode,
+                        response_message.get("content"),
+                        sent_thoughts,
+                        tool_names,
+                    )
+                    if sent_content:
+                        self.history.append_session_message(
+                            chat_id,
+                            "assistant",
+                            sent_content,
+                            is_tool_thought=True,
+                            sent_realtime=True,
+                            save_immediately=False,
+                            return_snapshot=False,
+                        )
+            else:
+                if response_message.get("_finish_reason") == "content_filter":
+                    logger.warning(f"[ToolChain] {chat_id} 回复被内容安全过滤")
+                    return "Filtered", "Filtered"
+                # 写回历史保留归一化标记；可见文本为空且已执行过工具时用工作中占位
+                return self.finalize_answer(
+                    strip_tool_call_markup(response_message.get("content")),
+                    tools_executed,
+                )
+
+            tool_messages.append(response_message)
+            tool_result_messages = await active_tool_manager.execute_tool_calls(
+                tool_calls,
+                context,
+                finish_reason=response_message.get("_finish_reason") or "",
+            )
+            if context.metadata.get("skip_reply"):
+                # skip 工具生效：本轮不生成也不要发送任何内容，交给管线收尾
+                logger.info(f"[ToolChain] {chat_id} 本轮选择 skip，保持安静")
+                return SKIP_REPLY_MARKER, SKIP_REPLY_MARKER
+            for tool_result_message in tool_result_messages:
+                spec = active_registry.get_spec(tool_result_message.get("name"))
+                if spec is not None and not spec.persist_result:
+                    # 结果只在本轮对话内可见，不回写历史，避免污染长期上下文
+                    continue
+                self.history.append_session_message(
+                    chat_id,
+                    "tool",
+                    tool_result_message.get("content"),
+                    name=tool_result_message.get("name"),
+                    tool_call_id=tool_result_message.get("tool_call_id"),
+                    save_immediately=False,
+                    return_snapshot=False,
+                )
+            tool_messages.extend(tool_result_messages)
+            remaining_budget = max(
+                0,
+                cfg.model.native_vision_max_images - self._used_image_slots(tool_messages),
+            )
+            await self.merge_pending_messages(chat_id, tool_messages, image_budget=remaining_budget)
+
+        logger.warning(f"[ToolChain] {chat_id} 工具调用轮次用尽，转为纯文本收尾")
+        # 收尾请求不再带 tools，必须明确要求只输出文字，否则模型会把调用写成标记
+        closing_messages = tool_messages + [{
+            "role": "user",
+            "content": "（本轮工具调用次数已用尽，请直接用文字回复用户，不要再输出任何工具调用、"
+                       "参数 JSON 或类似标记。）",
+        }]
+        fallback_raw = await llm_chat(
+            messages=closing_messages,
+            model=cfg.LLM_MODEL,
+            temperature=0.8,
+            top_p=0.8,
+            max_tokens=1024,
+            fallback_messages_factory=fallback_factory,
+        )
+        return self.finalize_answer(fallback_raw, tools_executed)
 
     async def api_reply(self, chat_id: str, combined_text: str, session: list, mode,
                         relevant_diaries: list[Any],
@@ -395,11 +385,7 @@ class EngineReplyService:
                     built_messages=combined_api_message,
                     tool_context={
                         "tools_enabled": True,
-                        "tool_count": len(
-                            self.tool_registry_provider.get_tools(mode)
-                            if hasattr(self.tool_registry_provider, "get_tools")
-                            else self.tool_registry.get_tools()
-                        ),
+                        "tool_count": len(self.tool_registry.get_tools()),
                         "mode": mode,
                         "max_rounds": self.tool_manager.max_rounds,
                     },

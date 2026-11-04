@@ -52,6 +52,25 @@ Yuki 主程序的 `ncm_search` / `ncm_download` 已从 `TOOL_SPECS` 摘除（提
 3. 已扫码证据：事后手工单查 unikey 得到 `code 803`；第二次再查变成 `800 过期`，说明「登录被消费但 Cookie 没落盘」。
 4. 结论：要跑通需要**同一份进程既生成又接收**（`ncm_login_daemon.py` 已按此实现），并在二维码刷新后立刻扫。
 
-**恢复路径**：把 `_archive/skills/ncm.*` 复制回 `skills/`，女仆即可 `list_skills` 看到；主程序侧把 `_archived/tools_ncm.py` 的两个 `ToolSpec` 加回 `core/tools/tools.py` 即恢复 Yuki 的 ncm 工具。
+**恢复路径**：把 `_archive/skills/ncm.*` 复制回 `skills/`，女仆即可 `list_skills` 看到；主程序侧把 `_archive/ncm_tools/` 下的 `ncm_login.py` 与 `tools_ncm.py` 移回 `core/` 并把两个 `ToolSpec` 加回 `core/tools/tools.py` 即恢复 Yuki 的 ncm 工具。
 
 **当前 Cookie 状态**：未拿到，`data/home/.cache/ncm_cookie.txt` 不存在。
+
+---
+
+## 2026-11-04 追加：`core/` 未挂载模块与历史遗留代码分块归档
+
+将 `core/` 下所有未挂载到主流程的工具、旧版内置小女仆循环、聚焦模式空壳框架及零散死代码按功能分类归档，每个子目录均附带专属 `README.md`（说明代码用途、原埋点位置与恢复接入步骤）：
+
+| 分类目录 | 原始路径 / 来源 | 说明与文档入口 |
+|---|---|---|
+| [`ncm_tools/`](ncm_tools/README.md) | `core/ncm_login.py`、`core/tools/_archived/tools_ncm.py` | 网易云音乐 eapi 二维码扫码登录、歌曲搜索与 CDN 降级下载工具 |
+| [`qzone_tool/`](qzone_tool/README.md) | `core/tools/_archived/tools_qzone.py` | QQ 空间说说发布工具（`publish_qzone_mood_tool`） |
+| [`search_tools/`](search_tools/README.md) | `core/tools/_archived/tools_search.py` | 主模型高德地图搜索（`amap_search_tool`）与 Tavily 网页搜索（`browser_search_tool`） |
+| [`master_status/`](master_status/README.md) | `core/tools/_archived/tools_status.py` | 主人桌面空闲时长与前台窗口标题跨平台监控及 `get_master_status_tool` |
+| [`timer_tool/`](timer_tool/README.md) | `core/tools/_archived/tools_timer.py` | 会话级精确定时提醒任务工具（`manage_timer_task_tool`） |
+| [`user_resolve_tool/`](user_resolve_tool/README.md) | `core/tools/tools.py` 末尾注释块 | 根据群昵称解析 QQ 号工具（`resolve_user_tool`） |
+| [`maid_legacy/`](maid_legacy/README.md) | `core/maid/maid_{loop,prompt,runtime,approval,selfevolve,worklog}.py` 及 `maid_{tools,memory,common,facade}_legacy.py` | 小女仆旧版容器内 JSON 循环后端（Legacy Maid Loop）与配套工具 |
+| [`focus_modes/`](focus_modes/README.md) | `core/modes.py`、`core/toolchain.py::ToolRegistryProvider` | 全局聚焦模式管理框架（`ModeManager` / `FocusModeState`）与按模式切换工具集提供器 |
+| [`core_legacy_snippets/`](core_legacy_snippets/README.md) | `core/brain.py`、`core/history_manager.py`、`core/engine/engine.py`、`core/toolchain.py` | 核心模块内未挂载方法与历史残留片段（旧余弦生物钟、`inject_whisper`、引擎旧私有转发器、空生命周期钩子等） |
+

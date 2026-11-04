@@ -9,7 +9,7 @@ import pytest
 
 from core import reply_watch
 from core.engine.engine import YukiEngine
-from core.modes import ModeManager
+from core.engine.engine_diary import EngineDiaryService
 from core.prompts import build_chat_context, get_ice_break_instructions
 from core.reply_watch import (
     auto_subscribe,
@@ -244,24 +244,16 @@ async def test_reply_watch_lifecycle_and_pipeline_integration(fast_watch, monkey
     assert get_watch("g1") is None
 
 
-# ==================== 引擎空闲总结与 ModeManager ====================
+# ==================== 引擎空闲总结 ====================
 
-async def test_engine_idle_summarize_and_mode_manager():
-    """空闲会话总结只替换目标会话；已归档聚焦模式不可进入。"""
-    engine = YukiEngine.__new__(YukiEngine)
-    engine.history = MagicMock()
-    engine.do_summarize = AsyncMock(return_value=[{"role": "system", "content": "系统"}])
+async def test_engine_idle_summarize():
+    """空闲会话总结只替换目标会话。"""
+    diary_service = EngineDiaryService(MagicMock(), MagicMock())
+    diary_service.do_summarize = AsyncMock(return_value=[{"role": "system", "content": "系统"}])
 
     source_session = [{"role": "system", "content": "系统"}, {"role": "user", "content": "旧消息"}]
-    await engine._summarize_idle_session("12345", source_session)
-    engine.do_summarize.assert_awaited_once_with(12345, source_session)
-    engine.history.replace_session.assert_called_once_with("12345", [{"role": "system", "content": "系统"}])
-    engine.history.save.assert_not_called()
+    await diary_service.summarize_idle_session("12345", source_session)
+    diary_service.do_summarize.assert_awaited_once_with(12345, source_session)
+    diary_service.history.replace_session.assert_called_once_with("12345", [{"role": "system", "content": "系统"}])
+    diary_service.history.save.assert_not_called()
 
-    manager = ModeManager()
-    ok, state, reason = await manager.enter_mode(
-        "browser_interaction", origin_chat_id="10001", origin_mode="group", goal="不应进入"
-    )
-    assert ok is False and state is None and reason == "mode_is_not_focus_mode"
-    assert manager.is_focus_active() is False
-    assert manager.get_spec("browser_interaction").mode_id == "group"

@@ -3,10 +3,8 @@ import asyncio
 import datetime
 import math
 from collections import defaultdict
-from concurrent.futures.thread import ThreadPoolExecutor
 
 from config import cfg
-from core.modes import ModeManager
 from core.prompts import (
     get_yuki_setting_group,
     get_yuki_setting_master_private,
@@ -74,11 +72,6 @@ class UserMapping:
         if not self._map[cid]:
             del self._map[cid]
 
-    def get_all(self, chat_id: str) -> dict:
-        """获取指定群聊的所有映射（用于调试）。"""
-        cid = str(chat_id)
-        return {name: info["user_id"] for name, info in self._map.get(cid, {}).items()}
-
 
 class YukiState:
     def __init__(self):
@@ -98,20 +91,14 @@ class YukiState:
         self.maid_task_queue = asyncio.Queue()
         self.maid_current_tasks = {}  # chat_id -> 当前任务描述（让Yuki知道她在干什么）
         self.maid_active_chats = {}  # chat_id -> mode，重启前要往这些会话喊一声
-        self.maid_executor = ThreadPoolExecutor(max_workers=2)  # 并行执行小女仆
 
         # --- 新增：用户昵称到QQ号的映射 ---
         self.user_mapping = UserMapping(ttl_rounds=10)
-
-        # --- 新增：全局模式管理 ---
-        self.mode_manager = ModeManager()
 
         # --- 新增：活跃度感知 ---
         # chat_id: float (0.0 ~ 10.0, 10 代表极度刷屏)
 
         self.group_activity = {}
-        # # 记录每个群上一次"升温"的时间，用于计算自然冷却
-        # self.last_activity_update = {}
 
     async def boost_activity(self, chat_id, sensitivity = cfg.SENSITIVITY) -> None:
         """
@@ -220,35 +207,6 @@ class YukiState:
             self.buffer_tasks.pop(cid, None)
         return msgs
 
-    # @staticmethod
-    # def get_smooth_time_weight() -> float:
-    #     """
-    #     使用余弦平滑算法计算生物钟权重
-    #     实现从深夜到饭点的无缝平滑过渡
-    #     """
-    #     # 获取当前时间（带分钟，保证秒级平滑）
-    #     now = datetime.datetime.now()
-    #     t = now.hour + now.minute / 60.0
-    #
-    #     # --- 构造双峰生物钟模型 ---
-    #     # 基础权重 0.8 (白天平稳期)
-    #     base = 0.8
-    #
-    #     # 模拟深夜 (3:00 为最冷清点)
-    #     # 使用 cos( (t-3)*pi/12 )，在3点时为 1，在15点时为 -1
-    #     night_factor = math.cos((t - 3) * math.pi / 12)
-    #
-    #     # 模拟饭点 (12:00 和 19:00 为高峰)
-    #     # 使用周期更短的波来模拟两个进食高峰
-    #     lunch_peak = math.exp(-((t - 12.5) ** 2 / 4)) * 0.5  # 12:30 附近
-    #     dinner_peak = math.exp(-((t - 19.5) ** 2 / 4)) * 0.5  # 19:30 附近
-    #
-    #     # 融合权重
-    #     # 夜间 night_factor 大，我们减去它；饭点峰值我们加上它
-    #     weight = base - (night_factor * 0.5) + lunch_peak + dinner_peak
-    #
-    #     # 最终映射到 [0.2, 1.5] 之间
-    #     return max(0.2, min(weight, 1.5))
     @staticmethod
     def _calculate_smooth_time_weight(t) -> float:
         """按给定小时计算生物钟权重。"""
@@ -286,6 +244,3 @@ class YukiState:
         t = now.hour + now.minute / 60.0
         return YukiState._calculate_smooth_time_weight(t)
 
-    @staticmethod
-    def get_smooth_time_weight_test(t) -> float:
-        return YukiState._calculate_smooth_time_weight(t)

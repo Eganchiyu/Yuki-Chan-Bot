@@ -440,3 +440,18 @@
 - 移除针对已归档 `core/tools/_archived` 的冗余测试（`test_system_state.py` 及 `manage_timer_task_tool` 用例）、清理 `test_ice_break_pipeline.py` 尾部手写 runner 死代码、消除跨文件重复假对象，统一使用 `pytest-asyncio` 自动模式、`tmp_path` 与 `monkeypatch`。
 - 新增 `core/recall_cache.py`（跨轮 top-1 召回持久化与管线合并）和 `core/notebook.py`（小本本截断与损坏容错）探测用例。
 - 状态：`pytest` 全量 61 项内聚测试全绿（耗时从 ~21s 降至 ~11s），`deploy/test_gate.py` 通过。
+
+## 2026-11-04 归档 `core/` 未挂载模块与历史遗留代码
+- 在 `_archive/` 下按功能新建 9 个分类目录并各附 `README.md`（说明功能、原埋点与接入步骤）：
+  - `ncm_tools/`（`core/ncm_login.py`、`core/tools/_archived/tools_ncm.py`）
+  - `qzone_tool/`（`core/tools/_archived/tools_qzone.py`）
+  - `search_tools/`（`core/tools/_archived/tools_search.py`）
+  - `master_status/`（`core/tools/_archived/tools_status.py`）
+  - `timer_tool/`（`core/tools/_archived/tools_timer.py`）
+  - `user_resolve_tool/`（`core/tools/tools.py` 尾部注释的 `resolve_user_tool`）
+  - `maid_legacy/`（`core/maid/maid_{loop,prompt,runtime,approval,selfevolve,worklog}.py` 及 `maid_{tools,memory,common,facade}` 中旧内置循环部分，保留线上 `maid_harness` / `maid_charter` / `search_diary_fast` 等核心路径）
+  - `focus_modes/`（`core/modes.py` 与 `core/toolchain.py::ToolRegistryProvider`）
+  - `core_legacy_snippets/`（`core/brain.py`、`core/history_manager.py`、`core/engine/engine.py`、`core/toolchain.py` 中未挂载方法与旧兼容转发器）
+- 更新 `tests/test_maid.py` 与 `tests/test_pipeline.py` 对齐精简后的核心模块，更新 `_archive/README.md` 索引。
+- 状态：语法编译、核心导入自检与 `pytest` 61 项单测全部通过。
+

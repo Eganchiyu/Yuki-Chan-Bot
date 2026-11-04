@@ -1,14 +1,14 @@
 import asyncio
 
-from core.maid.maid_approval import build_approver
+from core.maid.maid_backend import maid_evolution_loop
 from core.maid.maid_boundary import build_maid_report
 from core.maid.maid_common import logger
-from core.maid.maid_backend import maid_evolution_loop
 from core.maid.maid_resume import mark_reported
 
 
 async def maid_worker(engine, yuki_state, sender, history_manager):
     """消费小女仆任务，并将结果重新交给会话管线。"""
+    del sender
     while True:
         task = await yuki_state.maid_task_queue.get()
         goal = task["goal"]
@@ -18,16 +18,9 @@ async def maid_worker(engine, yuki_state, sender, history_manager):
         if hasattr(yuki_state, "maid_active_chats"):
             yuki_state.maid_active_chats[chat_id] = mode
         try:
-            approver = build_approver(
-                yuki_state=yuki_state,
-                history_manager=history_manager,
-                chat_id=chat_id,
-                mode=mode,
-                goal=goal,
-                gateway=getattr(engine, "sender", None) or sender,
-            )
             result_dict = await maid_evolution_loop(
-                user_goal=goal, chat_id=chat_id, approver=approver, mode=mode)
+                user_goal=goal, chat_id=chat_id, mode=mode
+            )
             report = build_maid_report(goal, result_dict)
             history_manager.append_session_message(chat_id, "user", report, is_maid_report=True)
             # 打上「已汇报」标记，重启后的补报巡检不会重复说一遍

@@ -147,34 +147,6 @@ class FunctionRegistry:
             self.register(spec)
 
 
-class ToolRegistryProvider:
-    """按 mode 提供不同 FunctionRegistry。"""
-
-    def __init__(self, default_specs: list[ToolSpec], mode_specs: dict[str, list[ToolSpec]] | None = None):
-        self.default_registry = FunctionRegistry()
-        self.default_registry.scan_and_register(default_specs)
-        self._registries: dict[str, FunctionRegistry] = {"default": self.default_registry}
-        self._mode_to_group: dict[str, str] = {}
-        for mode, specs in (mode_specs or {}).items():
-            registry = FunctionRegistry()
-            registry.scan_and_register(specs)
-            self._registries[mode] = registry
-            self._mode_to_group[mode] = mode
-
-    def get_registry(self, mode: str | None = None) -> FunctionRegistry:
-        """获取指定 mode 的工具注册表，未知 mode 回退默认工具组。"""
-        if not mode:
-            return self.default_registry
-        group = self._mode_to_group.get(mode, mode)
-        return self._registries.get(group, self.default_registry)
-
-    def get_tools(self, mode: str | None = None) -> list:
-        return self.get_registry(mode).get_tools()
-
-    def list_functions(self, mode: str | None = None) -> list:
-        return self.get_registry(mode).list_functions()
-
-
 class ToolCallManager:
     """工具调用执行器：负责参数解析、调用状态和结果标准化。"""
 
@@ -182,12 +154,6 @@ class ToolCallManager:
         self.registry = registry
         self.max_rounds = max_rounds
         self.timeout_seconds = max(1.0, float(getattr(cfg.timing, "tool_call_timeout_seconds", 120)))
-
-    def start_session(self, chat_id: str, user_text: str):
-        """保留会话入口，当前仅用于兼容调用点。"""
-
-    def finish_session(self, chat_id: str):
-        """保留会话出口，当前无需维护额外状态。"""
 
     @staticmethod
     def _delay_seconds() -> float:
