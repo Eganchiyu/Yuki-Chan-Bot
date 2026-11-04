@@ -382,3 +382,26 @@
 - _merge_recent_recall 列表顺序改为「新召回(高→低) + 保留条目(远→近)」，经 prompts reversed() 注入后提示词顺序变成「保留条目(近→远) + 新召回(低→高)」，与预期的 1 4' 3' 2' 1' / 1 1' 3'' 2'' 1'' 一致。
 - retrieve_memories 额外写 context["recall_new_results"]（本轮原始召回），decide_reply_action 的 _compute_rag_interest 改用它，群聊兴趣度不再被保留条目拉偏。
 - 状态：语法 + 顺序/去重脚本验证通过，未实跑。
+
+## 2026-11-04 19:2x 断网真因：mihomo IPv4 出站失效（非休眠）+ 网络看门狗
+- 机主报「一两小时后 LLM/图片下载/CLI 凭证全 connection timeout，NapCat 正常，开屏输密码就恢复」。
+- 取证推翻休眠：/sys/power/suspend_stats/success=0、up 2 天 6 小时、19:12 期间 30s 心跳无空洞；
+  journal 无 suspend；DPMS 早已禁用。
+- 真正现象（19:12:00–19:13:27）：Yuki 连 api.deepseek.com 全部 ConnectTimeout；mihomo 日志显示这些
+  连接已被规则命中（GeoIP(cn)→DIRECT）却无 dial 结果；同一分钟 cli-proxy-api(8317) 的上游
+  daily-cloudcode-pa.googleapis.com TLS 握手超时。即「经 TUN 的 IPv4 新建连接全挂」。
+- NapCat 假正常：QQ 走 IPv6（240e:...）直连，不经 TUN，且既有长连接不断。
+- 恢复点：19:13:34 解锁 → 19:13:36 mihomo `Start initial configuration`（重载）→ 立刻恢复；
+  11-04 全天仅此一次重载，前几次「开屏就好」同源。
+- 触发线索：18:46–18:48 WiFi 在 4 个 AP 间连续漫游（`Connection to AP ... lost`）；mihomo 历史上
+  多次 `[TUN] default interface lost by monitor`。结论：WiFi 变化后 mihomo 默认出站接口失效且不自愈。
+- 方案（已落地）：deploy/netwatch.py（root，systemd `yuki-netwatch.service`，30s 探活 direct/proxy
+  两条路径）+ NM dispatcher `90-mihomo-reload`（网卡 up/down/DHCP 变化后 debounce 60s 重载）。
+  修复阶梯：重载 mihomo → 清 DNS/fake-ip 后重载 →（仅链路层异常时）nmcli reapply/重连 WiFi；
+  限流 90s/12 次每小时；触发时快照写 logs/netwatch_diag_*.json，日志 logs/netwatch.log。
+- 验证：reload API 204 且 27ms 生效；dispatcher 事件可触发重载、第二次被 debounce 拦；
+  模拟失败跑通整条阶梯并正确判定「链路层正常→只重置 mihomo」；服务 enabled+active，探活 200ms 级。
+- 副产品结论：mihomo 重载不丢节点选择（仍是 🇯🇵 日本W04）；不再监听 connectivity-change（重载本身会
+  触发该事件，会形成循环）。
+- 状态：线上生效。若下次仍断且日志显示「重载后探活仍失败」，说明问题在 mihomo 之外（节点/校园网），
+  快照文件里有当时的 route/AP/并发连接数可直接判定。

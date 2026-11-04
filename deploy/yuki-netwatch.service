@@ -1,0 +1,16 @@
+[Unit]
+Description=Yuki 网络看门狗（mihomo IPv4 出站探活 + 自动重载）
+Documentation=file:///home/asumi/Yuki/deploy/README.md
+After=network-online.target NetworkManager.service docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /home/asumi/Yuki/deploy/netwatch.py watch
+Restart=always
+RestartSec=15
+StandardOutput=append:/home/asumi/Yuki/logs/netwatch.out
+StandardError=append:/home/asumi/Yuki/logs/netwatch.out
+
+[Install]
+WantedBy=multi-user.target

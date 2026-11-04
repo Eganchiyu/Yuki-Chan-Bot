@@ -1,0 +1,15 @@
+#!/bin/sh
+# 网卡/漫游/DHCP 变化后让 mihomo 重载配置。
+# 原因：mihomo 的 TUN 默认出站接口在 WiFi 漫游后会失效，重载前所有 IPv4 新建连接全部超时。
+# 不监听 connectivity-change：mihomo 重载本身会触发该事件，会形成重载循环；
+# 隧道健康由 yuki-netwatch.service 探活负责。
+[ -n "$1" ] && [ "$1" = "lo" ] && exit 0
+case "$2" in
+  up|down|dhcp4-change|dhcp6-change) ;;
+  *) exit 0 ;;
+esac
+(
+  sleep 5
+  /usr/bin/python3 /home/asumi/Yuki/deploy/netwatch.py reload --debounce 60 \
+    >>/home/asumi/Yuki/logs/netwatch.log 2>&1
+) &

@@ -202,3 +202,49 @@ bash deploy/run.sh
   `runner_unavailable` 明确失败，不会静默卡住（容器侧 90 秒内无动静即判定）。
 - 不能蓝绿并行：`data/yuki.lock` 单实例锁 + `yuki_memory` 是文件锁型 ChromaDB。
 - `.dockerignore` 排除了 `models/`，模型以只读卷挂载（不重复占盘）。
+
+## 网络看门狗（mihomo IPv4 出站自愈）
+
+**问题**：机器长时间无人值守后会进入「NapCat 正常、LLM/图片下载/CLI 凭证刷新全部 connection
+timeout」的状态。2026-11-04 现场取证结论：
+
+- 与休眠无关（`/sys/power/suspend_stats/success=0`，`up` 连续 2 天多，Yuki 30s 心跳无空洞）。
+- NapCat 之所以正常，是因为 QQ 走 IPv6 直连、且既有长连接不断；经 mihomo TUN 的 IPv4
+  **新建**连接全部超时（mihomo 日志里这些连接已被规则命中，但 dial 长期无结果）。
+- 19:13:36 mihomo 自动重载配置后同样条件下立刻恢复；触发线索是 18:46–18:48 WiFi 连续漫游
+  4 个 AP，而 mihomo 此前多次报 `[TUN] default interface lost by monitor`。
+
+**做法**：
+
+- `deploy/netwatch.py`（root）每 30s 对两条路径做完整 HTTPS 探活：
+  `direct`=api.deepseek.com（TUN→国内直连）、`proxy`=www.gstatic.com（TUN→代理节点）。
+  连续失败即逐级升级：重载 mihomo 配置 → 清 DNS/fake-ip 缓存后重载 →
+  （仅当无默认路由/无 IPv4/NM 未连接时）`nmcli device reapply` → 重连 WiFi。
+  限流：两次修复间隔 ≥90s，每小时 ≤12 次。触发时把完整现场快照写到
+  `logs/netwatch_diag_<时间>.json`，日志在 `logs/netwatch.log`。
+- NetworkManager dispatcher `90-mihomo-reload`：网卡 up/down/DHCP 变化后 5s 重载 mihomo
+  （debounce 60s），把「WiFi 变了但 clash 没刷新」这一根因堵住。不监听
+  `connectivity-change`，避免与重载互相触发。
+
+**安装/运维（宿主 root）**：
+
+```bash
+sudo cp deploy/yuki-netwatch.service /etc/systemd/system/
+sudo cp deploy/90-mihomo-reload /etc/NetworkManager/dispatcher.d/
+sudo chmod 755 /etc/NetworkManager/dispatcher.d/90-mihomo-reload
+sudo systemctl daemon-reload && sudo systemctl enable --now yuki-netwatch
+systemctl status yuki-netwatch --no-pager
+tail -f logs/netwatch.log
+```
+
+手工排查：
+
+```bash
+sudo python3 deploy/netwatch.py probe    # 单次探活，失败 exit 1
+sudo python3 deploy/netwatch.py diag     # 路由/DNS/AP/并发连接/mihomo 快照
+sudo python3 deploy/netwatch.py reload   # 只重载 mihomo
+```
+
+依赖：mihomo 的 external-controller 走 unix socket（`/tmp/mihomo-party-*.sock`，
+mihomo-party 每次重启会换名字，脚本按最新 mtime 自动发现）；配置路径默认
+`~/.config/mihomo-party/work/config.yaml`。
