@@ -21,7 +21,7 @@ import os
 import urllib.error
 import urllib.request
 
-ROOT = os.environ.get("YUKI_ROOT", "/home/asumi/Yuki")
+ROOT = os.environ.get("YUKI_ROOT", os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 MAX_DIFF_CHARS = 40000
 MAX_FILE_DIFF_CHARS = 15000
 

@@ -32,7 +32,7 @@ import urllib.error
 import urllib.request
 from datetime import datetime
 
-ROOT = os.environ.get("YUKI_ROOT", "/home/asumi/Yuki")
+ROOT = os.environ.get("YUKI_ROOT", os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, ROOT)
 
 # 按文件加载准则模块，避免触发 core/__init__.py（万一将来引入重依赖，宿主环境不完整）

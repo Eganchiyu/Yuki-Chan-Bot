@@ -21,7 +21,7 @@ import tarfile
 import time
 from datetime import datetime
 
-ROOT = os.environ.get("YUKI_ROOT", "/home/asumi/Yuki")
+ROOT = os.environ.get("YUKI_ROOT", os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 LOGS = os.path.join(ROOT, "logs")
 ARCHIVE = os.path.join(LOGS, "archive")
 STAGING = os.path.join(ROOT, "staging")

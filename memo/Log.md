@@ -463,4 +463,12 @@
 - 重写 `docs/troubleshooting.md`、`docs/changelog.md` 并微调 `docs/evolution-charter.md`，彻底清除 `rm -rf yuki_memory/`、`data/yuki_log.txt`、`ws_connection.py` 等废旧断言。
 - 状态：`pytest -q` 61 passed，已提交 git。
 
+## 2026-11-04 重写 setup.py、去除部署脚本硬编码并补充大众/Agent 部署指南
+- 重写 `setup.py`：消除顶部第三方库硬导入（裸 Python 环境可直接运行 `--help` / `--check --json`）；支持 `uv sync` 或通过标准库 `tomllib` 解析 `pyproject.toml` 调用 `pip` 安装；对齐最新 `config.py` 字段（移除旧 `llm_platform` 等废弃字段，补齐 `connection.qq` 等）；新增 `-y / --non-interactive`、CLI 快捷参数、`--set key.path=val`、环境变量注入及 `--check [--json]` 环境/依赖/模型/配置/NapCat端口连通性自检。
+- `pyproject.toml`：`requires-python` 从 `==3.11.15` 放宽为 `>=3.11`。
+- `deploy/`（`run.sh`、`verify.sh`、`install-service.sh`、`supervisor.py`、`maid_runner.py`、`retention.py`、`reviewer.py`）：默认 `ROOT` 改为动态解析当前仓库根目录，保留 `YUKI_ROOT` 环境变量覆盖。
+- 更新 `README.md`：重写大众部署指南（本地直跑 + Docker 进阶），新增完整的「Agent 自动化部署指南（Agent向文档）」5 步非交互式 SOP，同步现役 12 个工具与最新文档索引。
+- 状态：裸 Python 与 conda 环境验证 `--check` 通过，`pytest -q` 61 passed。
+
+
 

@@ -8,8 +8,9 @@
 #   sudo systemctl daemon-reload
 set -euo pipefail
 
-ROOT="${YUKI_ROOT:-/home/asumi/Yuki}"
-USER_NAME="${YUKI_USER:-asumi}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT="${YUKI_ROOT:-$(dirname "$SCRIPT_DIR")}"
+USER_NAME="${YUKI_USER:-${SUDO_USER:-$(id -un)}}"
 
 echo "[1/5] 安装 systemd 服务（自进化守护 + 小女仆执行器）"
 sudo sed -e "s|/home/asumi/Yuki|$ROOT|g" -e "s|^User=.*|User=$USER_NAME|" \

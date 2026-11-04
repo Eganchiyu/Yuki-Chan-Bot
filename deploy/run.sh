@@ -8,7 +8,8 @@
 #   - --network host：容器内 127.0.0.1:3001 直连宿主 NapCat，无需额外网络配置
 set -euo pipefail
 
-ROOT="${YUKI_ROOT:-/home/asumi/Yuki}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT="${YUKI_ROOT:-$(dirname "$SCRIPT_DIR")}"
 IMAGE="${YUKI_IMAGE:-yuki:base}"
 NAME="${YUKI_CONTAINER:-yuki}"
 

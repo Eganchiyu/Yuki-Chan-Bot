@@ -31,7 +31,7 @@ import sys
 import time
 from datetime import datetime
 
-ROOT = os.environ.get("YUKI_ROOT", "/home/asumi/Yuki")
+ROOT = os.environ.get("YUKI_ROOT", os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 TASKS = os.path.join(ROOT, "tasks", "dsh")
 WORKSPACE = os.path.join(ROOT, "workspace")
 LOGS = os.path.join(ROOT, "logs")

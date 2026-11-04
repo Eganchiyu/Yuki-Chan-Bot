@@ -9,7 +9,8 @@
 # 用法: deploy/verify.sh [--quiet]
 set -uo pipefail
 
-ROOT="${YUKI_ROOT:-/home/asumi/Yuki}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT="${YUKI_ROOT:-$(dirname "$SCRIPT_DIR")}"
 IMAGE="${YUKI_IMAGE:-yuki:base}"
 QUIET="${1:-}"
 
