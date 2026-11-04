@@ -284,6 +284,10 @@ maid_task_queue: asyncio.Queue     # 小女仆任务队列
   把「重启完成」待发消息落盘到 `data/restart_notice.json`，再把 `{"type": "restart"}`
   写进 `staging/`，交给宿主 `deploy/supervisor.py` 跑 `deploy/run.sh` 重建容器并探活；
   新进程连上 NapCat 后补发「重启完成」到原会话（10 分钟内有效）
+- 主人专用 `/刷新`（群聊与私聊均可）：容器内只写 `data/netforce_pending/<id>.json`，
+  由宿主 systemd `yuki-netforce.path` 触发 `deploy/netwatch.py force` 做真实探活
+  （direct/proxy 两条路径，失败才重载 mihomo），结果经 `data/netforce_result.json`
+  回到发起指令的那个会话；成功回「测试已连通」，失败带上不通的路径与已尝试步骤
 - **双模路由**：群聊模式下同时接收主人私聊消息，路由为 `master_private` 模式
 - 戳一戳：只处理戳到机器人自己的事件，按普通消息入队（不插队）
 - 快速唤醒：命中机器人名字或 @ 到机器人时，跳过防抖并强制回复

@@ -405,3 +405,20 @@
   触发该事件，会形成循环）。
 - 状态：线上生效。若下次仍断且日志显示「重载后探活仍失败」，说明问题在 mihomo 之外（节点/校园网），
   快照文件里有当时的 route/AP/并发连接数可直接判定。
+
+## 2026-11-04 19:3x QQ `/刷新` 指令（真实探活 + 原会话回报）
+- 需求：NapCat 不会断，主人用 `/刷新` 手动刷网络；在哪个会话发就在哪里回；实际测试连通性后回「测试已连通」。
+- 容器侧（modules/QQNapcatListen/listen_main.py）：`/刷新` 加入 `/关闭 // 开启 // 重启` 同款指令集（master 限定，
+  非 master 回「只有哥哥大人才能刷新网络哦！」）；群聊走 handle_group_switch，私聊新增
+  handle_private_command（只认 /刷新，其余指令行为不变）。容器不碰网络：写
+  data/netforce_pending/<id>.json，轮询 data/netforce_result.json（id 匹配），45s 超时兜底。
+- 宿主侧（deploy/netwatch.py 新增 force 子命令）：systemd `yuki-netforce.path`
+  （DirectoryNotEmpty=data/netforce_pending）触发 `yuki-netforce.service` → 跑两条路径 HTTPS 探活；
+  正常就直接回写结果（不重载），失败才走修复阶梯（限流同 watch 循环），回写 ok/probes/actions。
+- 回复文案：成功「测试已连通（direct 通，proxy 通）」；失败「没连通（direct 不通，proxy 通），已尝试：…」；
+  超时「宿主看门狗没有响应，刷新超时了…」。
+- 验证：宿主侧真实请求 → path 单元 2s 内触发、结果回写；模拟失败分支跑完整阶梯并回写 ok=false；
+  容器内以假 gateway 跑通群聊/私聊/非 master/普通消息四种路径，回复的 chat_id 与 mode 均与来源一致；
+  tests/test_netforce_command.py 5 项通过，napcat_inbound/gateway/modes 14 项仍通过。
+- 已按 supervisor 通道重启容器（快照 20261104_193404）让指令生效，health ok、napcat_online=true。
+- 提交 1b689ac；docs/architecture.md 3.10 补了说明。
