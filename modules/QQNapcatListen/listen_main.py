@@ -30,6 +30,12 @@ _RESTART_NOTICE_FILE = os.path.join(_ROOT, "data", "restart_notice.json")
 RESTART_NOTICE_MAX_AGE = 600  # 超过 10 分钟就当作过期，避免隔很久才补发
 MAX_RESTART_PER_HOUR = int(os.environ.get("YUKI_MAX_RESTART_PER_HOUR", 5))
 
+# /刷新 走宿主看门狗：容器内只写请求文件，由 systemd 的 yuki-netforce.path 触发
+# deploy/netwatch.py 做真实探活（必要时重载 mihomo），结果写回 result 文件。
+_NETFORCE_PENDING_DIR = os.path.join(_ROOT, "data", "netforce_pending")
+_NETFORCE_RESULT_FILE = os.path.join(_ROOT, "data", "netforce_result.json")
+NETFORCE_WAIT_SECONDS = 45.0
+
 
 async def start_background_tasks(gateway, pipeline, mode: str):
     """启动后台常驻任务。"""
@@ -147,6 +153,83 @@ def request_container_restart(reason: str = "") -> str:
     return task_dir
 
 
+def _write_netforce_request() -> str:
+    """投递「刷新网络」请求给宿主看门狗，返回请求 id。"""
+    os.makedirs(_NETFORCE_PENDING_DIR, exist_ok=True)
+    req_id = f"{int(time.time() * 1000)}-{os.getpid()}"
+    path = os.path.join(_NETFORCE_PENDING_DIR, f"{req_id}.json")
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump({"id": req_id, "ts": time.time(), "source": "qq-/刷新"}, f, ensure_ascii=False)
+    os.replace(tmp, path)
+    return req_id
+
+
+def _read_netforce_result(req_id: str) -> dict | None:
+    """读取宿主回写的刷新结果，id 不匹配视为还没轮到本次请求。"""
+    try:
+        with open(_NETFORCE_RESULT_FILE, encoding="utf-8") as f:
+            data = json.load(f)
+    except FileNotFoundError:
+        return None
+    except Exception as e:
+        logger.warning(f"[NetForce] 读取刷新结果失败: {e}")
+        return None
+    return data if str(data.get("id")) == req_id else None
+
+
+async def _wait_netforce_result(req_id: str, timeout: float = NETFORCE_WAIT_SECONDS):
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        data = _read_netforce_result(req_id)
+        if data:
+            return data
+        await asyncio.sleep(1.0)
+    return None
+
+
+def _format_netforce_reply(result: dict) -> str:
+    probes = result.get("probes") or {}
+
+    def state(name: str) -> str:
+        item = probes.get(name) or {}
+        return f"{name} {'通' if item.get('ok') else '不通'}"
+
+    detail = "，".join(state(name) for name in ("direct", "proxy") if probes.get(name))
+    if result.get("ok"):
+        return f"测试已连通（{detail}）"
+    actions = result.get("actions") or []
+    tail = f"，已尝试：{'、'.join(actions)}" if actions else ""
+    return f"没连通（{detail}）{tail}"
+
+
+async def _refresh_flow(gateway, chat_id, mode: str = "group") -> None:
+    """手动刷新网络：交给宿主看门狗真实探活（必要时重载 mihomo），结果回原会话。"""
+    try:
+        await gateway.send(chat_id, "正在测试网络连通性…", mode=mode)
+    except Exception as e:
+        logger.error(f"[NetForce] 刷新前通知失败: {e}")
+
+    try:
+        req_id = _write_netforce_request()
+    except Exception as e:
+        logger.error(f"[NetForce] 投递刷新请求失败: {e}")
+        await gateway.send(chat_id, "刷新请求没投递出去…等下一次自动巡检吧", mode=mode)
+        return
+
+    result = await _wait_netforce_result(req_id)
+    if result is None:
+        logger.warning(f"[NetForce] 请求 {req_id} 等待超时（宿主看门狗未响应）")
+        text = "宿主看门狗没有响应，刷新超时了…等下一次自动巡检吧"
+    else:
+        text = _format_netforce_reply(result)
+        logger.info(f"[NetForce] 请求 {req_id} 结果: {json.dumps(result, ensure_ascii=False)}")
+    try:
+        await gateway.send(chat_id, text, mode=mode)
+    except Exception as e:
+        logger.error(f"[NetForce] 刷新结果发送失败: {e}")
+
+
 def _write_restart_notice(chat_id, text: str, mode: str = "group") -> None:
     """落盘「重启完成」待发消息，供新进程启动后补发到原会话。"""
     payload = {
@@ -234,9 +317,9 @@ async def _restart_flow(gateway, group_id):
 
 
 def handle_group_switch(pipeline, gateway, group_id, gid_str, user_id, raw_msg):
-    """处理群聊开关/重启指令，返回 True 表示已拦截。"""
+    """处理群聊开关/重启/刷新指令，返回 True 表示已拦截。"""
     msg_clean = raw_msg.strip()
-    if msg_clean not in {"/关闭", "/开启", "/重启"}:
+    if msg_clean not in {"/关闭", "/开启", "/重启", "/刷新"}:
         return False
 
     if not cfg.is_master_qq(user_id):
@@ -244,8 +327,13 @@ def handle_group_switch(pipeline, gateway, group_id, gid_str, user_id, raw_msg):
             "/关闭": "只有哥哥大人才能关掉我哦！",
             "/开启": "只有哥哥大人才能唤醒我哦！",
             "/重启": "只有哥哥大人才能重启我哦！",
+            "/刷新": "只有哥哥大人才能刷新网络哦！",
         }[msg_clean]
         asyncio.create_task(gateway.send(group_id, hint, mode="group"))
+        return True
+
+    if msg_clean == "/刷新":
+        asyncio.create_task(_refresh_flow(gateway, group_id, mode="group"))
         return True
 
     if msg_clean == "/重启":
@@ -265,6 +353,17 @@ def handle_group_switch(pipeline, gateway, group_id, gid_str, user_id, raw_msg):
         asyncio.create_task(
             gateway.send(group_id, f"{cfg.ROBOT_NAME.title()} 已进入休眠模式，不打扰大家啦~", mode="group")
         )
+    return True
+
+
+def handle_private_command(gateway, user_id, raw_msg) -> bool:
+    """私聊侧指令：目前只有 /刷新（/开启 /关闭 /重启 仍只在群里生效）。"""
+    if raw_msg.strip() != "/刷新":
+        return False
+    if not cfg.is_master_qq(user_id):
+        asyncio.create_task(gateway.send(user_id, "只有哥哥大人才能刷新网络哦！", mode="private"))
+        return True
+    asyncio.create_task(_refresh_flow(gateway, user_id, mode="private"))
     return True
 
 
@@ -353,6 +452,8 @@ async def napcat_listen(gateway, pipeline, mode: str = "mixed"):
                 user_id = data.get("user_id")
 
                 if msg_type == "private" and mode in {"private", "group", "mixed"}:
+                    if handle_private_command(gateway, user_id, raw_msg):
+                        continue
                     await feed_message(
                         pipeline,
                         gateway,

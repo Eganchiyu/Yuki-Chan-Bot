@@ -1,0 +1,9 @@
+[Unit]
+Description=监听 QQ /刷新 请求目录
+
+[Path]
+DirectoryNotEmpty=/home/asumi/Yuki/data/netforce_pending
+Unit=yuki-netforce.service
+
+[Install]
+WantedBy=paths.target

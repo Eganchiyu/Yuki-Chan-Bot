@@ -1,0 +1,9 @@
+[Unit]
+Description=Yuki 手动刷新网络（处理 QQ /刷新 请求）
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /home/asumi/Yuki/deploy/netwatch.py force
+StandardOutput=append:/home/asumi/Yuki/logs/netwatch.out
+StandardError=append:/home/asumi/Yuki/logs/netwatch.out

@@ -14,6 +14,7 @@
   netwatch.py probe                 单次探活，任一失败 exit 1
   netwatch.py reload [--debounce N] 仅重载 mihomo（NetworkManager dispatcher 调用）
   netwatch.py diag                  打印当前网络/mihomo 诊断快照
+  netwatch.py force                 处理 QQ /刷新 请求（systemd path 单元触发）
 """
 
 from __future__ import annotations
@@ -31,6 +32,9 @@ ROOT = "/home/asumi/Yuki"
 LOG_PATH = f"{ROOT}/logs/netwatch.log"
 STATUS_PATH = "/run/yuki-netwatch.json"
 RELOAD_STAMP = "/run/yuki-netwatch.last-reload"
+# QQ /刷新 指令的交接目录（容器与宿主同一个绝对路径）
+FORCE_PENDING_DIR = f"{ROOT}/data/netforce_pending"
+FORCE_RESULT_PATH = f"{ROOT}/data/netforce_result.json"
 
 MIHOMO_SOCK_GLOB = "/tmp/mihomo-party-*.sock"
 MIHOMO_CONFIG = "/home/asumi/.config/mihomo-party/work/config.yaml"
@@ -303,16 +307,19 @@ def dump_diagnostics() -> str:
     return summary
 
 
-def remediate(results: dict[str, tuple[bool, str]]) -> None:
+def remediate(results: dict[str, tuple[bool, str]]) -> tuple[bool, list[str], dict]:
+    """跑一遍修复阶梯，返回 (是否恢复, 已执行步骤, 最后一次探活结果)。"""
+    actions: list[str] = []
     allowed, why = remediation_allowed()
     if not allowed:
         log(f"[修复] 跳过：{why}")
-        return
+        return False, [f"跳过（{why}）"], results
     _gap_state["last"] = time.time()
     _gap_state["hist"].append(_gap_state["last"])
     log("[修复] 触发：" + dump_diagnostics())
     for label, action in remediation_steps():
         log(f"[修复] 执行：{label}")
+        actions.append(label)
         try:
             action()
         except Exception as exc:  # noqa: BLE001
@@ -323,9 +330,75 @@ def remediate(results: dict[str, tuple[bool, str]]) -> None:
             if all(ok for ok, _ in results.values()):
                 log(f"[修复] 恢复：{label} 后探活全部正常 " +
                     json.dumps({k: v[1] for k, v in results.items()}, ensure_ascii=False))
-                return
+                return True, actions, results
+    results = probe_all()
     log("[修复] 所有步骤均未恢复，等待下一轮：" +
-        json.dumps({k: v[1] for k, v in probe_all().items()}, ensure_ascii=False))
+        json.dumps({k: v[1] for k, v in results.items()}, ensure_ascii=False))
+    return False, actions, results
+
+
+def _take_force_requests() -> list[dict]:
+    """取走容器投递的手动刷新请求（处理完即删，避免重复触发）。"""
+    try:
+        names = sorted(os.listdir(FORCE_PENDING_DIR))
+    except OSError:
+        return []
+    reqs = []
+    for name in names:
+        if not name.endswith(".json"):
+            continue
+        path = os.path.join(FORCE_PENDING_DIR, name)
+        req = {"id": name[:-5]}
+        try:
+            with open(path, encoding="utf-8") as f:
+                req.update(json.load(f))
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+        reqs.append(req)
+    return reqs
+
+
+def write_force_result(req_id: str, ok: bool, results: dict, actions: list[str]) -> None:
+    payload = {
+        "id": req_id,
+        "ok": ok,
+        "probes": {k: {"ok": v[0], "detail": v[1]} for k, v in results.items()},
+        "actions": actions,
+        "ts": time.time(),
+        "time": time.strftime("%Y-%m-%d %H:%M:%S"),
+    }
+    tmp = FORCE_RESULT_PATH + ".tmp"
+    try:
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False)
+        os.replace(tmp, FORCE_RESULT_PATH)
+    except OSError as exc:
+        log(f"[刷新] 结果写入失败: {exc}")
+
+
+def cmd_force() -> int:
+    """手动刷新（QQ /刷新）：先探活，正常就直接回报；不正常走修复阶梯。"""
+    reqs = _take_force_requests()
+    if not reqs:
+        return 0
+    req_id = str(reqs[-1].get("id"))
+    log(f"[刷新] 收到手动刷新请求 {req_id}（待处理 {len(reqs)} 条）")
+    results = probe_all()
+    ok = all(v[0] for v in results.values())
+    actions: list[str] = []
+    if ok:
+        log("[刷新] 探活已正常，不重载 mihomo")
+    else:
+        log("[刷新] 探活失败：" +
+            json.dumps({k: v[1] for k, v in results.items()}, ensure_ascii=False))
+        ok, actions, results = remediate(results)
+    write_force_result(req_id, ok, results, actions)
+    log(f"[刷新] 回写结果 id={req_id} ok={ok} actions={actions}")
+    return 0
 
 
 def write_status(payload: dict) -> None:
@@ -411,6 +484,8 @@ def main(argv: list[str]) -> int:
         return cmd_reload(debounce)
     if cmd == "diag":
         return cmd_diag()
+    if cmd == "force":
+        return cmd_force()
     print(__doc__)
     return 2
 
