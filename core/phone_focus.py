@@ -240,11 +240,20 @@ phone_focus_manager = PhoneFocusManager()
 
 async def phone_start_tool(context, goal: str = "") -> ToolResult:
     """进入手机聚焦模式，返回当前手机界面与已存组合技列表。"""
+    from core.phone_driver import driver
     from core.tools.tools_phone import phone_action_tool
 
     phone_focus_manager.enter(context.chat_id, goal=goal)
     if goal:
         phone_focus_manager.record_step(context.chat_id, f"开始操作手机: {goal}")
+
+    # 进入聚焦：先点亮屏幕并解除锁屏（本机无锁屏密码，上滑即可）
+    unlocked, unlock_note = await driver.wake_and_unlock()
+    wake_line = (
+        f"唤醒/解锁: {unlock_note}"
+        if unlocked
+        else f"唤醒/解锁失败（{unlock_note}），屏幕可能仍在锁屏，可先 phone_action 上滑或按电源键再试"
+    )
 
     macros = pm.macro_store.list()
     if macros:
@@ -272,6 +281,7 @@ async def phone_start_tool(context, goal: str = "") -> ToolResult:
 
     header = (
         "【已进入手机聚焦模式】已展开 phone_action / phone_macro / phone_finish 工具，并收起其他无关工具。\n"
+        f"{wake_line}\n"
         "你在聚焦期间仍处于群聊/会话中，可随时正常发言互动；"
         "操作全部结束后请调用 phone_finish(summary=\"...\") 收起手机并写一句简短总结。\n"
         f"{macro_line}"
@@ -281,6 +291,7 @@ async def phone_start_tool(context, goal: str = "") -> ToolResult:
     data.update({
         "phone_focus": "entered",
         "goal": goal or "",
+        "unlocked": unlocked,
         "no_persist": False,
     })
     return ToolResult(

@@ -348,6 +348,71 @@ class AndroidDriver:
     async def keyevent(self, code: str) -> None:
         await self.adb(["shell", "input", "keyevent", code], timeout=15)
 
+    async def _is_screen_awake(self) -> bool:
+        try:
+            text = await self.adb_text(["shell", "dumpsys", "power"], timeout=12)
+        except Exception as exc:
+            logger.debug(f"[PhoneDriver] 读取 power 状态失败: {exc}")
+            return True
+        match = re.search(r"mWakefulness=(\w+)", text)
+        if not match:
+            return True
+        return match.group(1).lower() in {"awake", "dreaming"}
+
+    async def _is_keyguard_showing(self) -> bool:
+        try:
+            text = await self.adb_text(["shell", "dumpsys", "window"], timeout=15)
+        except Exception as exc:
+            logger.debug(f"[PhoneDriver] 读取锁屏状态失败: {exc}")
+            return False
+        if re.search(r"isKeyguardShowing=true", text):
+            return True
+        if re.search(r"mDreamingLockscreen=true", text):
+            return True
+        return bool(re.search(r"mShowingLockscreen=true", text))
+
+    async def wake_and_unlock(self) -> tuple[bool, str]:
+        """点亮屏幕并解除锁屏（本机无锁屏密码，仅需上滑）。返回 (是否已解锁, 说明)。"""
+        override = self._tp_override("_wake_and_unlock", self.wake_and_unlock)
+        if override != self.wake_and_unlock:
+            return await override()
+
+        notes: list[str] = []
+        try:
+            if await self._is_screen_awake():
+                notes.append("屏幕已亮")
+            else:
+                await self.keyevent("KEYCODE_WAKEUP")
+                notes.append("已点亮屏幕")
+                await asyncio.sleep(0.5)
+
+            if not await self._is_keyguard_showing():
+                notes.append("无锁屏")
+                return True, "、".join(notes)
+
+            await self.ensure_device()
+            w, h = self.resolve_screen_size()
+            if w <= 0 or h <= 0:
+                w, h = 1080, 2340
+            # 上滑解锁：从屏幕下方滑到上方（带拟人抖动）
+            for attempt in range(2):
+                await self.swipe(w // 2, int(h * 0.85), w // 2, int(h * 0.25), duration=260)
+                await asyncio.sleep(0.6)
+                if not await self._is_keyguard_showing():
+                    notes.append(f"上滑解锁成功(第{attempt + 1}次)")
+                    return True, "、".join(notes)
+            await self.keyevent("KEYCODE_MENU")
+            await asyncio.sleep(0.5)
+            if not await self._is_keyguard_showing():
+                notes.append("MENU 键解锁成功")
+                return True, "、".join(notes)
+            notes.append("上滑 2 次后仍在锁屏")
+            return False, "、".join(notes)
+        except Exception as exc:
+            logger.warning(f"[PhoneDriver] 唤醒/解锁异常: {exc}")
+            notes.append(f"异常: {exc}")
+            return False, "、".join(notes)
+
     async def launch(self, package: str) -> str:
         """启动 App，返回错误说明；空字符串表示成功。"""
         code, raw = await self.adb([
