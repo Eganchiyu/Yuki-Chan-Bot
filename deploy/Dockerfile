@@ -14,8 +14,9 @@ ENV PYTHONUNBUFFERED=1 \
     TZ=Asia/Shanghai
 
 # libgomp1: onnxruntime/torch 运行期依赖；libgl1+libglib2.0-0: opencv；curl: HEALTHCHECK
+# adb: 手机操作工具（phone_action）需要 adb 客户端，走 --network host 连宿主的 adb server
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        libgomp1 libgl1 libglib2.0-0 curl ca-certificates git \
+        libgomp1 libgl1 libglib2.0-0 curl ca-certificates git adb \
     && rm -rf /var/lib/apt/lists/*
 
 # 与宿主路径保持一致：容器内代码挂到同一绝对路径，file:// 引用才通

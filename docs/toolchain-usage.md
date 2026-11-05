@@ -36,10 +36,12 @@
 
 ---
 
-## 三、现役标准工具清单（12 个）
+## 三、现役标准工具清单（14 个）
 
 | 工具名 | 所在文件 | `persist_result` | 功能说明 |
 |---|---|---|---|
+| `bash` | `tools_bash.py` | `True` | Yuki 亲手执行单条 shell 命令（cwd=项目根，默认 20s、上限 60s）。输出自动脱敏 `sk-*` 等密钥；拦截 `rm -rf /`、`mkfs`、关机等防呆命令与凭证文件读取；`remember=false` 时该次输出不落历史 |
+| `phone_action` | `tools_phone.py` | `True` | 通过 adb 操作插在电脑上的手机：`inspect/tap/long_press/input/swipe/key/back/home/launch/wait`。控件树精简为 `[#编号] + 中心坐标`，`target=编号` 精准点按；动作后自动等待刷新并回传新控件树，文字过少或 `include_screenshot=true` 时附缩放并画上编号红框的截图（Set-of-Mark） |
 | `delegate_to_maid` | `tools_maid.py` | `True` | 经 `MaidCapabilityBoundary.judge()` 校验后将任务放入 `maid_task_queue`，交由宿主 DSH 后台执行 |
 | `search_diary` | `tools_diary.py` | `True` | 按 `date_str` / `keyword` 检索日记（随机抽最多 8 条）；均不填时随机翻看 8 条日记 |
 | `update_notebook` | `tools_notebook.py` | `False` | 覆盖更新全局小本本 `data/notebook.json`（上限 512 字），内容在 `build_chat_context` 中作为潜意识注入 |
@@ -73,3 +75,9 @@
 1. **实现 Handler**：在 `core/tools/tools_*.py` 中编写 `async def my_tool(context: ToolContext, ...) -> ToolResult`。阻塞 I/O 用 `asyncio.to_thread()` 包装，业务错误返回 `ToolResult.failure(content, error_code)` 而非抛异常。
 2. **注册 Spec**：在 `core/tools/tools.py` 的 `TOOL_SPECS` 中追加 `ToolSpec(...)`（并同步在 `core/tools/__init__.py` 导出 handler）。若工具输出无需留存在持久化历史中，设 `persist_result=False`。
 3. **验证测试**：运行 `~/miniconda3/envs/yuki/bin/python -m pytest tests/test_toolchain.py -q`。
+
+### 亲手操作类工具的两个约定
+
+- **动态 `no_persist`**：handler 可在 `ToolResult.data` 里返回 `no_persist=True`（`bash` / `phone_action` 的 `remember=false`），`EngineReplyService` 会跳过写历史，效果等同静态 `persist_result=False`，但由 Yuki 每次调用自行决定。
+- **历史折叠**：`core/tool_prune.py` 按会话统计连续未调用工具的轮数，达到 `tools.prune_idle_turns`（默认 2）时把历史里的 `role="tool"` 消息压成一行 `【历史操作·已折叠】…备注…` 存根，不额外调用 LLM。想调整或排查时看日志 `[ToolPrune]`。
+- **手机工具依赖**：宿主需装 platform-tools（`apt install adb`）并保持 `adb server` 运行；容器镜像已装 `adb` 客户端，靠 `--network host` 直连 5037 端口。中文输入需要手机端安装 ADBKeyboard（否则会返回 `input_failed` 提示）。

@@ -465,6 +465,66 @@ class TimingConfig:
 
 
 @dataclass
+class ToolsConfig:
+    """主模型亲手操作类工具配置（bash / 手机 ADB）"""
+    max_rounds: int = config_field(
+        8,
+        comment="单轮对话最多工具调用轮次（手机连招需要多步）",
+        section="tools"
+    )
+    bash_timeout_seconds: int = config_field(
+        20,
+        comment="bash 工具单次执行超时（秒）",
+        section="tools"
+    )
+    bash_max_timeout_seconds: int = config_field(
+        60,
+        comment="bash 工具允许的最大超时（秒）",
+        section="tools"
+    )
+    bash_max_output_chars: int = config_field(
+        4000,
+        comment="bash 输出回传给模型的最大字符数（超出保留头尾）",
+        section="tools"
+    )
+    prune_idle_turns: int = config_field(
+        2,
+        comment="连续多少轮不调用工具后，自动折叠历史里的工具原始输出",
+        section="tools"
+    )
+    adb_path: str = config_field(
+        "adb",
+        comment="adb 可执行文件路径（不在 PATH 里时填绝对路径）",
+        section="tools"
+    )
+    adb_serial: str = config_field(
+        "",
+        comment="adb 设备序列号；留空使用唯一的已连接设备",
+        section="tools"
+    )
+    phone_wait_seconds: float = config_field(
+        1.0,
+        comment="手机操作后等待界面刷新的时间（秒）",
+        section="tools"
+    )
+    phone_max_nodes: int = config_field(
+        60,
+        comment="控件树最多返回的节点数",
+        section="tools"
+    )
+    phone_screenshot_max_width: int = config_field(
+        720,
+        comment="手机截图回传模型时缩放到的最大宽度（像素）",
+        section="tools"
+    )
+    phone_screenshot_quality: int = config_field(
+        70,
+        comment="手机截图 JPEG 质量（1-100）",
+        section="tools"
+    )
+
+
+@dataclass
 class GitHubMonitorRepoConfig:
     """GitHub 监控仓库配置"""
     owner: str = config_field(
@@ -629,6 +689,11 @@ class Config:
         TimingConfig,
         comment="时间/超时配置",
         section="timing"
+    )
+    tools: ToolsConfig = config_field_factory(
+        ToolsConfig,
+        comment="主模型亲手操作类工具配置",
+        section="tools"
     )
     github_monitor: GitHubMonitorConfig = config_field_factory(
         GitHubMonitorConfig,
@@ -1162,6 +1227,7 @@ _SECTION_HEADERS = {
     "rag": "# ================= RAG 记忆配置 =================",
     "paths": "# ================= 本地文件路径配置 =================\n# 均为相对项目根目录的路径",
     "timing": "# ================= 时间/超时配置 =================",
+    "tools": "# ================= 亲手操作类工具（bash / 手机 ADB） =================",
     "energy": "# ================= 精力值系统配置 =================",
     "attention": "# ================= 注意力/响应配置 =================",
     "debug": "# ================= 调试配置 =================",

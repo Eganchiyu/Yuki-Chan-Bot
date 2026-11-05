@@ -1,0 +1,199 @@
+"""亲手操作类工具（bash / 手机 ADB）与工具历史折叠的单元测试。"""
+import io
+import json
+from types import SimpleNamespace
+
+import pytest
+from PIL import Image
+
+from core.tool_prune import STUB_PREFIX, ToolHistoryPruner
+from core.toolchain import ToolContext, ToolRuntime
+from core.tools import TOOL_HANDLERS, TOOL_SPECS
+from core.tools.tools_bash import bash_tool
+from core.tools.tools_phone import _annotate_screenshot, _compact_tree, _format_tree, phone_action_tool
+
+SAMPLE_XML = """<?xml version="1.0" encoding="UTF-8"?>
+<hierarchy rotation="0">
+  <node class="android.widget.FrameLayout" package="com.sankuai.meituan" bounds="[0,0][1080,2400]"
+        clickable="false" text="" content-desc="">
+    <node class="android.widget.TextView" bounds="[420,400][660,470]" clickable="false" text="外卖" content-desc="">
+      <node class="android.widget.TextView" bounds="[430,410][650,460]" clickable="false" text="外卖" content-desc=""/>
+    </node>
+    <node class="android.widget.EditText" bounds="[100,180][980,260]" clickable="true"
+          text="搜索商家" content-desc=""/>
+    <node class="android.widget.ImageView" bounds="[900,2180][1020,2300]" clickable="true"
+          text="" content-desc="购物车"/>
+    <node class="android.view.View" bounds="[0,0][1080,2400]" clickable="true" text="" content-desc=""/>
+    <node class="android.widget.TextView" bounds="[0,300][1080,360]" clickable="false"
+          text="隐藏节点" content-desc="" visible-to-user="false"/>
+  </node>
+</hierarchy>"""
+
+
+def _context(mode="group"):
+    runtime = ToolRuntime(
+        sender=None, yuki_state=SimpleNamespace(), image_store=None
+    )
+    return ToolContext(
+        chat_id="c1", mode=mode, session=[], combined_text="", runtime=runtime, metadata={}
+    )
+
+
+# ---------- 注册表 ----------
+
+def test_hands_on_tools_registered():
+    names = {spec.name for spec in TOOL_SPECS}
+    assert {"bash", "phone_action"} <= names
+    assert "bash" in TOOL_HANDLERS and "phone_action" in TOOL_HANDLERS
+
+
+def test_phone_schema_has_action_enum():
+    spec = next(s for s in TOOL_SPECS if s.name == "phone_action")
+    assert "inspect" in spec.parameters["properties"]["action"]["enum"]
+
+
+# ---------- bash ----------
+
+async def test_bash_runs_command():
+    result = await bash_tool(_context(), "echo hello-hands")
+    assert result.success is True
+    assert "hello-hands" in result.content
+    assert result.data["no_persist"] is False
+
+
+async def test_bash_remember_false_marks_no_persist():
+    result = await bash_tool(_context(), "echo temp", remember=False)
+    assert result.data["no_persist"] is True
+
+
+async def test_bash_rejects_destructive_command():
+    result = await bash_tool(_context(), "rm -rf /")
+    assert result.success is False
+    assert result.error == "command_rejected"
+
+
+async def test_bash_rejects_credential_read():
+    result = await bash_tool(_context(), "cat ~/.dsh/.credentials.yaml")
+    assert result.success is False
+    assert result.error == "command_rejected"
+
+
+async def test_bash_redacts_secret_output():
+    result = await bash_tool(_context(), "echo sk-abcdef1234567890ab")
+    assert "sk-abcdef1234567890ab" not in result.content
+    assert "sk-***" in result.content
+
+
+async def test_bash_timeout_kills_command():
+    result = await bash_tool(_context(), "sleep 5", timeout=1)
+    assert result.success is False
+    assert result.error == "timeout"
+
+
+async def test_bash_missing_command():
+    result = await bash_tool(_context(), "   ")
+    assert result.error == "missing_command"
+
+
+# ---------- 控件树 ----------
+
+def test_compact_tree_numbers_nodes_and_dedupes():
+    tree = _compact_tree(SAMPLE_XML, max_nodes=60)
+    assert tree["package"] == "com.sankuai.meituan"
+    assert tree["size"] == (1080, 2400)
+    labels = [node["label"] for node in tree["nodes"]]
+    # 同文案的子节点被父节点吸收，隐藏节点不出现
+    assert labels.count("外卖") == 1
+    assert "隐藏节点" not in labels
+    assert [node["index"] for node in tree["nodes"]] == list(range(1, len(tree["nodes"]) + 1))
+    # 编号带中心坐标，模型可以直接 target=编号
+    first = tree["nodes"][0]
+    assert (first["cx"], first["cy"]) == (540, 435)
+
+
+def test_compact_tree_respects_max_nodes():
+    tree = _compact_tree(SAMPLE_XML, max_nodes=2)
+    assert len(tree["nodes"]) == 2
+
+
+def test_format_tree_contains_index_and_coords():
+    text = _format_tree(_compact_tree(SAMPLE_XML, 60))
+    assert "[#1]" in text and "@(" in text and "com.sankuai.meituan" in text
+
+
+def test_annotate_screenshot_draws_and_shrinks():
+    buf = io.BytesIO()
+    Image.new("RGB", (1080, 2400), (20, 20, 30)).save(buf, "PNG")
+    jpeg = _annotate_screenshot(buf.getvalue(), _compact_tree(SAMPLE_XML, 60))
+    assert jpeg and jpeg.startswith(b"\xff\xd8")
+    image = Image.open(io.BytesIO(jpeg))
+    assert image.width <= 720
+
+
+async def test_phone_reports_missing_adb(monkeypatch):
+    async def _boom(*args, **kwargs):
+        raise FileNotFoundError("adb")
+
+    monkeypatch.setattr("core.tools.tools_phone._adb", _boom)
+    result = await phone_action_tool(_context(), action="inspect")
+    assert result.success is False
+    assert result.error == "device_unavailable"
+    assert "adb" in result.content
+
+
+# ---------- 历史折叠 ----------
+
+class _FakeHistory:
+    def __init__(self, session):
+        self.session = session
+
+    def get_session(self, chat_id):
+        return json.loads(json.dumps(self.session))
+
+    def replace_session(self, chat_id, session):
+        self.session = json.loads(json.dumps(session))
+        return self.session
+
+
+def _tool_message():
+    return {
+        "role": "tool",
+        "name": "phone_action",
+        "tool_call_id": "call_1",
+        "content": json.dumps({
+            "success": True,
+            "content": "[#1] 很长的控件树" * 100,
+            "data": {"action": "tap", "steps": ["tap #1(外卖)"], "note": "已打开外卖页"},
+            "error": "",
+        }, ensure_ascii=False),
+    }
+
+
+def test_pruner_folds_after_idle_turns():
+    history = _FakeHistory([{"role": "user", "content": "看一下手机"}, _tool_message()])
+    pruner = ToolHistoryPruner(history, idle_turns=2)
+
+    assert pruner.after_turn("c1", True) == 0
+    assert pruner.after_turn("c1", False) == 0  # 第 1 轮没工具：还留着
+    assert pruner.after_turn("c1", False) == 1  # 第 2 轮没工具：折叠
+
+    content = history.session[1]["content"]
+    assert content.startswith(STUB_PREFIX)
+    assert "已打开外卖页" in content
+    assert len(content) < 260
+    assert history.session[1].get("pruned") is True
+
+
+def test_pruner_keeps_history_while_tools_running():
+    history = _FakeHistory([_tool_message()])
+    pruner = ToolHistoryPruner(history, idle_turns=2)
+    for _ in range(5):
+        assert pruner.after_turn("c1", True) == 0
+    assert not history.session[0].get("pruned")
+
+
+def test_pruner_skips_other_roles():
+    history = _FakeHistory([{"role": "user", "content": "hi"}])
+    pruner = ToolHistoryPruner(history, idle_turns=1)
+    assert pruner.prune("c1") == 0
+    assert history.session[0]["content"] == "hi"

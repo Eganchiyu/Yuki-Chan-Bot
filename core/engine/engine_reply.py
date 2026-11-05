@@ -1,5 +1,6 @@
 # core/engine_reply.py
 import asyncio
+import json
 import re
 from typing import Any, Callable, Optional
 
@@ -11,6 +12,7 @@ from core.reply_format import (
     strip_layout_markup,
     strip_meme_tags,
 )
+from core.tool_prune import ToolHistoryPruner
 from core.toolchain import SKIP_REPLY_MARKER, ToolCallManager, ToolContext, ToolRuntime
 from core.tool_markup import extract_text_tool_calls, strip_tool_call_markup
 from modules.debug.context_snapshot import context_snapshot_store
@@ -46,6 +48,11 @@ class EngineReplyService:
         self.get_process_callback = get_process_callback
         self.get_image_store = get_image_store
         self.get_meme_processor = get_meme_processor
+        # 连续若干轮不调工具就折叠历史工具输出，保持上下文干净
+        self.pruner = ToolHistoryPruner(
+            history,
+            idle_turns=int(getattr(getattr(cfg, "tools", None), "prune_idle_turns", 2) or 2),
+        )
 
     @staticmethod
     def clean_visible_reply(content):
@@ -213,6 +220,52 @@ class EngineReplyService:
             if block.get("type") == "image_url"
         )
 
+    @staticmethod
+    def _tool_payload(tool_message) -> dict:
+        """解析工具消息里的标准 JSON 载荷（失败返回空字典）。"""
+        content = tool_message.get("content")
+        if not isinstance(content, str):
+            return {}
+        try:
+            payload = json.loads(content)
+        except (TypeError, ValueError):
+            return {}
+        return payload if isinstance(payload, dict) else {}
+
+    async def _attach_tool_screenshots(self, tool_result_messages, tool_messages):
+        """把工具产生的截图（如手机屏幕）渲染成多模态图像块塞进本轮上下文。"""
+        if not cfg.LLM_NATIVE_VISION_ENABLED:
+            return
+        attachments = []
+        for tool_message in tool_result_messages:
+            data = self._tool_payload(tool_message).get("data")
+            shot = data.get("screenshot") if isinstance(data, dict) else None
+            if isinstance(shot, dict) and shot.get("index"):
+                attachments.append(shot)
+        if not attachments:
+            return
+
+        budget = max(0, cfg.model.native_vision_max_images - self._used_image_slots(tool_messages))
+        for shot in attachments[-max(1, cfg.model.native_vision_max_images):]:
+            if budget <= 0:
+                break
+            message = {
+                "role": "user",
+                "content": f"【工具截图】[img:{shot.get('index')}]",
+                "image_attachments": [shot],
+            }
+            rendered, budget = await self._render_message(
+                message, cfg.LLM_NATIVE_VISION_ENABLED, budget
+            )
+            tool_messages.append(rendered)
+
+    def _after_turn(self, chat_id, tools_executed: bool) -> None:
+        """一轮结束：连续若干轮没调工具时折叠历史里的工具原始输出。"""
+        try:
+            self.pruner.after_turn(chat_id, tools_executed)
+        except Exception as exc:
+            logger.warning(f"[ToolPrune] 折叠失败: {exc}")
+
     async def chat_with_tools(self, chat_id, combined_text, session, mode, messages, message_objs=None):
         """执行支持多轮工具调用的 LLM 对话。"""
         context = ToolContext(
@@ -309,8 +362,10 @@ class EngineReplyService:
             else:
                 if response_message.get("_finish_reason") == "content_filter":
                     logger.warning(f"[ToolChain] {chat_id} 回复被内容安全过滤")
+                    self._after_turn(chat_id, tools_executed)
                     return "Filtered", "Filtered"
                 # 写回历史保留归一化标记；可见文本为空且已执行过工具时用工作中占位
+                self._after_turn(chat_id, tools_executed)
                 return self.finalize_answer(
                     strip_tool_call_markup(response_message.get("content")),
                     tools_executed,
@@ -325,11 +380,16 @@ class EngineReplyService:
             if context.metadata.get("skip_reply"):
                 # skip 工具生效：本轮不生成也不要发送任何内容，交给管线收尾
                 logger.info(f"[ToolChain] {chat_id} 本轮选择 skip，保持安静")
+                self._after_turn(chat_id, tools_executed)
                 return SKIP_REPLY_MARKER, SKIP_REPLY_MARKER
             for tool_result_message in tool_result_messages:
                 spec = active_registry.get_spec(tool_result_message.get("name"))
                 if spec is not None and not spec.persist_result:
                     # 结果只在本轮对话内可见，不回写历史，避免污染长期上下文
+                    continue
+                payload_data = self._tool_payload(tool_result_message).get("data")
+                if isinstance(payload_data, dict) and payload_data.get("no_persist"):
+                    # 工具自己判断这次输出只是中间过程（remember=false），同样不落历史
                     continue
                 self.history.append_session_message(
                     chat_id,
@@ -341,6 +401,7 @@ class EngineReplyService:
                     return_snapshot=False,
                 )
             tool_messages.extend(tool_result_messages)
+            await self._attach_tool_screenshots(tool_result_messages, tool_messages)
             remaining_budget = max(
                 0,
                 cfg.model.native_vision_max_images - self._used_image_slots(tool_messages),
@@ -362,6 +423,7 @@ class EngineReplyService:
             max_tokens=1024,
             fallback_messages_factory=fallback_factory,
         )
+        self._after_turn(chat_id, tools_executed)
         return self.finalize_answer(fallback_raw, tools_executed)
 
     async def api_reply(self, chat_id: str, combined_text: str, session: list, mode,

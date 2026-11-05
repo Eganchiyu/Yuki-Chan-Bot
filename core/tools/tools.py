@@ -2,16 +2,93 @@
 """工具规格装配：汇总各职责子服务导出的 ToolSpec，并保持旧引用兼容。"""
 from core.toolchain import MAID_GOAL_BREVITY_HINT, ToolSpec
 
+from .tools_bash import bash_tool
 from .tools_diary import search_diary_tool
 from .tools_maid import delegate_to_maid_tool
 from .tools_media import download_file_tool, generate_image_tool
 from .tools_message import poke_tool, send_master_private_tool, send_qq_file_tool
 from .tools_notebook import update_notebook_tool
+from .tools_phone import phone_action_tool
 from .tools_rich import parse_rich_message_tool
 from .tools_skip import skip_reply_tool
 from .tools_snapshot import capture_group_snapshot_tool, search_group_snapshots_tool
 
 TOOL_SPECS = [
+    ToolSpec(
+        name="bash",
+        description=(
+            "亲手在电脑上执行一条 shell 命令（工作目录是项目根）。"
+            "适合 10 秒内能完成的轻量操作：查系统/文件状态、跑 skills/ 下的现成脚本、"
+            "单步 adb/curl 操作等，这样你能亲眼看到结果并马上带着自己的判断回复。"
+            "需要多步探索、写代码、或耗时较长的任务仍然交给小女仆。"
+            "命令里的密钥会自动打码；remember=false 时原始输出只在本轮可见、不写进长期记忆。"
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "command": {"type": "string", "description": "要执行的 shell 命令（单条，可含管道）"},
+                "timeout": {"type": "integer", "description": "超时秒数，默认20，最多60", "default": 20},
+                "note": {
+                    "type": "string",
+                    "description": "顺手记一句这步做了什么/结果是什么，之后上下文折叠时只保留它",
+                },
+                "remember": {
+                    "type": "boolean",
+                    "description": "输出是否写进长期记忆，默认true；纯属中间过程的临时输出可以传false",
+                    "default": True,
+                },
+            },
+            "required": ["command"],
+        },
+        handler=bash_tool,
+    ),
+    ToolSpec(
+        name="phone_action",
+        description=(
+            "亲手操作插在电脑上的安卓手机（adb）。先 action=inspect 看清当前界面，"
+            "返回带编号 [#1][#2] 的控件树（每个编号都带中心坐标）；"
+            "之后用 target=编号 精确点按，不用猜坐标。"
+            "action 可选：inspect / tap / long_press / input / swipe / key / back / home / launch / wait。"
+            "input 的 text 支持中文（需要手机装 ADBKeyboard，否则会提示）；"
+            "每次操作后会自动等界面刷新并返回最新控件树，"
+            "若控件树没什么文字（图片/图标页）会自动附一张带红框编号的低分辨率截图。"
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": ["inspect", "tap", "long_press", "input", "swipe", "key", "back", "home", "launch", "wait"],
+                    "description": "要做的动作，默认 inspect（只看不动）",
+                    "default": "inspect",
+                },
+                "target": {
+                    "type": "string",
+                    "description": "控件编号（如 3 或 #3）或坐标 \"x,y\"；key 动作时填按键名（back/home/enter）",
+                },
+                "text": {"type": "string", "description": "input 时要输入的文字"},
+                "direction": {"type": "string", "description": "swipe 方向：up/down/left/right，默认 up"},
+                "duration": {"type": "integer", "description": "swipe 时长毫秒，默认300"},
+                "app": {"type": "string", "description": "launch 时的 App 名称（如 美团）或包名"},
+                "seconds": {"type": "number", "description": "wait 的秒数"},
+                "include_screenshot": {
+                    "type": "boolean",
+                    "description": "强制附一张当前屏幕截图（默认只在控件树文字太少时自动附）",
+                    "default": False,
+                },
+                "note": {
+                    "type": "string",
+                    "description": "顺手记一句这步在做什么/看到什么，之后上下文折叠时只保留它",
+                },
+                "remember": {
+                    "type": "boolean",
+                    "description": "输出是否写进长期记忆，默认true",
+                    "default": True,
+                },
+            },
+        },
+        handler=phone_action_tool,
+    ),
     ToolSpec(
         name="delegate_to_maid",
         description=(

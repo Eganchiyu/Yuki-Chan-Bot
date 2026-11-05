@@ -1,5 +1,6 @@
 # core/engine.py
 
+from config import cfg
 from core.engine.engine_decision import EngineDecisionService
 from core.engine.engine_diary import EngineDiaryService
 from core.engine.engine_monitor import EngineMonitorService
@@ -25,7 +26,10 @@ class YukiEngine:
         self.meme_processor: MemeProcessor | None = None
         self.tool_registry = FunctionRegistry()
         self.tool_registry.scan_and_register(TOOL_SPECS)
-        self.tool_manager = ToolCallManager(self.tool_registry)
+        self.tool_manager = ToolCallManager(
+            self.tool_registry,
+            max_rounds=int(getattr(getattr(cfg, "tools", None), "max_rounds", 8) or 8),
+        )
         self.napcat_online = True
 
         self.diary_service = EngineDiaryService(self.rag, self.history)
