@@ -517,3 +517,4 @@
 - 清洗规则：往返折叠（tap…back 后界面指纹回到 tap 前 → 整段丢弃）、空转按键（before/after 指纹相同，多为输入法吃掉 back）、相邻重复点击（2.5s 内同定位器）；历史本身不改，只在存宏时清洗。
 - 配置：`tools.phone_expect_timeout=3.0`；`phone_action` 的 `remember` 语义扩展到操作历史。
 - 校验：真机（华为 MAO-AL00）实测 launch 设置 → tap WLAN → back，存宏自动折叠 2 步只留 launch，play 通过；曾遇「输入法吞 back」导致空转，已用指纹规则覆盖。离线测试新增 `tests/test_tool_phone_macro.py` 21 例，全套 108 passed。
+- 已通过 `deploy/supervisor.py` 的 `restart_container()` 平滑重启，/health ready，容器内确认 `phone_macro` 已注册（15 个工具）。
