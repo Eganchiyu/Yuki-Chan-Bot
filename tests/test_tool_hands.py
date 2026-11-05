@@ -213,7 +213,144 @@ async def test_input_text_ascii_uses_input_command(monkeypatch):
     monkeypatch.setattr(tools_phone, "_adb", fake_adb)
     ok, method = await tools_phone._input_text("hello world")
     assert ok and method == "input text"
-    assert calls == [["shell", "input", "text", "'hello%sworld'"]]
+    assert calls == [["shell", "input", "text", "hello%sworld"]]
+
+
+async def test_input_text_percent_s_avoids_space_corruption(monkeypatch):
+    """含 %s 的 ASCII 文本不走 input text（防止被 Android 当成空格），转走广播/剪贴板。"""
+    from core.phone_driver import driver
+    from core.tools import tools_phone
+
+    calls = []
+
+    async def fake_adb(args, timeout=20.0):
+        calls.append(args)
+        return 0, b""
+
+    async def fake_adb_text(args, timeout=20.0):
+        calls.append(args)
+        return "Broadcast completed: result=0"
+
+    monkeypatch.setattr(tools_phone, "_adb", fake_adb)
+    monkeypatch.setattr(tools_phone, "_adb_text", fake_adb_text)
+    monkeypatch.setattr(driver, "_has_adb_keyboard", True)
+    ok, method = await tools_phone._input_text("100%s sure")
+    assert ok and "ADBKeyboard" in method
+    assert not any(args[:3] == ["shell", "input", "text"] for args in calls)
+
+
+async def test_input_text_skips_adbkeyboard_when_precheck_false(monkeypatch):
+    """预检确认未安装 ADBKeyboard 时，直接跳过广播分支走剪贴板粘贴。"""
+    from core.phone_driver import driver
+    from core.tools import tools_phone
+
+    calls = []
+
+    async def fake_adb(args, timeout=20.0):
+        calls.append(args)
+        return 0, b""
+
+    monkeypatch.setattr(tools_phone, "_adb", fake_adb)
+    monkeypatch.setattr(driver, "_has_adb_keyboard", False)
+    ok, method = await tools_phone._input_text("中文测试")
+    assert ok and "剪贴板" in method
+    flat = [" ".join(args) for args in calls]
+    assert not any("ime enable" in c for c in flat)
+    assert any("clipboard set-text" in c for c in flat)
+
+
+def test_compact_tree_keeps_fullscreen_scrollable_and_smaller_overlap():
+    xml = """<?xml version="1.0" encoding="UTF-8"?>
+    <hierarchy rotation="0">
+      <node class="android.widget.FrameLayout" package="com.autonavi.minimap" bounds="[0,0][1080,2400]">
+        <node class="android.webkit.WebView" bounds="[0,0][1080,2400]" scrollable="true" clickable="false" text="" content-desc=""/>
+        <node class="android.widget.FrameLayout" bounds="[100,100][500,500]" clickable="true" text="" content-desc=""/>
+        <node class="android.widget.ImageButton" resource-id="com.app:id/inner_btn" bounds="[200,200][400,400]" clickable="true" text="" content-desc=""/>
+      </node>
+    </hierarchy>"""
+    tree = _compact_tree(xml, max_nodes=60)
+    kinds = [n["kind"] for n in tree["nodes"]]
+    assert "滚动" in kinds
+    # 中心都在 (300, 300) 的两个无文字可点节点，保留面积更小的 ImageButton
+    click_nodes = [n for n in tree["nodes"] if n["kind"] == "可点"]
+    assert len(click_nodes) == 1
+    assert click_nodes[0]["cls"] == "android.widget.ImageButton"
+    assert click_nodes[0]["id"] == "com.app:id/inner_btn"
+
+
+def test_compact_tree_smart_truncation_prioritizes_interactive_nodes():
+    xml = """<?xml version="1.0" encoding="UTF-8"?>
+    <hierarchy rotation="0">
+      <node class="android.widget.FrameLayout" package="com.app" bounds="[0,0][1080,2400]">
+        <node class="android.view.View" bounds="[10,10][100,100]" clickable="true" text="" content-desc=""/>
+        <node class="android.view.View" bounds="[10,120][100,200]" clickable="true" text="" content-desc=""/>
+        <node class="android.widget.TextView" bounds="[10,2200][300,2350]" clickable="true" text="底部导航" content-desc=""/>
+        <node class="android.widget.EditText" bounds="[10,500][800,600]" clickable="true" text="输入框" content-desc=""/>
+      </node>
+    </hierarchy>"""
+    tree = _compact_tree(xml, max_nodes=2)
+    labels = [n["label"] for n in tree["nodes"]]
+    # 智能截断不会盲目 break 丢掉底部的输入框和带文字按钮，且截断后按从上到下排序
+    assert labels == ["输入框", "底部导航"]
+
+
+async def test_driver_timeout_heals_after_two_consecutive_failures(monkeypatch):
+    import asyncio
+    from core.phone_driver import AndroidDriver
+
+    drv = AndroidDriver()
+    restarted = []
+
+    async def fake_restart():
+        restarted.append(True)
+
+    class _HungProc:
+        returncode = None
+        def kill(self):
+            pass
+        async def wait(self):
+            pass
+        async def communicate(self):
+            await asyncio.sleep(10)
+
+    async def fake_exec(*args, **kwargs):
+        return _HungProc()
+
+    monkeypatch.setattr(drv, "_restart_adb_server", fake_restart)
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+
+    with pytest.raises(TimeoutError):
+        await drv.adb(["devices"], timeout=0.01)
+    assert len(restarted) == 0
+
+    with pytest.raises(TimeoutError):
+        await drv.adb(["devices"], timeout=0.01)
+    assert len(restarted) == 1
+
+
+async def test_scroll_to_find_stops_when_found(monkeypatch):
+    from core.tools import tools_phone as tp
+
+    page1 = _compact_tree(SAMPLE_XML, 60)
+    page2 = _compact_tree(SAMPLE_XML.replace("外卖", "目标店铺"), 60)
+    dumps = [page1, page1, page2]
+
+    async def fake_ensure():
+        return "device"
+
+    async def fake_dump(max_nodes):
+        return dumps.pop(0) if dumps else page2
+
+    async def fake_adb(args, timeout=20.0):
+        return 0, b""
+
+    monkeypatch.setattr(tp, "_ensure_device", fake_ensure)
+    monkeypatch.setattr(tp, "_dump_tree", fake_dump)
+    monkeypatch.setattr(tp, "_adb", fake_adb)
+
+    res = await phone_action_tool(_context(), action="scroll_to_find", text="目标店铺", remember=False)
+    assert res.success is True
+    assert "找到" in res.content and "目标店铺" in res.content
 
 
 async def test_input_text_chinese_switches_ime_and_restores(monkeypatch):

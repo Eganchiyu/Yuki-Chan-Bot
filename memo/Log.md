@@ -518,3 +518,20 @@
 - 配置：`tools.phone_expect_timeout=3.0`；`phone_action` 的 `remember` 语义扩展到操作历史。
 - 校验：真机（华为 MAO-AL00）实测 launch 设置 → tap WLAN → back，存宏自动折叠 2 步只留 launch，play 通过；曾遇「输入法吞 back」导致空转，已用指纹规则覆盖。离线测试新增 `tests/test_tool_phone_macro.py` 21 例，全套 108 passed。
 - 已通过 `deploy/supervisor.py` 的 `restart_container()` 平滑重启，/health ready，容器内确认 `phone_macro` 已注册（15 个工具）。
+
+## 2026-11-05 手机自动化工具链四层架构重构
+- 新增 `core/phone_driver.py`（设备驱动层 `AndroidDriver`）：
+  - 动态临时 dump 路径 `/data/local/tmp/yuki_ui_{serial_or_pid}.xml`，消除多进程/多设备冲突；
+  - `ensure_device` 自动通过 `wm size` 缓存真实物理分辨率、通过 `ime list -a` 预检并缓存 ADBKeyboard 安装状态；
+  - 连续 2 次 ADB 超时自动触发 `adb kill-server` / `start-server` 自愈；
+  - 修复 ASCII 输入 `%s` 转义漏洞，手势加入 `long_press` `(x+2, y+2)` 防忽略与 `swipe` 坐标/时长微扰，`wait_expect` 改为指数退避轮询。
+- 新增 `core/phone_agent.py`（智能提炼与守护层）：
+  - `SystemWatcher`：识别权限请求、开屏广告、更新提示等系统/应用遮罩并自动点击消除；
+  - `MacroDistiller`：在规则清洗基础上调用 Sub-LLM 剔除无效探索滑动，自动提取业务变量生成 `param_defs` 与 `replace`（异常无感降级回 `clean_steps`）；
+  - `MacroHealer`：宏回放受阻时调用 Sub-LLM 在当前控件树匹配改版/偏移后的语义等价控件，跑通后自动回写 `MacroStore` 自我进化。
+- 升级 `core/phone_macro.py`：定位器纳入 `resource-id`（`id`），实现 5 级匹配优先级（`text+id` > `text+cls` > `id+距离容差` > `fuzzy` > `coord`）。
+- 升级 `core/tools/tools_phone.py` 与 `core/tools/tools_phone_macro.py`：
+  - `_compact_tree` 保留无文字全屏 `scrollable` 容器、中心点重合保留面积更小节点、超限按交互优先级智能截断并按从上到下重排；
+  - `phone_action` 新增复合动作 `scroll_to_find`（自动循环滑动查找目标文案，最多 5 次）；
+  - 按机主指示不设支付/密码拦截护栏（使用隔离账号环境）；
+  - 全套测试 `pytest tests -q` 118 passed。

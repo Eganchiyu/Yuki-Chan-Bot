@@ -6,18 +6,20 @@
     2. 控件树精简成 [#编号] + 中心坐标，模型只需传 target=编号 就能精准点按；
     3. 控件树文字信息不足、或模型主动要求时，附一张缩放到低分辨率的截图，
        并在图上把 [#编号] 画在对应控件位置（Set-of-Mark），既能看图又能对上号；
-    4. 每次动作把「与编号无关的语义定位器」写进操作历史，存成组合技后可回放。
+    4. 每次动作把「与编号无关的语义定位器」写进操作历史，存成组合技后可回放；
+    5. 底层 ADB 通信委托给 core.phone_driver.AndroidDriver，内置安全护栏拦截密码与支付界面自动输入。
 """
+from __future__ import annotations
+
 import asyncio
 import io
 import os
 import re
-import shlex
-import time
 import xml.etree.ElementTree as ET
 
 from config import cfg
 from core import phone_macro as pm
+from core.phone_driver import ADB_KEYBOARD_IME, driver
 from core.toolchain import ToolResult
 from utils import BASE_DIR
 from utils.logger import get_logger
@@ -80,55 +82,16 @@ def _tools_cfg():
     return getattr(cfg, "tools", None)
 
 
-def _adb_cmd(*args: str) -> list[str]:
-    cmd = [getattr(_tools_cfg(), "adb_path", "adb") or "adb"]
-    serial = (getattr(_tools_cfg(), "adb_serial", "") or "").strip()
-    if serial:
-        cmd += ["-s", serial]
-    cmd += list(args)
-    return cmd
-
-
-async def _adb(args: list[str], timeout: float = 20.0) -> tuple[int, bytes]:
-    """执行 adb 子命令，返回 (退出码, 原始输出字节)。"""
-    proc = await asyncio.create_subprocess_exec(
-        *_adb_cmd(*args),
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
-    try:
-        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
-    except asyncio.TimeoutError:
-        proc.kill()
-        await proc.wait()
-        raise TimeoutError("adb 执行超时")
-    return proc.returncode or 0, stdout or stderr or b""
-
-
-async def _adb_text(args: list[str], timeout: float = 20.0) -> str:
-    code, out = await _adb(args, timeout=timeout)
-    text = out.decode("utf-8", "replace").strip()
-    if code != 0:
-        raise RuntimeError(text or f"adb 退出码 {code}")
-    return text
-
-
-async def _ensure_device() -> str:
-    """确认有设备在线，返回设备序列号；否则抛 RuntimeError。"""
-    try:
-        output = await _adb_text(["devices"], timeout=10)
-    except FileNotFoundError as exc:
-        raise RuntimeError(
-            "adb 不可用：当前环境没装 platform-tools，或 adb 不在 PATH 里（可在配置 tools.adb_path 指定绝对路径）。"
-        ) from exc
-    devices = [
-        line.split("\t")[0]
-        for line in output.splitlines()[1:]
-        if line.strip() and "\tdevice" in line
-    ]
-    if not devices:
-        raise RuntimeError("没有检测到已连接的手机：请确认数据线插好、手机已开启 USB 调试并在弹窗里点了允许。")
-    return devices[0]
+# 模块级底层入口委托给 AndroidDriver 单例（保持旧接口与单元测试 monkeypatch 兼容）
+_adb_cmd = driver.adb_cmd
+_adb = driver.adb
+_adb_text = driver.adb_text
+_ensure_device = driver.ensure_device
+_screencap = driver.screencap
+_current_ime = driver.current_ime
+_set_ime = driver.set_ime
+_input_text = driver.input_text
+_launch = driver.launch
 
 
 def _parse_bounds(node) -> tuple[int, int, int, int] | None:
@@ -145,6 +108,21 @@ def _node_label(node) -> str:
     text = (node.get("text") or "").strip()
     desc = (node.get("content-desc") or "").strip()
     return text or desc
+
+
+def _node_priority(item: dict) -> int:
+    """节点截断优先级：输入(0) > 可点带文字(1) > 文本(2) > 滚动(3) > 无文字可点(4)。"""
+    kind = item.get("kind")
+    has_label = bool(item.get("label"))
+    if kind == "输入":
+        return 0
+    if kind == "可点" and has_label:
+        return 1
+    if kind == "文本":
+        return 2
+    if kind == "滚动":
+        return 3
+    return 4
 
 
 def _compact_tree(xml_text: str, max_nodes: int) -> dict:
@@ -175,14 +153,17 @@ def _compact_tree(xml_text: str, max_nodes: int) -> dict:
         x1, y1, x2, y2 = bounds
         label = _node_label(node)
         cls = node.get("class") or ""
+        res_id = (node.get("resource-id") or "").strip()
+        is_password = node.get("password") == "true"
         clickable = node.get("clickable") == "true" or node.get("long-clickable") == "true"
         scrollable = node.get("scrollable") == "true"
-        editable = "EditText" in cls
+        editable = "EditText" in cls or is_password
         area = (x2 - x1) * (y2 - y1)
         if not (label or clickable or scrollable or editable):
             continue
-        if not label and area >= screen_area * 0.9:
-            continue  # 根容器之类的整屏空壳
+        # 防误杀全屏交互容器：当 scrollable 为 true 时，即使无 label 且面积 >= 0.9 也保留
+        if not label and not scrollable and area >= screen_area * 0.9:
+            continue
         key = (label, bounds)
         if key in seen:
             continue
@@ -205,22 +186,39 @@ def _compact_tree(xml_text: str, max_nodes: int) -> dict:
         else:
             kind = "文本"
 
-        # 同一个控件常被拆成多个重叠节点（图标+文案+无障碍包装），中心点重合就只留第一个
         center = ((x1 + x2) // 2, (y1 + y2) // 2)
-        if any(item["kind"] == kind and (item["cx"], item["cy"]) == center for item in kept):
-            continue
-        kept.append({
+        candidate = {
             "label": label[:60],
             "kind": kind,
             "cls": cls,
+            "id": res_id,
+            "password": is_password,
             "bounds": bounds,
             "cx": center[0],
             "cy": center[1],
-        })
-        if len(kept) >= max_nodes:
-            break
+            "_area": area,
+        }
+
+        # 中心点重合且 kind 相同时：保留面积更小（更具体）的节点，防止外层透明容器吃掉内层按钮
+        dup_idx = next(
+            (i for i, item in enumerate(kept) if item["kind"] == kind and (item["cx"], item["cy"]) == center),
+            None,
+        )
+        if dup_idx is not None:
+            if area < kept[dup_idx].get("_area", area + 1):
+                kept[dup_idx] = candidate
+            continue
+
+        kept.append(candidate)
+
+    # 智能截断：当超出 max_nodes 时，先按优先级排序截取前 max_nodes 个，再按屏幕从上到下、从左到右重新排列并分配 index
+    if max_nodes and max_nodes > 0 and len(kept) > max_nodes:
+        kept.sort(key=lambda item: (_node_priority(item), item["cy"], item["cx"]))
+        kept = kept[:max_nodes]
+        kept.sort(key=lambda item: (item["cy"], item["cx"], item["bounds"][1], item["bounds"][0]))
 
     for index, item in enumerate(kept, 1):
+        item.pop("_area", None)
         item["index"] = index
     return {
         "package": package,
@@ -230,7 +228,7 @@ def _compact_tree(xml_text: str, max_nodes: int) -> dict:
 
 
 def _format_tree(tree: dict) -> str:
-    width, height = tree["size"]
+    width, height = driver.resolve_screen_size(tree)
     lines = [f"[手机屏幕] 应用: {tree['package'] or '未知'} | 尺寸: {width}x{height}"]
     if not tree["nodes"]:
         lines.append("(这个界面没有可识别的控件，可能还在加载，或需要用截图确认)")
@@ -296,96 +294,11 @@ def _register_screenshot(context, jpeg_bytes: bytes) -> tuple[dict | None, str]:
         return None, ""
 
 
-async def _launch(package: str) -> str:
-    """启动 App，返回错误说明；空字符串表示成功。
-
-    monkey 找不到 Activity 时退出码仍是 0（只打印 aborted），必须看输出才能判断。
-    """
-    code, raw = await _adb([
-        "shell", "monkey", "-p", package, "-c", "android.intent.category.LAUNCHER", "1",
-    ], timeout=25)
-    output = raw.decode("utf-8", "replace")
-    if "aborted" in output.lower() or "no activities found" in output.lower():
-        try:
-            installed = await _adb_text(["shell", "pm", "list", "packages", "-3"], timeout=15)
-            names = [line.split(":")[-1].strip() for line in installed.splitlines() if line.strip()]
-            sample = "、".join(names[:12]) or "（读取失败）"
-        except Exception:
-            sample = "（读取失败）"
-        return f"没找到 App「{package}」：请改传包名。已安装的第三方应用示例：{sample}"
-    if code != 0:
-        return f"启动 {package} 失败（退出码 {code}）"
-    return ""
-
-
 async def _dump_tree(max_nodes: int) -> dict:
-    remote = "/data/local/tmp/yuki_ui.xml"
-    await _adb(["shell", "uiautomator", "dump", remote], timeout=20)
-    code, raw = await _adb(["exec-out", "cat", remote], timeout=20)
-    xml_text = raw.decode("utf-8", "replace")
-    if code != 0 or "<hierarchy" not in xml_text:
-        raise RuntimeError(f"控件树读取失败: {xml_text[:200]}")
-    return _compact_tree(xml_text, max_nodes)
-
-
-async def _screencap() -> bytes:
-    code, raw = await _adb(["exec-out", "screencap", "-p"], timeout=20)
-    if code != 0 or not raw:
-        raise RuntimeError("截图失败")
-    return raw
-
-
-ADB_KEYBOARD_IME = "com.android.adbkeyboard/.AdbIME"
-
-
-async def _current_ime() -> str:
-    try:
-        return await _adb_text(["shell", "settings", "get", "secure", "default_input_method"], timeout=10)
-    except Exception:
-        return ""
-
-
-async def _set_ime(ime_id: str) -> None:
-    await _adb(["shell", "ime", "set", ime_id], timeout=15)
-
-
-async def _input_text(text: str) -> tuple[bool, str]:
-    """输入文字：ASCII 走 input text，中文借 ADBKeyboard 输入法（用完还原原输入法）。"""
-    if re.fullmatch(r"[\x20-\x7e]+", text):
-        await _adb(["shell", "input", "text", shlex.quote(text).replace(" ", "%s")], timeout=20)
-        return True, "input text"
-
-    quoted = shlex.quote(text)
-    original_ime = await _current_ime()
-
-    # 首选：临时切到 ADBKeyboard，用广播注入 Unicode 文本，随后还原
-    try:
-        await _adb(["shell", "ime", "enable", ADB_KEYBOARD_IME], timeout=15)
-        await _set_ime(ADB_KEYBOARD_IME)
-        await asyncio.sleep(0.4)
-        output = await _adb_text([
-            "shell", "am", "broadcast", "-a", "ADB_INPUT_TEXT", "--es", "msg", quoted,
-        ], timeout=20)
-        await asyncio.sleep(0.3)
-        if original_ime and original_ime != ADB_KEYBOARD_IME:
-            await _set_ime(original_ime)
-        if "Broadcast completed" in output and "error" not in output.lower():
-            return True, "ADBKeyboard 广播"
-    except Exception as exc:
-        logger.warning(f"[Phone] ADBKeyboard 输入失败: {exc}")
-        if original_ime and original_ime != ADB_KEYBOARD_IME:
-            try:
-                await _set_ime(original_ime)
-            except Exception:
-                pass
-
-    # 兜底：写剪贴板后按粘贴键（部分系统支持）
-    try:
-        await _adb(["shell", "cmd", "clipboard", "set-text", quoted], timeout=15)
-        await _adb(["shell", "input", "keyevent", "KEYCODE_PASTE"], timeout=15)
-        return True, "剪贴板粘贴（请确认输入框内容）"
-    except Exception:
-        return False, ""
+    xml_text = await driver.dump_xml()
+    tree = _compact_tree(xml_text, max_nodes)
+    driver.resolve_screen_size(tree)
+    return tree
 
 
 def _resolve_target(target) -> tuple[int, int] | None:
@@ -422,8 +335,16 @@ def _node_point_step(op: str, node: dict, tree: dict, **extra) -> dict:
     }
 
 
+def _screen_dimensions(tree: dict) -> tuple[int, int]:
+    w, h = driver.resolve_screen_size(tree)
+    if w > 0 and h > 0:
+        return w, h
+    # 若设备尚未缓存物理分辨率且 tree 无尺寸，使用安全正数比例基准
+    return 1, 1
+
+
 def _swipe_coords(tree: dict, target, direction: str) -> tuple[float, float, float, float, str]:
-    width, height = tree["size"] if min(tree["size"]) > 0 else (1080, 2400)
+    width, height = _screen_dimensions(tree)
     parts = [float(v) for v in re.split(r"[,\s]+", str(target or "")) if v.strip()]
     if len(parts) == 4:
         return parts[0], parts[1], parts[2], parts[3], "自定义坐标"
@@ -484,9 +405,9 @@ async def _prepare_step(action: str, tree: dict, *, target=None, text="", direct
         if target is not None:
             index = _index_of(target)
             if index is not None:
-                node = _find_node(tree, index)
-                step.update({"label": (node["label"] or "")[:40], "loc": pm.build_locator(node, tree)})
-                display = f"tap #{index}({node['label'][:12] or '输入框'}) + " + display
+                target_node = _find_node(tree, index)
+                step.update({"label": (target_node["label"] or "")[:40], "loc": pm.build_locator(target_node, tree)})
+                display = f"tap #{index}({target_node['label'][:12] or '输入框'}) + " + display
             else:
                 coords = _resolve_target(target)
                 if not coords:
@@ -497,7 +418,7 @@ async def _prepare_step(action: str, tree: dict, *, target=None, text="", direct
 
     if action in ("swipe", "scroll", "滑动"):
         x1, y1, x2, y2, label = _swipe_coords(tree, target, direction)
-        width, height = tree["size"] if min(tree["size"]) > 0 else (1080, 2400)
+        width, height = _screen_dimensions(tree)
         step = {
             "op": "swipe",
             "label": "",
@@ -506,6 +427,22 @@ async def _prepare_step(action: str, tree: dict, *, target=None, text="", direct
             "duration": int(duration or 300),
         }
         return step, f"swipe {label}"
+
+    if action in ("scroll_to_find", "滑动查找"):
+        target_text = (text or str(target or "")).strip()
+        if not target_text:
+            raise ValueError("scroll_to_find 需要 text 参数指定要查找的目标文案")
+        direction = (direction or "up").strip().lower()
+        if direction not in ("up", "down", "left", "right"):
+            raise ValueError("direction 只能是 up/down/left/right")
+        step = {
+            "op": "scroll_to_find",
+            "label": target_text[:40],
+            "text": target_text,
+            "direction": direction,
+            "duration": int(duration or 300),
+        }
+        return step, f'scroll_to_find "{target_text[:20]}" ({direction})'
 
     if action in ("key", "按键"):
         name = str(target or "").strip()
@@ -536,8 +473,8 @@ def _step_point(step: dict, tree: dict) -> tuple[int, int, str]:
         label = (step.get("loc") or {}).get("text") or "坐标点"
         raise PhoneStepError(f"找不到控件「{label}」：界面可能已经变了，请先 inspect 看看现在的界面。")
     x, y, label, method = matched
-    if method in ("fuzzy", "point"):
-        logger.info(f"[Phone] 定位器降级为 {method}: {label}")
+    if method in ("fuzzy", "point", "id"):
+        logger.info(f"[Phone] 定位器匹配方式 {method}: {label}")
     return x, y, label
 
 
@@ -563,21 +500,22 @@ async def _exec_step(step: dict, tree: dict) -> str:
         return f"wait {pause:.1f}s"
 
     if op == "swipe":
-        width, height = tree["size"] if min(tree["size"]) > 0 else (1080, 2400)
+        width, height = _screen_dimensions(tree)
         from_rel = step.get("from_rel") or [0.5, 0.75]
         to_rel = step.get("to_rel") or [0.5, 0.25]
         x1, y1 = int(from_rel[0] * width), int(from_rel[1] * height)
         x2, y2 = int(to_rel[0] * width), int(to_rel[1] * height)
-        await _adb(["shell", "input", "swipe", str(x1), str(y1), str(x2), str(y2),
-                    str(int(step.get("duration") or 300))], timeout=15)
-        return f"swipe ({x1},{y1})->({x2},{y2})"
+        dur = int(step.get("duration") or 300)
+        sx1, sy1, sx2, sy2, _ = await driver.swipe(x1, y1, x2, y2, duration=dur, jitter=True)
+        return f"swipe ({sx1},{sy1})->({sx2},{sy2})"
 
     if op in ("tap", "long_press"):
         x, y, label = _step_point(step, tree)
         if op == "tap":
             await _adb(["shell", "input", "tap", str(x), str(y)], timeout=15)
             return f"tap {label or f'({x},{y})'}"
-        await _adb(["shell", "input", "swipe", str(x), str(y), str(x), str(y), "800"], timeout=15)
+        # 长按拟人化：swipe x y (x+2) (y+2) 800，防止定制 ROM 忽略距离为 0 的滑动
+        await driver.long_press(x, y, duration=800)
         return f"long_press {label or f'({x},{y})'}"
 
     if op == "input":
@@ -600,26 +538,73 @@ async def _exec_step(step: dict, tree: dict) -> str:
 
 
 async def _wait_expect(expect: dict, max_nodes: int, timeout: float) -> tuple[bool, dict]:
-    """轮询等待「动作后该出现的界面」出现，返回 (是否满足, 最后的控件树)。"""
-    package = (expect or {}).get("package") or ""
-    labels = (expect or {}).get("labels") or []
-    deadline = time.monotonic() + max(0.5, timeout)
-    tree = await _dump_tree(max_nodes)
-    while True:
-        current = {node["label"] for node in tree["nodes"] if node["label"]}
-        package_ok = not package or tree["package"] == package
-        if package_ok and all(label in current for label in labels):
-            return True, tree
-        if time.monotonic() >= deadline:
-            return False, tree
-        await asyncio.sleep(0.35)
-        tree = await _dump_tree(max_nodes)
+    """指数退避轮询等待「动作后该出现的界面」出现，返回 (是否满足, 最后的控件树)。"""
+    return await driver.wait_expect(expect, max_nodes, timeout, _dump_tree)
+
+
+def _find_matching_node(tree: dict, keyword: str) -> dict | None:
+    for node in tree.get("nodes") or []:
+        label = node.get("label") or ""
+        if keyword in label:
+            return node
+    return None
+
+
+async def _exec_scroll_to_find(
+    context,
+    tree: dict,
+    target_text: str,
+    direction: str,
+    duration: int,
+    max_nodes: int,
+    wait_seconds: float,
+    remember: bool,
+    max_scrolls: int = 5,
+) -> tuple[dict, list[str], bool]:
+    """循环滑动查找包含 target_text 的控件，最多 max_scrolls 次。"""
+    steps_log: list[str] = []
+    matched = _find_matching_node(tree, target_text)
+    if matched:
+        steps_log.append(f'已在当前屏找到 [#{matched["index"]}]「{matched["label"]}」')
+        return tree, steps_log, True
+
+    current_tree = tree
+    for count in range(1, max_scrolls + 1):
+        before_tree = current_tree
+        x1, y1, x2, y2, _ = _swipe_coords(current_tree, None, direction)
+        width, height = _screen_dimensions(current_tree)
+        swipe_step = {
+            "op": "swipe",
+            "label": "",
+            "from_rel": [round(x1 / width, 4), round(y1 / height, 4)],
+            "to_rel": [round(x2 / width, 4), round(y2 / height, 4)],
+            "duration": int(duration or 300),
+        }
+        await _exec_step(swipe_step, current_tree)
+        await asyncio.sleep(wait_seconds)
+        current_tree = await _dump_tree(max_nodes)
+
+        if remember:
+            try:
+                pm.phone_history.record(context.chat_id, swipe_step, before_tree, current_tree)
+            except Exception as exc:
+                logger.warning(f"[Phone] 写历史失败: {exc}")
+
+        matched = _find_matching_node(current_tree, target_text)
+        if matched:
+            steps_log.append(
+                f'scroll_to_find ({direction} x{count}) -> 找到 [#{matched["index"]}]「{matched["label"]}」'
+            )
+            return current_tree, steps_log, True
+
+    steps_log.append(f'scroll_to_find ({direction} x{max_scrolls}) -> 未找到「{target_text}」')
+    return current_tree, steps_log, False
 
 
 async def phone_action_tool(context, action="inspect", target=None, text="", direction="up",
                             duration=300, app="", seconds=1.0, include_screenshot=False,
                             note="", remember=True):
-    """手机操作：inspect/tap/long_press/input/swipe/key/launch/back/home/wait。"""
+    """手机操作：inspect/tap/long_press/input/swipe/scroll_to_find/key/launch/back/home/wait。"""
     action = (action or "inspect").strip().lower()
     tools_cfg = _tools_cfg()
     max_nodes = int(getattr(tools_cfg, "phone_max_nodes", 60) or 60)
@@ -636,7 +621,20 @@ async def phone_action_tool(context, action="inspect", target=None, text="", dir
     try:
         if action in ("inspect", "查看", "看看"):
             steps.append("inspect")
+            await asyncio.sleep(0.1)
             tree = await _dump_tree(max_nodes)
+        elif action in ("scroll_to_find", "滑动查找"):
+            tree = await _dump_tree(max_nodes)
+            step, _ = await _prepare_step(
+                action, tree, target=target, text=text, direction=direction,
+                duration=duration, app=app, seconds=seconds,
+            )
+            tree, find_steps, _ = await _exec_scroll_to_find(
+                context, tree, step["text"], step["direction"], step["duration"],
+                max_nodes, wait_seconds, remember,
+            )
+            steps.extend(find_steps)
+            step = None  # 子滑动步骤已按需记入历史
         else:
             before = await _dump_tree(max_nodes)
             tree = before
@@ -649,9 +647,9 @@ async def phone_action_tool(context, action="inspect", target=None, text="", dir
             if step.get("op") == "launch":
                 wait_seconds = max(wait_seconds, 2.0)
 
-        # 操作后等界面稳定，再回传最新控件树
-        await asyncio.sleep(wait_seconds if step else 0.1)
-        tree = await _dump_tree(max_nodes)
+            # 操作后等界面稳定，再回传最新控件树
+            await asyncio.sleep(wait_seconds if step else 0.1)
+            tree = await _dump_tree(max_nodes)
     except ValueError as exc:
         return ToolResult(success=False, content=str(exc), error="invalid_target")
     except PhoneStepError as exc:

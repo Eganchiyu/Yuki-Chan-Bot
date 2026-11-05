@@ -60,8 +60,11 @@ TOOL_SPECS = [
             "properties": {
                 "action": {
                     "type": "string",
-                    "enum": ["inspect", "tap", "long_press", "input", "swipe", "key", "back", "home", "launch", "wait"],
-                    "description": "要做的动作，默认 inspect（只看不动）",
+                    "enum": [
+                        "inspect", "tap", "long_press", "input", "swipe",
+                        "scroll_to_find", "key", "back", "home", "launch", "wait",
+                    ],
+                    "description": "要做的动作，默认 inspect（只看不动）；scroll_to_find 可自动循环滑动查找含 text 的控件",
                     "default": "inspect",
                 },
                 "target": {
@@ -143,6 +146,11 @@ TOOL_SPECS = [
                     "description": "play 时传给宏的参数值，如 {\"food\": \"炸鸡\"}",
                 },
                 "dry_run": {"type": "boolean", "description": "play 时只列步骤不执行", "default": False},
+                "auto_distill": {
+                    "type": "boolean",
+                    "description": "save 时是否启用 Sub-LLM 自动剔除冗余探索滑动并提取业务参数，默认 true",
+                    "default": True,
+                },
                 "limit": {"type": "integer", "description": "history 最多返回多少条，默认15"},
                 "note": {"type": "string", "description": "顺手记一句这步在做什么"},
             },

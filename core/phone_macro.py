@@ -60,14 +60,20 @@ def state_of(tree: dict) -> dict:
 
 
 def build_locator(node: dict, tree: dict) -> dict:
-    """把控件节点转成与编号无关的定位器。"""
+    """把控件节点转成与编号无关的定位器（含 text / id / cls / rel）。"""
     width, height = tree.get("size") or (0, 0)
     rel = [
         round(node["cx"] / width, 4) if width else 0.5,
         round(node["cy"] / height, 4) if height else 0.5,
     ]
-    return {"kind": "node", "text": (node.get("label") or "")[:40],
-            "cls": node.get("cls") or "", "rel": rel}
+    res_id = (node.get("id") or node.get("resource_id") or "").strip()
+    return {
+        "kind": "node",
+        "text": (node.get("label") or "")[:40],
+        "id": res_id,
+        "cls": node.get("cls") or "",
+        "rel": rel,
+    }
 
 
 def locator_at(x: int, y: int, tree: dict) -> dict:
@@ -76,6 +82,7 @@ def locator_at(x: int, y: int, tree: dict) -> dict:
     return {
         "kind": "point",
         "text": "",
+        "id": "",
         "cls": "",
         "rel": [
             round(x / width, 4) if width else 0.5,
@@ -87,9 +94,12 @@ def locator_at(x: int, y: int, tree: dict) -> dict:
 def resolve_locator(tree: dict, locator: dict, tolerance: float = COORD_TOLERANCE):
     """在控件树里落地一个定位器，返回 (x, y, 描述, 匹配方式)；失败返回 None。
 
-    kind=point（模型直接点坐标）就按比例还原成点，不做控件吸附；
-    kind=node（记录时对着控件点的）先按文案匹配，再按比例坐标就近吸附，
-    偏差超过屏幕长边的 tolerance 视为界面已变，返回 None 让调用方报错。
+    匹配优先级：
+        1. text + id 双重精确匹配（最高优先级）；
+        2. text 精确匹配 + cls 匹配（按距离最近）；
+        3. 仅 id 精确匹配（应对动态变化数字文本，如购物车角标）+ 距离 <= tolerance；
+        4. text 模糊匹配（fuzzy）；
+        5. 比例坐标兜底（coord）。
     """
     nodes = tree.get("nodes") or []
     width, height = tree.get("size") or (0, 0)
@@ -97,8 +107,9 @@ def resolve_locator(tree: dict, locator: dict, tolerance: float = COORD_TOLERANC
     rel = (list(rel) + [0.5, 0.5])[:2]
     tx, ty = float(rel[0]) * width, float(rel[1]) * height
     text = ((locator or {}).get("text") or "").strip()
+    res_id = ((locator or {}).get("id") or "").strip()
     cls = ((locator or {}).get("cls") or "").strip()
-    kind = (locator or {}).get("kind") or ("node" if text else "point")
+    kind = (locator or {}).get("kind") or ("node" if (text or res_id) else "point")
 
     if kind == "point":
         return int(tx), int(ty), "", "point"
@@ -106,6 +117,19 @@ def resolve_locator(tree: dict, locator: dict, tolerance: float = COORD_TOLERANC
     def distance(node) -> float:
         return ((node["cx"] - tx) ** 2 + (node["cy"] - ty) ** 2) ** 0.5
 
+    max_span = max(width, height, 1)
+
+    # 1) text + id 双重精确匹配
+    if text and res_id:
+        both = [
+            n for n in nodes
+            if (n.get("label") or "") == text and (n.get("id") or "") == res_id
+        ]
+        if both:
+            node = min(both, key=distance)
+            return node["cx"], node["cy"], node.get("label") or text, "text_id"
+
+    # 2) text 精确匹配 + cls 匹配（按距离最近）
     if text:
         exact = [n for n in nodes if (n.get("label") or "") == text]
         if exact:
@@ -113,6 +137,19 @@ def resolve_locator(tree: dict, locator: dict, tolerance: float = COORD_TOLERANC
             pool = same_cls or exact
             node = min(pool, key=distance)
             return node["cx"], node["cy"], node.get("label") or text, "text"
+
+    # 3) 仅 id 精确匹配 + 距离 <= tolerance（应对动态变化文本）
+    if res_id:
+        id_matches = [
+            n for n in nodes
+            if (n.get("id") or "") == res_id and distance(n) <= max_span * tolerance
+        ]
+        if id_matches:
+            node = min(id_matches, key=distance)
+            return node["cx"], node["cy"], node.get("label") or text or res_id, "id"
+
+    # 4) text 模糊匹配
+    if text:
         fuzzy = [
             n for n in nodes
             if n.get("label")
@@ -125,9 +162,10 @@ def resolve_locator(tree: dict, locator: dict, tolerance: float = COORD_TOLERANC
         # 有文案却找不到：说明界面真的变了，宁可失败也不盲点
         return None
 
+    # 5) 比例坐标兜底
     if nodes:
         node = min(nodes, key=distance)
-        if distance(node) <= max(width, height, 1) * tolerance:
+        if distance(node) <= max_span * tolerance:
             return node["cx"], node["cy"], node.get("label") or "", "coord"
     if 0 < tx < width and 0 < ty < height:
         return int(tx), int(ty), "", "point"
