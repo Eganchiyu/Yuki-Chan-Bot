@@ -542,4 +542,5 @@
   - 调用 `phone_start` 后进入手机聚焦模式，自动返回当前屏幕控件树与已有组合技简表，并将当轮及后续轮次的 ToolSpec 切换为聚焦集（`phone_action` / `phone_macro` / `phone_finish` + `skip` / `send_master_private` / `send_qq_file`），收起日记、小本本、画图、小女仆等无关工具；
   - 聚焦期间保持群聊在线状态，可正常发言，期间插入的群友消息按序保留；
   - 调用 `phone_finish(summary="...")`（或连续闲置 > 5 轮自动退出）时：清除聚焦期间产生的所有手机工具调用与阶段思考记录，保留期间正常聊天消息，并以 `role="user"` 身份注入 `【手机操作总结】{summary}`，恢复常态 ToolSpec 空间。
+- 新增 `docs/focus-mode-paradigm.md` 整理「聚焦模式（Focus Mode）」通用设计范式与 4 步工程模板（供后续扩展浏览器、Bilibili 等聚焦模式复用），同步更新 `docs/toolchain-usage.md`。
 - 全套测试 `pytest tests -q` 121 passed。

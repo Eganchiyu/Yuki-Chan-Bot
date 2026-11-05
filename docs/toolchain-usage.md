@@ -36,24 +36,29 @@
 
 ---
 
-## 三、现役标准工具清单（14 个）
+## 三、现役标准工具清单（17 个，含手机聚焦模式按需展开）
 
-| 工具名 | 所在文件 | `persist_result` | 功能说明 |
-|---|---|---|---|
-| `bash` | `tools_bash.py` | `True` | Yuki 亲手执行单条 shell 命令（cwd=项目根，默认 20s、上限 60s）。输出自动脱敏 `sk-*` 等密钥；拦截 `rm -rf /`、`mkfs`、关机等防呆命令与凭证文件读取；`remember=false` 时该次输出不落历史 |
-| `phone_action` | `tools_phone.py` | `True` | 通过 adb 操作插在电脑上的手机：`inspect/tap/long_press/input/swipe/key/back/home/launch/wait`。控件树精简为 `[#编号] + 中心坐标`，`target=编号` 精准点按；动作后自动等待刷新并回传新控件树，文字过少或 `include_screenshot=true` 时附缩放并画上编号红框的截图（Set-of-Mark） |
-| `delegate_to_maid` | `tools_maid.py` | `True` | 经 `MaidCapabilityBoundary.judge()` 校验后将任务放入 `maid_task_queue`，交由宿主 DSH 后台执行 |
-| `search_diary` | `tools_diary.py` | `True` | 按 `date_str` / `keyword` 检索日记（随机抽最多 8 条）；均不填时随机翻看 8 条日记 |
-| `update_notebook` | `tools_notebook.py` | `False` | 覆盖更新全局小本本 `data/notebook.json`（上限 512 字），内容在 `build_chat_context` 中作为潜意识注入 |
-| `skip` | `tools_skip.py` | `False` | 群聊中主动保持安静、跳过本轮回复且不留历史痕迹（私聊调用会直接报错拒绝） |
-| `send_master_private` | `tools_message.py` | `True` | 向主人主号（`cfg.TARGET_QQ`）发送私聊通知并同步写入主人私聊历史 |
-| `poke` | `tools_message.py` | `True` | 群聊戳一戳指定用户（支持传 `target` 昵称自动解析或直接传 `user_id`） |
-| `send_qq_file` | `tools_message.py` | `True` | 发送本地图片/语音/文件，支持 `[img:XXX]` 与 `[shot:X]` 索引，严禁模型手写 CQ 码 |
-| `capture_group_snapshot` | `tools_snapshot.py` | `True` | 将当前群最近聊天渲染成带头像气泡的 PNG 截图，永久存入 `data/shot_memory/` |
-| `search_group_snapshots` | `tools_snapshot.py` | `True` | 按关键词或随机翻看本群历史截屏（最多 5 条），预热为 `[shot:1]`~`[shot:5]` 供 `send_qq_file` 发送 |
-| `parse_rich_message` | `tools_rich.py` | `True` | 解析合并转发（支持 `start`/`count` 分页与 `max_depth` 嵌套展开）、小程序、JSON/XML 卡片 |
-| `download_file` | `tools_media.py` | `True` | 按消息中的 `[文件:file_id=xxx]` 下载群/私聊文件到 `workspace/` |
-| `generate_image` | `tools_media.py` | `True` | 文生图 / 参考图编辑（最多 4 张参考图，内置 Yuki 与主人固定人设图路径说明），落盘到 `output/` |
+> 手机相关工具采用**「聚焦模式（Focus Mode）」**按需披露：常态下只暴露极简入口 `phone_start`，调用后进入聚焦模式展开 `phone_action` / `phone_macro` / `phone_finish` 并收起其他无关日常工具；结束时调用 `phone_finish` 用一条 `role="user"` 的 `【手机操作总结】` 覆盖工作过程记录。详见 [`docs/focus-mode-paradigm.md`](./focus-mode-paradigm.md)。
+
+| 工具名 | 所在文件 | 暴露时机 | `persist_result` | 功能说明 |
+|---|---|---|---|---|
+| `bash` | `tools_bash.py` | 常态 | `True` | Yuki 亲手执行单条 shell 命令（cwd=项目根，默认 20s、上限 60s）。输出自动脱敏 `sk-*` 等密钥；拦截 `rm -rf /`、`mkfs`、关机等防呆命令与凭证文件读取；`remember=false` 时该次输出不落历史 |
+| `phone_start` | `phone_focus.py` | 常态 | `True` | 极简入口：拿起手机进入「手机聚焦模式」，自动返回当前屏幕控件树与已有组合技简表，并解锁 `phone_action` / `phone_macro` / `phone_finish` |
+| `phone_action` | `tools_phone.py` | 手机聚焦模式 | `True` | 通过 adb 操作手机：`inspect/tap/long_press/input/swipe/scroll_to_find/key/back/home/launch/wait`。控件树精简为 `[#编号] + 中心坐标`；文字过少或 `include_screenshot=true` 时附带编号红框截图（Set-of-Mark） |
+| `phone_macro` | `tools_phone_macro.py` | 手机聚焦模式 | `True` | 手机组合技：`list/history/show/save/play/delete`。`save` 支持 Sub-LLM 自动提炼冗余滑动与业务参数（`auto_distill=True`）；`play` 内置 `SystemWatcher` 弹窗清理与 `MacroHealer` 语义自愈进化 |
+| `phone_finish` | `phone_focus.py` | 手机聚焦模式 | `False` | 结束操作手机并退出聚焦模式，清除聚焦期间的所有手机工具调用与阶段思考记录，保留期间群聊消息，并以 `role="user"` 身份注入 `【手机操作总结】{summary}`（连续闲置 > 5 轮也会自动触发） |
+| `delegate_to_maid` | `tools_maid.py` | 常态 | `True` | 经 `MaidCapabilityBoundary.judge()` 校验后将任务放入 `maid_task_queue`，交由宿主 DSH 后台执行 |
+| `search_diary` | `tools_diary.py` | 常态 | `True` | 按 `date_str` / `keyword` 检索日记（随机抽最多 8 条）；均不填时随机翻看 8 条日记 |
+| `update_notebook` | `tools_notebook.py` | 常态 | `False` | 覆盖更新全局小本本 `data/notebook.json`（上限 512 字），内容在 `build_chat_context` 中作为潜意识注入 |
+| `skip` | `tools_skip.py` | 常态 + 聚焦 | `False` | 群聊中主动保持安静、跳过本轮回复且不留历史痕迹（私聊调用会直接报错拒绝） |
+| `send_master_private` | `tools_message.py` | 常态 + 聚焦 | `True` | 向主人主号（`cfg.TARGET_QQ`）发送私聊通知并同步写入主人私聊历史 |
+| `poke` | `tools_message.py` | 常态 | `True` | 群聊戳一戳指定用户（支持传 `target` 昵称自动解析或直接传 `user_id`） |
+| `send_qq_file` | `tools_message.py` | 常态 + 聚焦 | `True` | 发送本地图片/语音/文件，支持 `[img:XXX]` 与 `[shot:X]` 索引，严禁模型手写 CQ 码 |
+| `capture_group_snapshot` | `tools_snapshot.py` | 常态 | `True` | 将当前群最近聊天渲染成带头像气泡的 PNG 截图，永久存入 `data/shot_memory/` |
+| `search_group_snapshots` | `tools_snapshot.py` | 常态 | `True` | 按关键词或随机翻看本群历史截屏（最多 5 条），预热为 `[shot:1]`~`[shot:5]` 供 `send_qq_file` 发送 |
+| `parse_rich_message` | `tools_rich.py` | 常态 | `True` | 解析合并转发（支持 `start`/`count` 分页与 `max_depth` 嵌套展开）、小程序、JSON/XML 卡片 |
+| `download_file` | `tools_media.py` | 常态 | `True` | 按消息中的 `[文件:file_id=xxx]` 下载群/私聊文件到 `workspace/` |
+| `generate_image` | `tools_media.py` | 常态 | `True` | 文生图 / 参考图编辑（最多 4 张参考图，内置 Yuki 与主人固定人设图路径说明），落盘到 `output/` |
 
 ---
 
