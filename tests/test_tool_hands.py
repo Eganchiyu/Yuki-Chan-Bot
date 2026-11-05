@@ -197,3 +197,53 @@ def test_pruner_skips_other_roles():
     pruner = ToolHistoryPruner(history, idle_turns=1)
     assert pruner.prune("c1") == 0
     assert history.session[0]["content"] == "hi"
+
+
+# ---------- 文字输入 ----------
+
+async def test_input_text_ascii_uses_input_command(monkeypatch):
+    from core.tools import tools_phone
+
+    calls = []
+
+    async def fake_adb(args, timeout=20.0):
+        calls.append(args)
+        return 0, b""
+
+    monkeypatch.setattr(tools_phone, "_adb", fake_adb)
+    ok, method = await tools_phone._input_text("hello world")
+    assert ok and method == "input text"
+    assert calls == [["shell", "input", "text", "'hello%sworld'"]]
+
+
+async def test_input_text_chinese_switches_ime_and_restores(monkeypatch):
+    from core.tools import tools_phone
+
+    calls = []
+
+    async def fake_adb(args, timeout=20.0):
+        calls.append(args)
+        return 0, b""
+
+    async def fake_adb_text(args, timeout=20.0):
+        calls.append(args)
+        if args[:2] == ["shell", "am"]:
+            return "Broadcasting: Intent { ... }\nBroadcast completed: result=0"
+        return ""
+
+    async def fake_current_ime():
+        return "com.huawei.ohos.inputmethod/com.android.inputmethod.latin.LatinIME"
+
+    monkeypatch.setattr(tools_phone, "_adb", fake_adb)
+    monkeypatch.setattr(tools_phone, "_adb_text", fake_adb_text)
+    monkeypatch.setattr(tools_phone, "_current_ime", fake_current_ime)
+
+    ok, method = await tools_phone._input_text("电池测试")
+    assert ok and "ADBKeyboard" in method
+
+    flat = [" ".join(args) for args in calls]
+    assert any("ime enable com.android.adbkeyboard/.AdbIME" in c for c in flat)
+    assert any("ime set com.android.adbkeyboard/.AdbIME" in c for c in flat)
+    # 用完后必须还原成用户原本的输入法
+    assert any("ime set com.huawei.ohos.inputmethod" in c for c in flat)
+    assert not any("input text" in c for c in flat)

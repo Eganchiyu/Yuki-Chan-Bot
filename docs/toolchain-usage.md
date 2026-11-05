@@ -80,4 +80,8 @@
 
 - **动态 `no_persist`**：handler 可在 `ToolResult.data` 里返回 `no_persist=True`（`bash` / `phone_action` 的 `remember=false`），`EngineReplyService` 会跳过写历史，效果等同静态 `persist_result=False`，但由 Yuki 每次调用自行决定。
 - **历史折叠**：`core/tool_prune.py` 按会话统计连续未调用工具的轮数，达到 `tools.prune_idle_turns`（默认 2）时把历史里的 `role="tool"` 消息压成一行 `【历史操作·已折叠】…备注…` 存根，不额外调用 LLM。想调整或排查时看日志 `[ToolPrune]`。
-- **手机工具依赖**：宿主需装 platform-tools（`apt install adb`）并保持 `adb server` 运行；容器镜像已装 `adb` 客户端，靠 `--network host` 直连 5037 端口。中文输入需要手机端安装 ADBKeyboard（否则会返回 `input_failed` 提示）。
+- **手机工具依赖**：
+  - 宿主：`sudo apt install android-tools-adb`，手机开 USB 调试并在弹窗点允许，`adb devices` 看到 `device` 即可；
+  - 容器：镜像已装 `adb`（`deploy/Dockerfile`），靠 `--network host` 直连宿主 5037 端口；
+  - 中文输入：手机装 ADBKeyboard 并 `adb shell ime enable com.android.adbkeyboard/.AdbIME`，工具在输入时临时切为该输入法、送完立刻还原用户原输入法；
+  - `launch` 支持常见中文 App 别名与包名，monkey 找不到 Activity 时会返回已安装第三方包名提示（退出码为 0 但输出 `aborted`）。

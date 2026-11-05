@@ -494,3 +494,11 @@
 - `config.py` 新增 `tools` 配置段；`deploy/Dockerfile` 增加 `adb`；`docs/toolchain-usage.md` 工具清单更新为 14 个。
 - 测试：新增 `tests/test_tool_hands.py`（17 例），全套 `pytest -q` 78 passed。
 - 状态：代码已提交 `7f4b299`。**待机主处理**：宿主未安装 platform-tools（`adb` 不在 PATH），容器镜像需重建才会装上 adb 客户端；中文输入需手机端 ADBKeyboard。
+
+## 2026-11-05 手机工具实地打通（华为 MAO-AL00 / 2JPYD23819000295）
+- 宿主安装 `android-tools-adb`（adb 1.0.41 服务端），手机授权后 `adb devices` 可见；`deploy/Dockerfile` 已含 `adb` 客户端，镜像重建（`yuki:base` e509f2310389）并通过 `supervisor.restart_container()` 平滑重启，`/health` ready。
+- 手机安装 ADBKeyboard 并 `ime enable com.android.adbkeyboard/.AdbIME`：`tools_phone._input_text` 改为「临时切 IME → ADB_INPUT_TEXT 广播 → 还原原 IME」，实测 Termux 中输入 `echo 电池测试OK > /sdcard/yuki_ime.txt` 后文件内容正确，原输入法已还原。
+- 控件树去重增强：同一中心点的同类节点只保留一个（首页天气控件原先重复 3 条）。
+- `launch` 改为 `_launch()`：检测 monkey 的 `aborted`/`No activities found`（退出码仍为 0），失败时回传已安装第三方包名；补充 浏览器/备忘录/termux 别名。
+- 实机验证：inspect 首页 18 个节点正常；`include_screenshot=True` 截图 720x1592/152KB，红框编号与图标对齐。
+- 测试：`tests/test_tool_hands.py` 增至 19 例（含 ASCII 与中文输入路径、IME 还原断言），全套 80 passed。

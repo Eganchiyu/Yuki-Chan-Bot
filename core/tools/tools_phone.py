@@ -8,7 +8,6 @@
        并在图上把 [#编号] 画在对应控件位置（Set-of-Mark），既能看图又能对上号。
 """
 import asyncio
-import base64
 import io
 import os
 import re
@@ -37,6 +36,11 @@ APP_ALIASES = {
     "高德地图": "com.autonavi.minimap",
     "网易云音乐": "com.netease.cloudmusic",
     "设置": "com.android.settings",
+    "浏览器": "com.huawei.browser",
+    "华为浏览器": "com.huawei.browser",
+    "备忘录": "com.huawei.notepad",
+    "termux": "com.termux",
+    "终端": "com.termux",
 }
 
 KEY_ALIASES = {
@@ -190,12 +194,17 @@ def _compact_tree(xml_text: str, max_nodes: int) -> dict:
             kind = "滚动"
         else:
             kind = "文本"
+
+        # 同一个控件常被拆成多个重叠节点（图标+文案+无障碍包装），中心点重合就只留第一个
+        center = ((x1 + x2) // 2, (y1 + y2) // 2)
+        if any(item["kind"] == kind and (item["cx"], item["cy"]) == center for item in kept):
+            continue
         kept.append({
             "label": label[:60],
             "kind": kind,
             "bounds": bounds,
-            "cx": (x1 + x2) // 2,
-            "cy": (y1 + y2) // 2,
+            "cx": center[0],
+            "cy": center[1],
         })
         if len(kept) >= max_nodes:
             break
@@ -276,6 +285,28 @@ def _register_screenshot(context, jpeg_bytes: bytes) -> tuple[dict | None, str]:
         return None, ""
 
 
+async def _launch(package: str) -> str:
+    """启动 App，返回错误说明；空字符串表示成功。
+
+    monkey 找不到 Activity 时退出码仍是 0（只打印 aborted），必须看输出才能判断。
+    """
+    code, raw = await _adb([
+        "shell", "monkey", "-p", package, "-c", "android.intent.category.LAUNCHER", "1",
+    ], timeout=25)
+    output = raw.decode("utf-8", "replace")
+    if "aborted" in output.lower() or "no activities found" in output.lower():
+        try:
+            installed = await _adb_text(["shell", "pm", "list", "packages", "-3"], timeout=15)
+            names = [line.split(":")[-1].strip() for line in installed.splitlines() if line.strip()]
+            sample = "、".join(names[:12]) or "（读取失败）"
+        except Exception:
+            sample = "（读取失败）"
+        return f"没找到 App「{package}」：请改传包名。已安装的第三方应用示例：{sample}"
+    if code != 0:
+        return f"启动 {package} 失败（退出码 {code}）"
+    return ""
+
+
 async def _dump_tree(max_nodes: int) -> dict:
     remote = "/data/local/tmp/yuki_ui.xml"
     await _adb(["shell", "uiautomator", "dump", remote], timeout=20)
@@ -293,26 +324,53 @@ async def _screencap() -> bytes:
     return raw
 
 
+ADB_KEYBOARD_IME = "com.android.adbkeyboard/.AdbIME"
+
+
+async def _current_ime() -> str:
+    try:
+        return await _adb_text(["shell", "settings", "get", "secure", "default_input_method"], timeout=10)
+    except Exception:
+        return ""
+
+
+async def _set_ime(ime_id: str) -> None:
+    await _adb(["shell", "ime", "set", ime_id], timeout=15)
+
+
 async def _input_text(text: str) -> tuple[bool, str]:
-    """输入文字：ASCII 走 input text，中文走 ADBKeyboard 广播，最后兜底剪贴板粘贴。"""
+    """输入文字：ASCII 走 input text，中文借 ADBKeyboard 输入法（用完还原原输入法）。"""
     if re.fullmatch(r"[\x20-\x7e]+", text):
         await _adb(["shell", "input", "text", shlex.quote(text).replace(" ", "%s")], timeout=20)
         return True, "input text"
 
-    b64 = base64.b64encode(text.encode("utf-8")).decode("ascii")
-    for action, payload in (("ADB_INPUT_B64", b64), ("ADB_INPUT_TEXT", text)):
-        try:
-            output = await _adb_text([
-                "shell", "am", "broadcast", "-a", action, "--es", "msg", payload,
-            ], timeout=20)
-        except Exception:
-            continue
+    quoted = shlex.quote(text)
+    original_ime = await _current_ime()
+
+    # 首选：临时切到 ADBKeyboard，用广播注入 Unicode 文本，随后还原
+    try:
+        await _adb(["shell", "ime", "enable", ADB_KEYBOARD_IME], timeout=15)
+        await _set_ime(ADB_KEYBOARD_IME)
+        await asyncio.sleep(0.4)
+        output = await _adb_text([
+            "shell", "am", "broadcast", "-a", "ADB_INPUT_TEXT", "--es", "msg", quoted,
+        ], timeout=20)
+        await asyncio.sleep(0.3)
+        if original_ime and original_ime != ADB_KEYBOARD_IME:
+            await _set_ime(original_ime)
         if "Broadcast completed" in output and "error" not in output.lower():
-            return True, f"广播 {action}"
+            return True, "ADBKeyboard 广播"
+    except Exception as exc:
+        logger.warning(f"[Phone] ADBKeyboard 输入失败: {exc}")
+        if original_ime and original_ime != ADB_KEYBOARD_IME:
+            try:
+                await _set_ime(original_ime)
+            except Exception:
+                pass
 
     # 兜底：写剪贴板后按粘贴键（部分系统支持）
     try:
-        await _adb(["shell", "cmd", "clipboard", "set-text", text], timeout=15)
+        await _adb(["shell", "cmd", "clipboard", "set-text", quoted], timeout=15)
         await _adb(["shell", "input", "keyevent", "KEYCODE_PASTE"], timeout=15)
         return True, "剪贴板粘贴（请确认输入框内容）"
     except Exception:
@@ -456,8 +514,9 @@ async def phone_action_tool(context, action="inspect", target=None, text="", dir
                 return ToolResult(success=False, content="launch 需要 app 参数（App 名称或包名）",
                                   error="missing_app")
             package = APP_ALIASES.get(raw.lower(), raw)
-            await _adb(["shell", "monkey", "-p", package, "-c",
-                        "android.intent.category.LAUNCHER", "1"], timeout=25)
+            error = await _launch(package)
+            if error:
+                return ToolResult(success=False, content=error, error="app_not_found")
             steps.append(f"launch {package}")
             wait_seconds = max(wait_seconds, 2.0)
 

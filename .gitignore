@@ -153,3 +153,4 @@ amtech_analysis/
 # ============================================
 deploy/dsh-home/attachments/
 deploy/dsh-home/llm-deepseek/
+.dsh/
