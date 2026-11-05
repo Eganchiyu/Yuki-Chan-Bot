@@ -1,5 +1,6 @@
 # core/tools/tools.py
 """工具规格装配：汇总各职责子服务导出的 ToolSpec，并保持旧引用兼容。"""
+from core.phone_focus import phone_finish_tool, phone_start_tool
 from core.toolchain import MAID_GOAL_BREVITY_HINT, ToolSpec
 
 from .tools_bash import bash_tool
@@ -42,6 +43,23 @@ TOOL_SPECS = [
             "required": ["command"],
         },
         handler=bash_tool,
+    ),
+    ToolSpec(
+        name="phone_start",
+        description=(
+            "拿起手机开始操作（点外卖、查App、跑组合技等）。"
+            "调用后进入手机聚焦模式，解锁触控与组合技工具并立即返回当前屏幕控件树与已有组合技。"
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "goal": {
+                    "type": "string",
+                    "description": "这次拿起手机要做什么（可选，如“点美团外卖”）",
+                },
+            },
+        },
+        handler=phone_start_tool,
     ),
     ToolSpec(
         name="phone_action",
@@ -156,6 +174,25 @@ TOOL_SPECS = [
             },
         },
         handler=phone_macro_tool,
+    ),
+    ToolSpec(
+        name="phone_finish",
+        description=(
+            "结束操作手机并退出聚焦模式，恢复常规工具空间。"
+            "请传入一句简短的 summary 总结刚才在手机上做了什么及结果，"
+            "它会覆盖工作模式中的繁琐操作记录保留在上下文里。"
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "summary": {
+                    "type": "string",
+                    "description": "简短总结刚才在手机上做了什么与结果（会以 USER 总结的形式写入上下文）",
+                },
+            },
+            "required": ["summary"],
+        },
+        handler=phone_finish_tool,
     ),
     ToolSpec(
         name="delegate_to_maid",

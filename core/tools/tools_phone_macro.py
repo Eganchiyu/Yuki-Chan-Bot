@@ -15,6 +15,7 @@ from config import cfg
 from core import phone_agent
 from core import phone_macro as pm
 from core.phone_driver import driver
+from core.phone_focus import phone_focus_manager
 from core.toolchain import ToolResult
 from utils.logger import get_logger
 
@@ -504,13 +505,22 @@ async def phone_macro_tool(
             return ToolResult(success=True, content=_format_macro(macro, detail=True))
 
         if action in ("save", "保存"):
-            return await _save(
+            res = await _save(
                 context, name, desc, app, from_history, exclude, steps, param_defs, replace,
                 auto_distill=bool(auto_distill),
             )
+            if res.success:
+                phone_focus_manager.record_step(context.chat_id, f"保存组合技「{name}」", note)
+            return res
 
         if action in ("play", "run", "执行", "回放"):
-            return await _play(context, name, params, dry_run, max_nodes, wait_seconds, expect_timeout)
+            res = await _play(context, name, params, dry_run, max_nodes, wait_seconds, expect_timeout)
+            phone_focus_manager.record_step(
+                context.chat_id,
+                f"回放组合技「{name}」({'成功' if res.success else '受阻'})",
+                note,
+            )
+            return res
 
         if action in ("delete", "删除"):
             if pm.macro_store.delete(name):

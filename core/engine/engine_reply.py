@@ -13,6 +13,7 @@ from core.reply_format import (
     strip_meme_tags,
 )
 from core.tool_prune import ToolHistoryPruner
+from core.phone_focus import PHONE_WORK_TOOL_NAMES, phone_focus_manager
 from core.toolchain import SKIP_REPLY_MARKER, ToolCallManager, ToolContext, ToolRuntime
 from core.tool_markup import extract_text_tool_calls, strip_tool_call_markup
 from modules.debug.context_snapshot import context_snapshot_store
@@ -259,12 +260,23 @@ class EngineReplyService:
             )
             tool_messages.append(rendered)
 
-    def _after_turn(self, chat_id, tools_executed: bool) -> None:
-        """一轮结束：连续若干轮没调工具时折叠历史里的工具原始输出。"""
+    def _after_turn(self, chat_id, tools_executed: bool, phone_tools_used: bool = False) -> None:
+        """一轮结束：连续若干轮没调工具时折叠历史里的工具原始输出；手机聚焦闲置超5轮自动退出并总结。"""
+        try:
+            phone_focus_manager.after_turn(chat_id, phone_tools_used, history_manager=self.history)
+        except Exception as exc:
+            logger.warning(f"[PhoneFocus] 轮次闲置检查失败: {exc}")
         try:
             self.pruner.after_turn(chat_id, tools_executed)
         except Exception as exc:
             logger.warning(f"[ToolPrune] 折叠失败: {exc}")
+
+    @staticmethod
+    def _resolve_active_tools(active_registry, phone_focus: bool) -> list:
+        try:
+            return active_registry.get_tools(phone_focus=phone_focus)
+        except TypeError:
+            return active_registry.get_tools()
 
     async def chat_with_tools(self, chat_id, combined_text, session, mode, messages, message_objs=None):
         """执行支持多轮工具调用的 LLM 对话。"""
@@ -303,8 +315,10 @@ class EngineReplyService:
             fallback_factory = build_backup_messages
         sent_thoughts = set()
         tools_executed = False
+        phone_tools_used = False
 
         for _ in range(active_tool_manager.max_rounds):
+            in_phone_focus = phone_focus_manager.is_focused(chat_id)
             response_message = await llm_chat_raw(
                 messages=tool_messages,
                 model=cfg.LLM_MODEL,
@@ -313,7 +327,7 @@ class EngineReplyService:
                 frequency_penalty=0.3,
                 presence_penalty=0.2,
                 max_tokens=1024,
-                tools=active_registry.get_tools(),
+                tools=self._resolve_active_tools(active_registry, in_phone_focus),
                 tool_choice="auto",
                 fallback_messages_factory=fallback_factory,
             )
@@ -338,6 +352,9 @@ class EngineReplyService:
                     call.get("function", {}).get("name", "")
                     for call in tool_calls
                 ]
+                is_phone_batch = in_phone_focus or any(n in PHONE_WORK_TOOL_NAMES for n in tool_names)
+                if any(n in PHONE_WORK_TOOL_NAMES for n in tool_names):
+                    phone_tools_used = True
                 logger.info(f"[ToolChain] 模型请求工具调用 chat_id={chat_id} tools={tool_names}")
 
                 # 同批里有 skip 就当作本轮什么都没发生：不发送、也不记录阶段文本
@@ -356,16 +373,17 @@ class EngineReplyService:
                             sent_content,
                             is_tool_thought=True,
                             sent_realtime=True,
+                            phone_focus_work=is_phone_batch,
                             save_immediately=False,
                             return_snapshot=False,
                         )
             else:
                 if response_message.get("_finish_reason") == "content_filter":
                     logger.warning(f"[ToolChain] {chat_id} 回复被内容安全过滤")
-                    self._after_turn(chat_id, tools_executed)
+                    self._after_turn(chat_id, tools_executed, phone_tools_used)
                     return "Filtered", "Filtered"
                 # 写回历史保留归一化标记；可见文本为空且已执行过工具时用工作中占位
-                self._after_turn(chat_id, tools_executed)
+                self._after_turn(chat_id, tools_executed, phone_tools_used)
                 return self.finalize_answer(
                     strip_tool_call_markup(response_message.get("content")),
                     tools_executed,
@@ -380,10 +398,12 @@ class EngineReplyService:
             if context.metadata.get("skip_reply"):
                 # skip 工具生效：本轮不生成也不要发送任何内容，交给管线收尾
                 logger.info(f"[ToolChain] {chat_id} 本轮选择 skip，保持安静")
-                self._after_turn(chat_id, tools_executed)
+                self._after_turn(chat_id, tools_executed, phone_tools_used)
                 return SKIP_REPLY_MARKER, SKIP_REPLY_MARKER
+
             for tool_result_message in tool_result_messages:
-                spec = active_registry.get_spec(tool_result_message.get("name"))
+                tool_name = tool_result_message.get("name")
+                spec = active_registry.get_spec(tool_name)
                 if spec is not None and not spec.persist_result:
                     # 结果只在本轮对话内可见，不回写历史，避免污染长期上下文
                     continue
@@ -395,13 +415,27 @@ class EngineReplyService:
                     chat_id,
                     "tool",
                     tool_result_message.get("content"),
-                    name=tool_result_message.get("name"),
+                    name=tool_name,
                     tool_call_id=tool_result_message.get("tool_call_id"),
+                    phone_focus_work=bool(
+                        phone_focus_manager.is_focused(chat_id) or tool_name in PHONE_WORK_TOOL_NAMES
+                    ),
                     save_immediately=False,
                     return_snapshot=False,
                 )
             tool_messages.extend(tool_result_messages)
             await self._attach_tool_screenshots(tool_result_messages, tool_messages)
+
+            finish_summary = context.metadata.pop("phone_finish_summary", None)
+            if finish_summary is not None:
+                # 刚调用了 phone_finish：将内存中本轮手机工作过程替换为 USER 总结，同时重新刷一次持久化历史
+                phone_focus_manager.exit_and_summarize(
+                    chat_id,
+                    history_manager=self.history,
+                    summary=finish_summary,
+                    tool_messages=tool_messages,
+                )
+
             remaining_budget = max(
                 0,
                 cfg.model.native_vision_max_images - self._used_image_slots(tool_messages),
@@ -423,7 +457,7 @@ class EngineReplyService:
             max_tokens=1024,
             fallback_messages_factory=fallback_factory,
         )
-        self._after_turn(chat_id, tools_executed)
+        self._after_turn(chat_id, tools_executed, phone_tools_used)
         return self.finalize_answer(fallback_raw, tools_executed)
 
     async def api_reply(self, chat_id: str, combined_text: str, session: list, mode,

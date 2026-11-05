@@ -527,6 +527,11 @@ class ToolsConfig:
         comment="组合技回放时每步等待界面达到预期的秒数",
         section="tools"
     )
+    phone_focus_idle_turns: int = config_field(
+        5,
+        comment="手机聚焦模式连续未操作手机的轮数上限（大于该轮数自动退出并注入总结）",
+        section="tools"
+    )
 
 
 @dataclass

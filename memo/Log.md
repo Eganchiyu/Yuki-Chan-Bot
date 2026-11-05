@@ -535,3 +535,11 @@
   - `phone_action` 新增复合动作 `scroll_to_find`（自动循环滑动查找目标文案，最多 5 次）；
   - 按机主指示不设支付/密码拦截护栏（使用隔离账号环境）；
   - 全套测试 `pytest tests -q` 118 passed。
+
+## 2026-11-05 手机聚焦模式（Phone Focus Mode）：按需展开 ToolSpec + 退出总结覆写
+- 新增 `core/phone_focus.py`（`PhoneFocusManager` + `phone_start_tool` + `phone_finish_tool`）：
+  - 常态下 `FunctionRegistry.get_tools(phone_focus=False)` 隐藏 `phone_action` / `phone_macro` / `phone_finish` 的长篇 schema，只暴露极简入口 `phone_start(goal)`；
+  - 调用 `phone_start` 后进入手机聚焦模式，自动返回当前屏幕控件树与已有组合技简表，并将当轮及后续轮次的 ToolSpec 切换为聚焦集（`phone_action` / `phone_macro` / `phone_finish` + `skip` / `send_master_private` / `send_qq_file`），收起日记、小本本、画图、小女仆等无关工具；
+  - 聚焦期间保持群聊在线状态，可正常发言，期间插入的群友消息按序保留；
+  - 调用 `phone_finish(summary="...")`（或连续闲置 > 5 轮自动退出）时：清除聚焦期间产生的所有手机工具调用与阶段思考记录，保留期间正常聊天消息，并以 `role="user"` 身份注入 `【手机操作总结】{summary}`，恢复常态 ToolSpec 空间。
+- 全套测试 `pytest tests -q` 121 passed。

@@ -122,9 +122,29 @@ class FunctionRegistry:
             del self._tools[name]
             logger.info(f"[FunctionRegistry] 注销 function: {name}")
 
-    def get_tools(self) -> list:
-        """获取所有已注册的 tools schema 列表。"""
-        return [spec.to_schema() for spec in self._tools.values()]
+    def get_tools(self, *, phone_focus: bool = False) -> list:
+        """获取当前模式下应暴露给模型的 tools schema 列表。
+
+        常态下 (phone_focus=False) 隐藏 phone_action / phone_macro / phone_finish 的长提示词，只暴露 phone_start；
+        手机聚焦模式下 (phone_focus=True) 收起其他无关日常工具，只保留手机操作与基础群聊工具。
+        """
+        from core.phone_focus import PHONE_FOCUS_ALLOWED_TOOLS, PHONE_HIDDEN_IN_DEFAULT
+
+        has_phone_suite = "phone_start" in self._tools
+        if not has_phone_suite:
+            return [spec.to_schema() for spec in self._tools.values()]
+
+        if phone_focus:
+            return [
+                spec.to_schema()
+                for spec in self._tools.values()
+                if spec.name in PHONE_FOCUS_ALLOWED_TOOLS
+            ]
+        return [
+            spec.to_schema()
+            for spec in self._tools.values()
+            if spec.name not in PHONE_HIDDEN_IN_DEFAULT
+        ]
 
     def get_handler(self, name: str):
         """获取指定 function 的执行函数。"""

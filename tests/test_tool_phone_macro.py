@@ -496,3 +496,125 @@ async def test_play_dismisses_overlay_and_heals_step(monkeypatch, tmp_path):
     assert evolved["version"] == 2
     assert evolved["steps"][0]["loc"]["text"] == "立即下单"
 
+
+# ---------- 手机聚焦模式 (phone_start / phone_finish / 超时退出) ----------
+
+def test_registry_get_tools_switches_between_default_and_phone_focus():
+    from core.toolchain import FunctionRegistry
+
+    reg = FunctionRegistry()
+    reg.scan_and_register(TOOL_SPECS)
+
+    default_names = {t["function"]["name"] for t in reg.get_tools(phone_focus=False)}
+    assert "phone_start" in default_names
+    assert "phone_action" not in default_names
+    assert "phone_macro" not in default_names
+    assert "phone_finish" not in default_names
+    assert "search_diary" in default_names
+
+    focus_names = {t["function"]["name"] for t in reg.get_tools(phone_focus=True)}
+    assert {"phone_action", "phone_macro", "phone_finish"} <= focus_names
+    assert "phone_start" not in focus_names
+    assert "search_diary" not in focus_names
+    assert "update_notebook" not in focus_names
+    assert "skip" in focus_names
+
+
+async def test_phone_focus_enter_and_finish_overwrites_work_records_preserving_chat(monkeypatch):
+    from core.phone_focus import PhoneFocusManager, SUMMARY_PREFIX, phone_finish_tool, phone_start_tool
+    import core.phone_focus as pf
+
+    mgr = PhoneFocusManager(max_idle_turns=5)
+    monkeypatch.setattr(pf, "phone_focus_manager", mgr)
+    monkeypatch.setattr(tp, "phone_focus_manager", mgr)
+
+    async def fake_ensure():
+        return "device"
+
+    async def fake_dump(max_nodes):
+        return _tree()
+
+    monkeypatch.setattr(tp, "_ensure_device", fake_ensure)
+    monkeypatch.setattr(tp, "_dump_tree", fake_dump)
+    monkeypatch.setattr(tp, "_screencap", lambda: (_ for _ in ()).throw(RuntimeError("no shot")))
+
+    class _FakeHistory:
+        def __init__(self, initial):
+            self.session = list(initial)
+
+        def get_session(self, cid):
+            return list(self.session)
+
+        def replace_session(self, cid, new_session):
+            self.session = list(new_session)
+            return self.session
+
+    fake_history = _FakeHistory([
+        {"role": "system", "content": "sys"},
+        {"role": "user", "content": "阿澄: 帮我点个汉堡"},
+        {"role": "assistant", "content": "我拿起手机看看~", "is_tool_thought": True, "phone_focus_work": True},
+        {"role": "tool", "name": "phone_start", "content": '{"success":true}', "phone_focus_work": True},
+        {"role": "user", "content": "群友B: 顺便看看有没有可乐"},
+        {"role": "tool", "name": "phone_action", "content": '{"success":true}', "phone_focus_work": True},
+        {"role": "assistant", "content": "好呀，看到可乐了"},
+    ])
+
+    ctx = _context()
+    ctx.metadata["history_manager"] = fake_history
+
+    start_res = await phone_start_tool(ctx, goal="点汉堡和可乐")
+    assert start_res.success is True
+    assert mgr.is_focused("c1") is True
+    assert "已进入手机聚焦模式" in start_res.content
+
+    finish_res = await phone_finish_tool(ctx, summary="在美团帮阿澄点好了汉堡和可乐")
+    assert finish_res.success is True
+    assert mgr.is_focused("c1") is False
+
+    # 工作记录被清除，工作期间插入的群友消息和正常回复按序保留，并以 USER 身份注入总结
+    roles_and_contents = [(m["role"], m["content"]) for m in fake_history.session]
+    assert roles_and_contents == [
+        ("system", "sys"),
+        ("user", "阿澄: 帮我点个汉堡"),
+        ("user", "群友B: 顺便看看有没有可乐"),
+        ("assistant", "好呀，看到可乐了"),
+        ("user", f"{SUMMARY_PREFIX}在美团帮阿澄点好了汉堡和可乐"),
+    ]
+
+
+def test_phone_focus_auto_exits_after_more_than_five_idle_turns():
+    from core.phone_focus import PhoneFocusManager, SUMMARY_PREFIX
+
+    class _FakeHistory:
+        def __init__(self):
+            self.session = [
+                {"role": "user", "content": "帮我看下手机"},
+                {"role": "tool", "name": "phone_action", "content": "{}", "phone_focus_work": True},
+            ]
+
+        def get_session(self, cid):
+            return list(self.session)
+
+        def replace_session(self, cid, new_session):
+            self.session = list(new_session)
+            return self.session
+
+    history = _FakeHistory()
+    mgr = PhoneFocusManager(max_idle_turns=5)
+    mgr.enter("c1", goal="查美团订单")
+    mgr.record_step("c1", "launch com.sankuai.meituan", "打开美团")
+
+    # 前 5 轮闲置不退出（限制大于 5 轮才退出）
+    for _ in range(5):
+        assert mgr.after_turn("c1", phone_tools_used=False, history_manager=history) is False
+        assert mgr.is_focused("c1") is True
+
+    # 第 6 轮（>5 轮）闲置自动退出并注入 USER 总结
+    assert mgr.after_turn("c1", phone_tools_used=False, history_manager=history) is True
+    assert mgr.is_focused("c1") is False
+    assert all(m.get("role") != "tool" for m in history.session)
+    assert history.session[-1]["role"] == "user"
+    assert history.session[-1]["content"].startswith(SUMMARY_PREFIX)
+    assert "查美团订单" in history.session[-1]["content"]
+
+

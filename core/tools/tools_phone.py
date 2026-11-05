@@ -20,6 +20,7 @@ import xml.etree.ElementTree as ET
 from config import cfg
 from core import phone_macro as pm
 from core.phone_driver import ADB_KEYBOARD_IME, driver
+from core.phone_focus import phone_focus_manager
 from core.toolchain import ToolResult
 from utils import BASE_DIR
 from utils.logger import get_logger
@@ -667,6 +668,9 @@ async def phone_action_tool(context, action="inspect", target=None, text="", dir
             pm.phone_history.record(context.chat_id, step, before, tree)
         except Exception as exc:  # 历史写失败不影响操作结果
             logger.warning(f"[Phone] 写历史失败: {exc}")
+
+    if action not in ("inspect", "查看", "看看") or phone_focus_manager.is_focused(context.chat_id):
+        phone_focus_manager.record_step(context.chat_id, " / ".join(steps), note)
 
     # 智能按需截图：模型要图，或控件树里几乎没文字（图标/图片页）时补一张
     text_nodes = [n for n in tree["nodes"] if n["kind"] in ("文本", "输入", "可点") and n["label"]]
