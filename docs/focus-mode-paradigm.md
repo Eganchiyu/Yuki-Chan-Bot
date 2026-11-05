@@ -111,7 +111,7 @@
 
 退出聚焦模式时，同时清理两处：
 1. **持久化历史（`HistoryManager`）**：过滤掉带 `focus_work` 的 `tool` 与 `is_tool_thought` 消息，追加 `{"role": "user", "content": "【XX操作总结】...", "is_focus_summary": True}`。
-2. **当轮内存消息（`tool_messages`）**：通过 `rewrite_in_memory_tool_messages` 移除当轮该领域的 `assistant(tool_calls)` + `role="tool"` + `【工具截图】` 消息对，在末尾追加同一条 `role="user"` 总结，确保当轮后续请求既不报 400 配对错误，又能立刻释放上下文窗口。
+2. **当轮内存消息（`tool_messages`）**：通过 `rewrite_in_memory_tool_messages` 移除当轮该领域的 `assistant(tool_calls)` + `role="tool"` + `【工具截图】` 消息对，在末尾追加同一条 `role="user"` 总结（附带一句“已结束操作，请直接回复用户”的当轮提示），同时将本轮标记为 `finished_this_turn=True` 以在本轮剩余步骤中收起 `<domain>_start`，**防止模型在记忆被抹除后在同一轮内二次重入聚焦模式**。
 
 ---
 

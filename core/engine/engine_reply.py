@@ -272,11 +272,17 @@ class EngineReplyService:
             logger.warning(f"[ToolPrune] 折叠失败: {exc}")
 
     @staticmethod
-    def _resolve_active_tools(active_registry, phone_focus: bool) -> list:
+    def _resolve_active_tools(active_registry, phone_focus: bool, phone_finished_this_turn: bool = False) -> list:
         try:
-            return active_registry.get_tools(phone_focus=phone_focus)
+            tools = active_registry.get_tools(phone_focus=phone_focus)
         except TypeError:
-            return active_registry.get_tools()
+            tools = active_registry.get_tools()
+        if phone_finished_this_turn and not phone_focus:
+            tools = [
+                t for t in tools
+                if (t.get("function") or {}).get("name") not in PHONE_WORK_TOOL_NAMES
+            ]
+        return tools
 
     async def chat_with_tools(self, chat_id, combined_text, session, mode, messages, message_objs=None):
         """执行支持多轮工具调用的 LLM 对话。"""
@@ -316,6 +322,7 @@ class EngineReplyService:
         sent_thoughts = set()
         tools_executed = False
         phone_tools_used = False
+        phone_finished_this_turn = False
 
         for _ in range(active_tool_manager.max_rounds):
             in_phone_focus = phone_focus_manager.is_focused(chat_id)
@@ -327,7 +334,9 @@ class EngineReplyService:
                 frequency_penalty=0.3,
                 presence_penalty=0.2,
                 max_tokens=1024,
-                tools=self._resolve_active_tools(active_registry, in_phone_focus),
+                tools=self._resolve_active_tools(
+                    active_registry, in_phone_focus, phone_finished_this_turn
+                ),
                 tool_choice="auto",
                 fallback_messages_factory=fallback_factory,
             )
@@ -428,7 +437,8 @@ class EngineReplyService:
 
             finish_summary = context.metadata.pop("phone_finish_summary", None)
             if finish_summary is not None:
-                # phone_finish_tool 已完成持久化历史覆写，这里只需同步清理当轮内存中的 tool_messages
+                # phone_finish_tool 已完成持久化历史覆写，这里只需同步清理当轮内存中的 tool_messages 并禁止同轮重入
+                phone_finished_this_turn = True
                 phone_focus_manager.rewrite_in_memory_tool_messages(tool_messages, finish_summary)
 
             remaining_budget = max(

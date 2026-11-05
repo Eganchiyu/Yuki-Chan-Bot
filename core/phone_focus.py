@@ -170,7 +170,10 @@ class PhoneFocusManager:
 
         cleaned.append({
             "role": "user",
-            "content": f"{SUMMARY_PREFIX}{summary_text}",
+            "content": (
+                f"{SUMMARY_PREFIX}{summary_text}\n"
+                "（你已结束本轮手机操作并收起手机，请直接根据上述操作结果回复用户。）"
+            ),
         })
         tool_messages[:] = cleaned
 
