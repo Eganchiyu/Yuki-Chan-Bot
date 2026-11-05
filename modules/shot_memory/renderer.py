@@ -24,6 +24,18 @@ TEXT_MAX_WIDTH = 580
 MEDIA_MAX_WIDTH = 360
 MEDIA_MAX_HEIGHT = 260
 CACHE_DIR = os.path.join(BASE_DIR, "data", "shot_memory", "media_cache")
+# 字体：容器镜像里没有系统字体，所以优先用项目自带的 data/fonts/（随 data 卷持久化）
+FONT_DIR = os.path.join(BASE_DIR, "data", "fonts")
+FONT_SYSTEM_DIRS = [
+    "/usr/share/fonts/opentype/noto",
+    "/usr/share/fonts/truetype/noto",
+    "/usr/share/fonts/noto-cjk",
+    "/usr/share/fonts/truetype/wqy",
+    "/usr/share/fonts/sarasa-gothic",
+    "/usr/local/share/fonts",
+]
+_FONT_CACHE: dict[tuple[int, bool], object] = {}
+_RESOLVED_FONT_PATH: dict[bool, str | None] = {}
 
 
 @dataclass
@@ -514,26 +526,133 @@ def line_height(font) -> int:
         return bbox[3] - bbox[1]
 
 
-def load_font(size: int, bold: bool = False):
-    candidates = []
+def _font_candidates(bold: bool) -> list[str]:
+    """按优先级返回候选字体路径：项目自带字体优先，其次系统字体目录。"""
+    names = (
+        [
+            "NotoSansCJK-Bold.ttc",
+            "NotoSansCJK-Regular.ttc",
+            "wqy-zenhei.ttc",
+            "wqy-microhei.ttc",
+            "Sarasa-Bold.ttc",
+            "Sarasa-Regular.ttc",
+        ]
+        if bold
+        else [
+            "NotoSansCJK-Regular.ttc",
+            "wqy-microhei.ttc",
+            "wqy-zenhei.ttc",
+            "Sarasa-Regular.ttc",
+        ]
+    )
+    candidates: list[str] = []
     if os.name == "nt":
         candidates.extend([
             r"C:\Windows\Fonts\msyhbd.ttc" if bold else r"C:\Windows\Fonts\msyh.ttc",
             r"C:\Windows\Fonts\simhei.ttf",
             r"C:\Windows\Fonts\simsun.ttc",
         ])
-    candidates.extend([
-        "/usr/share/fonts/sarasa-gothic/Sarasa-Bold.ttc",
-        "/usr/share/fonts/noto-cjk/NotoSansCJK-Bold.ttc",
-        "/usr/share/fonts/sarasa-gothic/Sarasa-Regular.ttc",
-        "/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc",
-        "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-    ])
-    for path in candidates:
-        if path and os.path.exists(path):
-            try:
-                return ImageFont.truetype(path, size=size)
-            except Exception:
-                pass
-    return ImageFont.load_default()
+    for name in names:
+        candidates.append(os.path.join(FONT_DIR, name))
+        for folder in FONT_SYSTEM_DIRS:
+            candidates.append(os.path.join(folder, name))
+    return candidates
+
+
+def _render_probe(font, ch: str) -> bytes:
+    canvas = Image.new("L", (72, 72), 0)
+    ImageDraw.Draw(canvas).text((4, 4), ch, font=font, fill=255)
+    return canvas.tobytes()
+
+
+def _supports_cjk(font) -> bool:
+    """用『国』和私用区字符的渲染结果对比，判断字体是否真有中文字形（而不是豆腐块）。"""
+    try:
+        cjk = _render_probe(font, "国")
+        missing = _render_probe(font, "\ue000")
+    except Exception:
+        return False
+    return cjk != missing and any(cjk)
+
+
+def _open_font_face(path: str, size: int):
+    """打开字体文件；.ttc 字体集优先选简体中文字面（如 Noto Sans CJK SC）。"""
+    best = None
+    for index in range(6):
+        try:
+            font = ImageFont.truetype(path, size=size, index=index)
+        except Exception:
+            break
+        if not _supports_cjk(font):
+            continue
+        try:
+            family = (font.getname() or ("", ""))[0] or ""
+        except Exception:
+            family = ""
+        if "SC" in family.split():
+            return font
+        if best is None:
+            best = font
+    return best
+
+
+def _scan_font_files() -> list[str]:
+    found: list[str] = []
+    seen: set[str] = set()
+    for folder in [FONT_DIR, *FONT_SYSTEM_DIRS]:
+        if not os.path.isdir(folder):
+            continue
+        for dirpath, _dirnames, filenames in os.walk(folder):
+            for name in filenames:
+                if not name.lower().endswith((".ttf", ".ttc", ".otf")):
+                    continue
+                path = os.path.join(dirpath, name)
+                if path not in seen:
+                    seen.add(path)
+                    found.append(path)
+    return found
+
+
+def _resolve_font_path(bold: bool) -> str | None:
+    """挑一个真正带中文字形的字体文件，结果按粗体与否缓存（只扫一次）。"""
+    if bold in _RESOLVED_FONT_PATH:
+        return _RESOLVED_FONT_PATH[bold]
+    resolved = None
+    for path in _font_candidates(bold):
+        if not os.path.exists(path):
+            continue
+        probe = _open_font_face(path, 20)
+        if probe is not None:
+            resolved = path
+            break
+    if resolved is None:
+        for path in _scan_font_files():
+            probe = _open_font_face(path, 20)
+            if probe is not None:
+                resolved = path
+                break
+    _RESOLVED_FONT_PATH[bold] = resolved
+    if resolved:
+        logger.info(f"[ShotRenderer] 中文字体: {resolved}")
+    else:
+        logger.warning(
+            "[ShotRenderer] 未找到带中文字形的字体，中文会渲染成方框；"
+            "请在容器里装 fonts-noto-cjk / fonts-wqy-zenhei，"
+            f"或把 .ttf/.ttc 放进 {FONT_DIR}"
+        )
+    return resolved
+
+
+def load_font(size: int, bold: bool = False):
+    key = (size, bold)
+    cached = _FONT_CACHE.get(key)
+    if cached is not None:
+        return cached
+    font = None
+    path = _resolve_font_path(bold)
+    if path:
+        font = _open_font_face(path, size)
+    if font is None:
+        font = ImageFont.load_default()
+    _FONT_CACHE[key] = font
+    return font
