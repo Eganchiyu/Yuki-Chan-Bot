@@ -30,15 +30,17 @@ _DENY_RULES = [
     (re.compile(r"\b(shutdown|reboot|halt|poweroff)\b"), "关机/重启系统"),
     (re.compile(r":\(\)\s*\{[^}]*\}\s*;\s*:"), "fork 炸弹"),
     (re.compile(r"\b(chmod|chown)\b[^\n]*\s-R\s+[0-7]{3,4}\s+/(\s|$)"), "递归修改根目录权限"),
-    (re.compile(r"\brm\b[^\n]*\s-r[a-z]*f[a-z]*\s*(/|~|/\*|~/\*)(\s|$)"), "递归删除根目录/家目录"),
+    # 改进：拦截各种形变参数的递归删除根目录/家目录操作
+    (re.compile(r"\brm\b\s+(?:-[a-zA-Z]*\s+)*-[a-zA-Z]*r[a-zA-Z]*\s+.*(?:/|~)(?:\*|/|$)"), "递归删除重要目录"),
     (re.compile(r">\s*/dev/(sd|nvme|mmcblk)"), "覆写块设备"),
 ]
 
-# 凭证文件：只拦“读取/输出”，不影响正常调试其他配置
+# 凭证文件：只拦“读取”，不影响文件查看 (ls) 或环境准备 (cp .env.example .env)
 _CREDENTIAL_RULES = [
     (re.compile(r"\.credentials"), "凭证文件"),
     (re.compile(r"credentials\.ya?ml"), "凭证文件"),
-    (re.compile(r"(^|[\s/'\"])(\.env)([\s'\"]|$)"), "环境变量文件"),
+    # 改进：仅限制读取性质的命令操作环境变量文件
+    (re.compile(r"\b(cat|less|more|tail|head|grep|vi|vim|nano)\b\s+.*\.env\b"), "读取环境变量文件"),
     (re.compile(r"id_rsa|id_ed25519"), "私钥文件"),
 ]
 
@@ -46,8 +48,9 @@ _CREDENTIAL_RULES = [
 _REDACT_RULES = [
     (re.compile(r"sk-[A-Za-z0-9_\-]{12,}"), "sk-***"),
     (re.compile(r"tvly-[A-Za-z0-9_\-]{8,}"), "tvly-***"),
+    # 改进：加入 = 以兼容带 Padding 的 Base64 Token
     (re.compile(r"(?i)((?:api[_-]?key|token|secret|password|cookie)\s*[:=]\s*)"
-                r"[\"']?[A-Za-z0-9_\-/.+]{8,}"), r"\1***"),
+                r"[\"']?[A-Za-z0-9_\-/.+=]{8,}"), r"\1***"),
 ]
 
 # 不传给子进程的敏感环境变量
@@ -76,8 +79,9 @@ def _child_env() -> dict:
 
 
 def _truncate(text: str, limit: int) -> str:
-    if len(text) <= limit:
-        return text
+    # 改进：防止 limit 过小导致后续截断逻辑产生负数索引
+    if len(text) <= limit or limit < 100:
+        return text[:limit]
     head = int(limit * 0.65)
     tail = max(0, limit - head - 40)
     return f"{text[:head]}\n...(中间省略 {len(text) - head - tail} 字)...\n{text[-tail:]}"
@@ -85,28 +89,39 @@ def _truncate(text: str, limit: int) -> str:
 
 async def _run(command: str, timeout: float) -> tuple[int, str]:
     """执行命令，返回 (退出码, 合并输出)；超时按进程组整棵杀掉。"""
+    # 改进：增加 ulimit -u 200 限制最大用户进程数，底层物理级防 fork 炸弹
+    safe_command = f"ulimit -u 200 >/dev/null 2>&1; {command}"
+    
     proc = await asyncio.create_subprocess_shell(
-        command,
+        safe_command,
         cwd=WORKDIR,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.STDOUT,
         env=_child_env(),
         start_new_session=True,
+        executable="/bin/bash",  # 改进：显式使用 bash 而非系统默认的 dash/sh
     )
     try:
         stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout)
         return proc.returncode or 0, (stdout or b"").decode("utf-8", "replace")
     except asyncio.TimeoutError:
+        # 改进：更严密的异常捕捉，防止进程刚好退出时的资源竞态导致主线程崩溃
         try:
             os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
         except (ProcessLookupError, PermissionError):
+            pass
+        
+        try:
             proc.kill()
+        except (ProcessLookupError, PermissionError):
+            pass
+            
         await proc.wait()
         raise
 
 
 async def bash_tool(context, command, timeout=20, note="", remember=True):
-    """在当前环境执行一条 shell 命令。"""
+    """在当前环境执行一条 bash 命令。注意：环境是无状态的，需要切换目录请使用 `cd path && cmd`。"""
     command = (command or "").strip()
     if not command:
         return ToolResult(success=False, content="缺少要执行的命令", error="missing_command")
@@ -116,13 +131,16 @@ async def bash_tool(context, command, timeout=20, note="", remember=True):
         logger.warning(f"[Bash] 已拦截命令 chat={context.chat_id}: {command[:120]}")
         return ToolResult(success=False, content=rejected, error="command_rejected")
 
+    # 改进：安全解包配置，防止 cfg.tools 为 None 导致的 AttributeError
     cfg_tools = getattr(cfg, "tools", None)
-    max_timeout = float(getattr(cfg_tools, "bash_max_timeout_seconds", 60))
-    max_chars = int(getattr(cfg_tools, "bash_max_output_chars", 4000))
+    max_timeout = float(getattr(cfg_tools, "bash_max_timeout_seconds", 60) if cfg_tools else 60)
+    max_chars = int(getattr(cfg_tools, "bash_max_output_chars", 4000) if cfg_tools else 4000)
     try:
-        timeout = float(timeout or getattr(cfg_tools, "bash_timeout_seconds", 20))
+        cfg_timeout_default = getattr(cfg_tools, "bash_timeout_seconds", 20) if cfg_tools else 20
+        timeout = float(timeout or cfg_timeout_default)
     except (TypeError, ValueError):
         timeout = 20.0
+        
     timeout = max(1.0, min(timeout, max_timeout))
 
     try:
@@ -145,6 +163,7 @@ async def bash_tool(context, command, timeout=20, note="", remember=True):
     content = output or "(命令没有输出)"
     if exit_code != 0:
         content = f"退出码 {exit_code}\n{content}"
+        
     return ToolResult(
         success=exit_code == 0,
         content=content,
