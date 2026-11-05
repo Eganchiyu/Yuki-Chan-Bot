@@ -485,3 +485,12 @@
 
 
 
+
+## 2026-11-05 主模型亲手操作工具（bash / phone_action）
+- 新增 `core/tools/tools_bash.py`：单条 shell 执行，cwd 固定项目根，默认 20s（上限 60s，进程组整棵杀）；输出脱敏 `sk-*`/`tvly-*` 及 `*_key/token/secret=` 形态，拦 `rm -rf /`、`mkfs`、关机、凭证文件读取；`remember=false` → `data.no_persist` 由引擎跳过写历史。
+- 新增 `core/tools/tools_phone.py`：adb 控制手机。`uiautomator dump` 精简为 `[#编号] [类型] 文案 @(cx,cy)`（去重、剔除不可见与整屏空壳、上限 `tools.phone_max_nodes`）；动作后自动等待刷新并回传新控件树；控件树文字 < 3 或 `include_screenshot=true` 时截屏缩放到 720px 宽并画编号红框（Set-of-Mark），注册进 `ImageStore` 供多模态上下文。
+- 新增 `core/tool_prune.py`：按会话统计连续未调用工具轮数，达 `tools.prune_idle_turns`（默认 2）后把 `role="tool"` 消息折叠成 `【历史操作·已折叠】…备注…` 存根，零额外 LLM 开销。
+- `EngineReplyService`：支持工具动态 `no_persist`、`_attach_tool_screenshots` 把工具截图渲染成 `image_url` 块、`_after_turn` 折叠钩子；`max_rounds` 由 `tools.max_rounds`（默认 8）控制。
+- `config.py` 新增 `tools` 配置段；`deploy/Dockerfile` 增加 `adb`；`docs/toolchain-usage.md` 工具清单更新为 14 个。
+- 测试：新增 `tests/test_tool_hands.py`（17 例），全套 `pytest -q` 78 passed。
+- 状态：代码已提交 `7f4b299`。**待机主处理**：宿主未安装 platform-tools（`adb` 不在 PATH），容器镜像需重建才会装上 adb 客户端；中文输入需手机端 ADBKeyboard。
