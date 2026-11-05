@@ -256,6 +256,17 @@ async def phone_start_tool(context, goal: str = "") -> ToolResult:
         note=goal or "拿起手机查看当前屏幕",
         remember=False,
     )
+    if not inspect_res.success and inspect_res.error == "device_unavailable":
+        # 手机未连接时直接回退到常态，避免模型还得再调一次 phone_finish 退出
+        phone_focus_manager._states.pop(str(context.chat_id), None)
+        return ToolResult(
+            success=False,
+            content=inspect_res.content,
+            data={"phone_focus": "aborted", "no_persist": True},
+            error=inspect_res.error,
+            name="phone_start",
+        )
+
     header = (
         "【已进入手机聚焦模式】已展开 phone_action / phone_macro / phone_finish 工具，并收起其他无关工具。\n"
         "你在聚焦期间仍处于群聊/会话中，可随时正常发言互动；"

@@ -428,13 +428,8 @@ class EngineReplyService:
 
             finish_summary = context.metadata.pop("phone_finish_summary", None)
             if finish_summary is not None:
-                # 刚调用了 phone_finish：将内存中本轮手机工作过程替换为 USER 总结，同时重新刷一次持久化历史
-                phone_focus_manager.exit_and_summarize(
-                    chat_id,
-                    history_manager=self.history,
-                    summary=finish_summary,
-                    tool_messages=tool_messages,
-                )
+                # phone_finish_tool 已完成持久化历史覆写，这里只需同步清理当轮内存中的 tool_messages
+                phone_focus_manager.rewrite_in_memory_tool_messages(tool_messages, finish_summary)
 
             remaining_budget = max(
                 0,

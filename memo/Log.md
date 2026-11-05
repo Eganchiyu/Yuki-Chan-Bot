@@ -543,4 +543,5 @@
   - 聚焦期间保持群聊在线状态，可正常发言，期间插入的群友消息按序保留；
   - 调用 `phone_finish(summary="...")`（或连续闲置 > 5 轮自动退出）时：清除聚焦期间产生的所有手机工具调用与阶段思考记录，保留期间正常聊天消息，并以 `role="user"` 身份注入 `【手机操作总结】{summary}`，恢复常态 ToolSpec 空间。
 - 新增 `docs/focus-mode-paradigm.md` 整理「聚焦模式（Focus Mode）」通用设计范式与 4 步工程模板（供后续扩展浏览器、Bilibili 等聚焦模式复用），同步更新 `docs/toolchain-usage.md`。
+- 修复容器内 `_restart_adb_server()` 误杀宿主 `adb server` 并在无 `/dev/bus/usb` 的容器命名空间拉起 daemon 导致找不到 USB 手机的问题：容器环境下（`/.dockerenv`）改为 `adb reconnect`；同时修复 `phone_finish` 持久化历史重复注入总结与未连接设备时自动回退聚焦状态。
 - 全套测试 `pytest tests -q` 121 passed。

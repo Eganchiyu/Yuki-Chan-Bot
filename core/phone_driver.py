@@ -74,8 +74,26 @@ class AndroidDriver:
         return default_fn
 
     async def _restart_adb_server(self) -> None:
-        """连续超时达到阈值时重启 adb server 自愈。"""
+        """连续超时达到阈值时尝试恢复通信。
+
+        注意：容器内通过 --network host 连接宿主 5037 的 adb server，但容器未挂载 /dev/bus/usb；
+        若在容器内 kill-server 再 start-server，会在容器命名空间内拉起看不到 USB 设备的瞎子 daemon。
+        因此容器内只执行 adb reconnect，仅在宿主直跑时才执行 kill-server / start-server。
+        """
         adb_bin = getattr(self._tools_cfg(), "adb_path", "adb") or "adb"
+        if os.path.exists("/.dockerenv"):
+            logger.warning("[PhoneDriver] 连续 ADB 超时达到 2 次（容器环境），正在执行 adb reconnect 自愈")
+            try:
+                proc = await asyncio.create_subprocess_exec(
+                    adb_bin, "reconnect",
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+                await asyncio.wait_for(proc.communicate(), timeout=10.0)
+            except Exception as exc:
+                logger.warning(f"[PhoneDriver] adb reconnect 异常: {exc}")
+            return
+
         logger.warning("[PhoneDriver] 连续 ADB 超时达到 2 次，正在执行 kill-server / start-server 自愈")
         for sub in ("kill-server", "start-server"):
             try:
