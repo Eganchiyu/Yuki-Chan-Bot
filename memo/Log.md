@@ -545,3 +545,9 @@
 - 新增 `docs/focus-mode-paradigm.md` 整理「聚焦模式（Focus Mode）」通用设计范式与 4 步工程模板（供后续扩展浏览器、Bilibili 等聚焦模式复用），同步更新 `docs/toolchain-usage.md`。
 - 修复容器内 `_restart_adb_server()` 误杀宿主 `adb server` 并在无 `/dev/bus/usb` 的容器命名空间拉起 daemon 导致找不到 USB 手机的问题：容器环境下（`/.dockerenv`）改为 `adb reconnect`；同时修复 `phone_finish` 持久化历史重复注入总结与未连接设备时自动回退聚焦状态。
 - 全套测试 `pytest tests -q` 121 passed。
+
+## 2026-11-06 /手机聚焦自动唤醒解锁
+- `core/phone_driver.py` 新增 `wake_and_unlock()`：`dumpsys power` 判 mWakefulness（asleep 才发 KEYCODE_WAKEUP）→ `dumpsys window` 查 keyguard（isKeyguardShowing / mDreamingLockscreen）→ 按真实分辨率上滑（带抖动，最多 2 次）→ KEYCODE_MENU 兜底；返回 (是否解锁, 中文说明)。
+- `core/phone_focus.py::phone_start_tool` 在进入聚焦后、inspect 前调用，结果写进 header「唤醒/解锁: ...」与 data["unlocked"]；失败时提示可先上滑/按电源键。
+- 本机无锁屏密码（机主确认），故不做凭据输入。
+- 实测：KEYCODE_SLEEP 后 phone_start → 「已点亮屏幕、上滑解锁成功(第1次)」，inspect 拿到 bili 首页；`pytest tests` 121 passed。
