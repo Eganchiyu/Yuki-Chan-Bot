@@ -551,3 +551,4 @@
 - `core/phone_focus.py::phone_start_tool` 在进入聚焦后、inspect 前调用，结果写进 header「唤醒/解锁: ...」与 data["unlocked"]；失败时提示可先上滑/按电源键。
 - 本机无锁屏密码（机主确认），故不做凭据输入。
 - 实测：KEYCODE_SLEEP 后 phone_start → 「已点亮屏幕、上滑解锁成功(第1次)」，inspect 拿到 bili 首页；`pytest tests` 121 passed。
+- 改成静默：`phone_start` 输出与 data 不再出现唤醒/解锁字样（仅 logger.warning 记录失败），模型只看到屏幕内容；实测休眠→自动解锁→inspect 正常，121 passed。
