@@ -509,3 +509,11 @@
 - `EngineMonitorService` 空闲巡检：`diary.min_turns` 同样只数聊天条数（日志改成「聊天轮数」）。
 - `EngineDiaryService.do_summarize`：总结输入只喂聊天消息，工具输出/工具调用痕迹不进日记；回写历史保留 system + 最近 KEEP_LAST_DIALOGUE 条聊天。
 - 测试：新增 `tests/test_diary_filter.py`（7 例）覆盖过滤器、总结输入过滤、两个阈值；全套 87 passed。容器已平滑重启，/health ready。
+
+## 2026-11-05 手机组合技（phone_macro）：操作历史 + 语义定位器 + 回放
+- 新增 `core/phone_macro.py`：语义定位器（text/cls/rel 比例坐标）、界面指纹 `state_of`、expect 生成（动作后新增文案，过滤「加载中」类过程提示）、`PhoneHistory`（jsonl 滚动 500/留 300）、`MacroStore`（原子写、同名覆盖 version+1、used/ok/fail 统计）、`clean_steps` 清洗、`{{参数}}` 渲染/字面量替换。
+- `core/tools/tools_phone.py` 重构：抽出 `_prepare_step`（工具参数 → 可记录单步）与 `_exec_step`（录制/回放共用的执行器）、`_wait_expect`（回放校验）；动作前 dump 兼作 before 快照，成功后写历史；`remember=false` 不落历史。
+- 新增工具 `phone_macro`（`core/tools/tools_phone_macro.py`）：`list / history / show / save / play / delete`；save 支持 `from_history=N`、`exclude=[#n]`、`param_defs`+`replace` 参数化；play 逐步校验 expect，失败即停并回传控件树+截图，launch 步只校验包名（App 会恢复上次页面）。
+- 清洗规则：往返折叠（tap…back 后界面指纹回到 tap 前 → 整段丢弃）、空转按键（before/after 指纹相同，多为输入法吃掉 back）、相邻重复点击（2.5s 内同定位器）；历史本身不改，只在存宏时清洗。
+- 配置：`tools.phone_expect_timeout=3.0`；`phone_action` 的 `remember` 语义扩展到操作历史。
+- 校验：真机（华为 MAO-AL00）实测 launch 设置 → tap WLAN → back，存宏自动折叠 2 步只留 launch，play 通过；曾遇「输入法吞 back」导致空转，已用指纹规则覆盖。离线测试新增 `tests/test_tool_phone_macro.py` 21 例，全套 108 passed。

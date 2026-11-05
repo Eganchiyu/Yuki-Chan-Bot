@@ -8,6 +8,7 @@ from .tools_media import download_file_tool, generate_image_tool
 from .tools_message import poke_tool, send_master_private_tool, send_qq_file_tool
 from .tools_notebook import update_notebook_tool
 from .tools_phone import phone_action_tool
+from .tools_phone_macro import phone_macro_tool
 from .tools_rich import parse_rich_message_tool
 from .tools_skip import skip_reply_tool
 from .tools_snapshot import capture_group_snapshot_tool, search_group_snapshots_tool
@@ -26,6 +27,7 @@ __all__ = [
     "send_qq_file_tool",
     "update_notebook_tool",
     "phone_action_tool",
+    "phone_macro_tool",
     "parse_rich_message_tool",
     "skip_reply_tool",
     "capture_group_snapshot_tool",

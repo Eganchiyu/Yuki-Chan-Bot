@@ -522,6 +522,11 @@ class ToolsConfig:
         comment="手机截图 JPEG 质量（1-100）",
         section="tools"
     )
+    phone_expect_timeout: float = config_field(
+        3.0,
+        comment="组合技回放时每步等待界面达到预期的秒数",
+        section="tools"
+    )
 
 
 @dataclass

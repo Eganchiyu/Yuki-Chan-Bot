@@ -5,16 +5,19 @@
     1. 每次动作后自动等待界面刷新，并重新 dump 无障碍控件树；
     2. 控件树精简成 [#编号] + 中心坐标，模型只需传 target=编号 就能精准点按；
     3. 控件树文字信息不足、或模型主动要求时，附一张缩放到低分辨率的截图，
-       并在图上把 [#编号] 画在对应控件位置（Set-of-Mark），既能看图又能对上号。
+       并在图上把 [#编号] 画在对应控件位置（Set-of-Mark），既能看图又能对上号；
+    4. 每次动作把「与编号无关的语义定位器」写进操作历史，存成组合技后可回放。
 """
 import asyncio
 import io
 import os
 import re
 import shlex
+import time
 import xml.etree.ElementTree as ET
 
 from config import cfg
+from core import phone_macro as pm
 from core.toolchain import ToolResult
 from utils import BASE_DIR
 from utils.logger import get_logger
@@ -62,8 +65,15 @@ KEY_ALIASES = {
     "paste": "KEYCODE_PASTE",
 }
 
+# 会被写进操作历史的动作（inspect / wait 属于观察与等待，不进宏）
+RECORDABLE_OPS = {"tap", "long_press", "input", "swipe", "key", "launch"}
+
 _BOUNDS_RE = re.compile(r"\[(-?\d+),(-?\d+)\]\[(-?\d+),(-?\d+)\]")
 _SCREENSHOT_DIR = os.path.join(os.path.abspath(BASE_DIR), "temp", "phone_shots")
+
+
+class PhoneStepError(RuntimeError):
+    """单步执行失败（定位不到控件、adb 报错等）。"""
 
 
 def _tools_cfg():
@@ -202,6 +212,7 @@ def _compact_tree(xml_text: str, max_nodes: int) -> dict:
         kept.append({
             "label": label[:60],
             "kind": kind,
+            "cls": cls,
             "bounds": bounds,
             "cx": center[0],
             "cy": center[1],
@@ -388,6 +399,223 @@ def _resolve_target(target) -> tuple[int, int] | None:
     return None
 
 
+# ---------------- 单步步骤：构造 / 执行 / 校验 ----------------
+
+def _index_of(target) -> int | None:
+    raw = str(target or "").lstrip("#").strip()
+    return int(raw) if raw.isdigit() else None
+
+
+def _find_node(tree: dict, index: int) -> dict:
+    node = next((n for n in tree["nodes"] if n["index"] == index), None)
+    if not node:
+        raise PhoneStepError(f"没有 [#{index}] 这个控件，请重新 inspect 当前界面。")
+    return node
+
+
+def _node_point_step(op: str, node: dict, tree: dict, **extra) -> dict:
+    return {
+        "op": op,
+        "label": (node.get("label") or "")[:40],
+        "loc": pm.build_locator(node, tree),
+        **extra,
+    }
+
+
+def _swipe_coords(tree: dict, target, direction: str) -> tuple[float, float, float, float, str]:
+    width, height = tree["size"] if min(tree["size"]) > 0 else (1080, 2400)
+    parts = [float(v) for v in re.split(r"[,\s]+", str(target or "")) if v.strip()]
+    if len(parts) == 4:
+        return parts[0], parts[1], parts[2], parts[3], "自定义坐标"
+    cx, cy = width // 2, height // 2
+    span = height // 4
+    mapping = {
+        "up": (cx, cy + span, cx, cy - span),
+        "down": (cx, cy - span, cx, cy + span),
+        "left": (cx + span, cy, cx - span, cy),
+        "right": (cx - span, cy, cx + span, cy),
+    }
+    direction = (direction or "up").strip().lower()
+    if direction not in mapping:
+        raise ValueError("direction 只能是 up/down/left/right")
+    x1, y1, x2, y2 = mapping[direction]
+    return x1, y1, x2, y2, direction
+
+
+async def _prepare_step(action: str, tree: dict, *, target=None, text="", direction="up",
+                        duration=300, app="", seconds=1.0) -> tuple[dict | None, str]:
+    """把一次工具调用翻译成可记录的单步。inspect 返回 (None, 展示文本)。"""
+    if action in ("inspect", "查看", "看看"):
+        return None, "inspect"
+
+    if action in ("tap", "click", "点击"):
+        coords = _resolve_target(target)
+        if coords:
+            step = {"op": "tap", "label": "", "loc": pm.locator_at(coords[0], coords[1], tree)}
+            return step, f"tap ({coords[0]},{coords[1]})"
+        index = _index_of(target)
+        if index is None:
+            raise ValueError("tap 需要 target=控件编号 或 target=\"x,y\"")
+        node = _find_node(tree, index)
+        step = _node_point_step("tap", node, tree)
+        return step, f"tap #{index}({node['label'][:12] or '无文字'})"
+
+    if action in ("long_press", "longpress", "长按"):
+        coords = _resolve_target(target)
+        if coords:
+            step = {
+                "op": "long_press",
+                "label": "",
+                "loc": pm.locator_at(coords[0], coords[1], tree),
+            }
+            return step, f"long_press ({coords[0]},{coords[1]})"
+        index = _index_of(target)
+        if index is None:
+            raise ValueError("long_press 需要控件编号或坐标")
+        node = _find_node(tree, index)
+        step = _node_point_step("long_press", node, tree)
+        return step, f"long_press #{index}({node['label'][:12] or '无文字'})"
+
+    if action in ("input", "text", "输入"):
+        if not text:
+            raise ValueError("input 缺少 text 参数")
+        step = {"op": "input", "label": "", "text": text}
+        display = f'input "{text[:20]}"'
+        if target is not None:
+            index = _index_of(target)
+            if index is not None:
+                node = _find_node(tree, index)
+                step.update({"label": (node["label"] or "")[:40], "loc": pm.build_locator(node, tree)})
+                display = f"tap #{index}({node['label'][:12] or '输入框'}) + " + display
+            else:
+                coords = _resolve_target(target)
+                if not coords:
+                    raise ValueError("input 的 target 需要控件编号或坐标")
+                step["loc"] = pm.locator_at(coords[0], coords[1], tree)
+                display = f"tap ({coords[0]},{coords[1]}) + " + display
+        return step, display
+
+    if action in ("swipe", "scroll", "滑动"):
+        x1, y1, x2, y2, label = _swipe_coords(tree, target, direction)
+        width, height = tree["size"] if min(tree["size"]) > 0 else (1080, 2400)
+        step = {
+            "op": "swipe",
+            "label": "",
+            "from_rel": [round(x1 / width, 4), round(y1 / height, 4)],
+            "to_rel": [round(x2 / width, 4), round(y2 / height, 4)],
+            "duration": int(duration or 300),
+        }
+        return step, f"swipe {label}"
+
+    if action in ("key", "按键"):
+        name = str(target or "").strip()
+        code = KEY_ALIASES.get(name.lower(), name.upper() or "KEYCODE_BACK")
+        return {"op": "key", "label": "", "key": code}, f"key {code}"
+
+    if action in ("back", "返回", "home", "主页"):
+        code = "KEYCODE_HOME" if action in ("home", "主页") else "KEYCODE_BACK"
+        return {"op": "key", "label": "", "key": code}, f"key {code}"
+
+    if action in ("launch", "open", "打开"):
+        raw = (app or target or "").strip()
+        if not raw:
+            raise ValueError("launch 需要 app 参数（App 名称或包名）")
+        package = APP_ALIASES.get(raw.lower(), raw)
+        return {"op": "launch", "label": raw, "app": raw, "package": package}, f"launch {package}"
+
+    if action in ("wait", "等待"):
+        pause = max(0.2, min(float(seconds or 1.0), 10.0))
+        return {"op": "wait", "label": "", "seconds": pause}, f"wait {pause:.1f}s"
+
+    raise ValueError(f"不支持的 action: {action}")
+
+
+def _step_point(step: dict, tree: dict) -> tuple[int, int, str]:
+    matched = pm.resolve_locator(tree, step.get("loc") or {})
+    if not matched:
+        label = (step.get("loc") or {}).get("text") or "坐标点"
+        raise PhoneStepError(f"找不到控件「{label}」：界面可能已经变了，请先 inspect 看看现在的界面。")
+    x, y, label, method = matched
+    if method in ("fuzzy", "point"):
+        logger.info(f"[Phone] 定位器降级为 {method}: {label}")
+    return x, y, label
+
+
+async def _exec_step(step: dict, tree: dict) -> str:
+    """执行单步（录制与回放共用同一套语义）。返回展示文本。"""
+    op = step.get("op")
+
+    if op == "launch":
+        package = step.get("package") or ""
+        error = await _launch(package)
+        if error:
+            raise PhoneStepError(error)
+        return f"launch {package}"
+
+    if op == "key":
+        code = step.get("key") or "KEYCODE_BACK"
+        await _adb(["shell", "input", "keyevent", code], timeout=15)
+        return f"key {code}"
+
+    if op == "wait":
+        pause = float(step.get("seconds") or 1.0)
+        await asyncio.sleep(pause)
+        return f"wait {pause:.1f}s"
+
+    if op == "swipe":
+        width, height = tree["size"] if min(tree["size"]) > 0 else (1080, 2400)
+        from_rel = step.get("from_rel") or [0.5, 0.75]
+        to_rel = step.get("to_rel") or [0.5, 0.25]
+        x1, y1 = int(from_rel[0] * width), int(from_rel[1] * height)
+        x2, y2 = int(to_rel[0] * width), int(to_rel[1] * height)
+        await _adb(["shell", "input", "swipe", str(x1), str(y1), str(x2), str(y2),
+                    str(int(step.get("duration") or 300))], timeout=15)
+        return f"swipe ({x1},{y1})->({x2},{y2})"
+
+    if op in ("tap", "long_press"):
+        x, y, label = _step_point(step, tree)
+        if op == "tap":
+            await _adb(["shell", "input", "tap", str(x), str(y)], timeout=15)
+            return f"tap {label or f'({x},{y})'}"
+        await _adb(["shell", "input", "swipe", str(x), str(y), str(x), str(y), "800"], timeout=15)
+        return f"long_press {label or f'({x},{y})'}"
+
+    if op == "input":
+        element = ""
+        if step.get("loc"):
+            x, y, label = _step_point(step, tree)
+            await _adb(["shell", "input", "tap", str(x), str(y)], timeout=15)
+            element = label or f"({x},{y})"
+            await asyncio.sleep(0.3)
+        text = str(step.get("text") or "")
+        ok, method = await _input_text(text)
+        if not ok:
+            raise PhoneStepError(
+                "文字输入失败：非 ASCII 文字需要手机安装 ADBKeyboard 输入法（或改用应用内的英文/数字输入）。"
+            )
+        prefix = f"tap {element} + " if element else ""
+        return f'{prefix}input "{text[:20]}" via {method}'
+
+    raise PhoneStepError(f"不支持的步骤: {op}")
+
+
+async def _wait_expect(expect: dict, max_nodes: int, timeout: float) -> tuple[bool, dict]:
+    """轮询等待「动作后该出现的界面」出现，返回 (是否满足, 最后的控件树)。"""
+    package = (expect or {}).get("package") or ""
+    labels = (expect or {}).get("labels") or []
+    deadline = time.monotonic() + max(0.5, timeout)
+    tree = await _dump_tree(max_nodes)
+    while True:
+        current = {node["label"] for node in tree["nodes"] if node["label"]}
+        package_ok = not package or tree["package"] == package
+        if package_ok and all(label in current for label in labels):
+            return True, tree
+        if time.monotonic() >= deadline:
+            return False, tree
+        await asyncio.sleep(0.35)
+        tree = await _dump_tree(max_nodes)
+
+
 async def phone_action_tool(context, action="inspect", target=None, text="", direction="up",
                             duration=300, app="", seconds=1.0, include_screenshot=False,
                             note="", remember=True):
@@ -402,135 +630,32 @@ async def phone_action_tool(context, action="inspect", target=None, text="", dir
     except RuntimeError as exc:
         return ToolResult(success=False, content=str(exc), error="device_unavailable")
 
+    before = None
+    step = None
     steps: list[str] = []
-
-    async def tap_node(index: int) -> str | None:
-        tree = await _dump_tree(max_nodes)
-        node = next((n for n in tree["nodes"] if n["index"] == index), None)
-        if not node:
-            return f"没有 [#{index}] 这个控件，请重新 inspect 当前界面。"
-        await _adb(["shell", "input", "tap", str(node["cx"]), str(node["cy"])], timeout=15)
-        steps.append(f"tap #{index}({node['label'][:12] or '无文字'})")
-        return None
-
     try:
         if action in ("inspect", "查看", "看看"):
             steps.append("inspect")
-
-        elif action in ("tap", "click", "点击"):
-            coords = _resolve_target(target)
-            if coords:
-                await _adb(["shell", "input", "tap", str(coords[0]), str(coords[1])], timeout=15)
-                steps.append(f"tap ({coords[0]},{coords[1]})")
-            elif str(target or "").lstrip("#").isdigit():
-                error = await tap_node(int(str(target).lstrip("#")))
-                if error:
-                    return ToolResult(success=False, content=error, error="node_not_found")
-            else:
-                return ToolResult(success=False, content="tap 需要 target=控件编号 或 target=\"x,y\"",
-                                  error="invalid_target")
-
-        elif action in ("long_press", "longpress", "长按"):
-            coords = _resolve_target(target)
-            if not coords:
-                if not str(target or "").lstrip("#").isdigit():
-                    return ToolResult(success=False, content="long_press 需要控件编号或坐标",
-                                      error="invalid_target")
-                tree = await _dump_tree(max_nodes)
-                index = int(str(target).lstrip("#"))
-                node = next((n for n in tree["nodes"] if n["index"] == index), None)
-                if not node:
-                    return ToolResult(success=False, content=f"没有 [#{index}] 这个控件",
-                                      error="node_not_found")
-                coords = (node["cx"], node["cy"])
-            await _adb(["shell", "input", "swipe", str(coords[0]), str(coords[1]),
-                        str(coords[0]), str(coords[1]), "800"], timeout=15)
-            steps.append(f"long_press ({coords[0]},{coords[1]})")
-
-        elif action in ("input", "text", "输入"):
-            if target is not None:
-                if str(target).lstrip("#").isdigit():
-                    error = await tap_node(int(str(target).lstrip("#")))
-                    if error:
-                        return ToolResult(success=False, content=error, error="node_not_found")
-                    await asyncio.sleep(0.3)
-                else:
-                    coords = _resolve_target(target)
-                    if not coords:
-                        return ToolResult(success=False, content="input 的 target 需要控件编号或坐标",
-                                          error="invalid_target")
-                    await _adb(["shell", "input", "tap", str(coords[0]), str(coords[1])], timeout=15)
-                    await asyncio.sleep(0.3)
-            if not text:
-                return ToolResult(success=False, content="input 缺少 text 参数", error="missing_text")
-            ok, method = await _input_text(text)
-            if not ok:
-                return ToolResult(
-                    success=False,
-                    content=("文字输入失败：非 ASCII 文字需要手机安装 ADBKeyboard 输入法"
-                             "（或改用应用内的英文/数字输入）。"),
-                    error="input_failed",
-                )
-            steps.append(f"input \"{text[:20]}\" via {method}")
-
-        elif action in ("swipe", "scroll", "滑动"):
-            tree_now = await _dump_tree(max_nodes)
-            width, height = tree_now["size"] if min(tree_now["size"]) > 0 else (1080, 2400)
-            direction = (direction or "up").strip().lower()
-            parts = [int(float(v)) for v in re.split(r"[,\s]+", str(target or "")) if v.strip()]
-            if len(parts) == 4:
-                x1, y1, x2, y2 = parts
-            else:
-                cx, cy = width // 2, height // 2
-                span = height // 4
-                mapping = {
-                    "up": (cx, cy + span, cx, cy - span),
-                    "down": (cx, cy - span, cx, cy + span),
-                    "left": (cx + span, cy, cx - span, cy),
-                    "right": (cx - span, cy, cx + span, cy),
-                }
-                if direction not in mapping:
-                    return ToolResult(success=False, content="direction 只能是 up/down/left/right",
-                                      error="invalid_direction")
-                x1, y1, x2, y2 = mapping[direction]
-            await _adb(["shell", "input", "swipe", str(x1), str(y1), str(x2), str(y2),
-                        str(int(duration or 300))], timeout=15)
-            steps.append(f"swipe {direction}")
-
-        elif action in ("key", "按键"):
-            name = str(target or "").strip()
-            code = KEY_ALIASES.get(name.lower(), name.upper() or "KEYCODE_BACK")
-            await _adb(["shell", "input", "keyevent", code], timeout=15)
-            steps.append(f"key {code}")
-
-        elif action in ("back", "返回", "home", "主页"):
-            code = "KEYCODE_HOME" if action in ("home", "主页") else "KEYCODE_BACK"
-            await _adb(["shell", "input", "keyevent", code], timeout=15)
-            steps.append(f"key {code}")
-
-        elif action in ("launch", "open", "打开"):
-            raw = (app or target or "").strip()
-            if not raw:
-                return ToolResult(success=False, content="launch 需要 app 参数（App 名称或包名）",
-                                  error="missing_app")
-            package = APP_ALIASES.get(raw.lower(), raw)
-            error = await _launch(package)
-            if error:
-                return ToolResult(success=False, content=error, error="app_not_found")
-            steps.append(f"launch {package}")
-            wait_seconds = max(wait_seconds, 2.0)
-
-        elif action in ("wait", "等待"):
-            pause = max(0.2, min(float(seconds or wait_seconds), 10.0))
-            await asyncio.sleep(pause)
-            steps.append(f"wait {pause:.1f}s")
-
+            tree = await _dump_tree(max_nodes)
         else:
-            return ToolResult(success=False, content=f"不支持的 action: {action}", error="invalid_action")
+            before = await _dump_tree(max_nodes)
+            tree = before
+            step, display = await _prepare_step(
+                action, tree, target=target, text=text, direction=direction,
+                duration=duration, app=app, seconds=seconds,
+            )
+            display_text = await _exec_step(step, tree)
+            steps.append(display_text or display)
+            if step.get("op") == "launch":
+                wait_seconds = max(wait_seconds, 2.0)
 
         # 操作后等界面稳定，再回传最新控件树
-        await asyncio.sleep(wait_seconds)
+        await asyncio.sleep(wait_seconds if step else 0.1)
         tree = await _dump_tree(max_nodes)
+    except ValueError as exc:
+        return ToolResult(success=False, content=str(exc), error="invalid_target")
+    except PhoneStepError as exc:
+        return ToolResult(success=False, content=str(exc), error="node_not_found")
     except TimeoutError as exc:
         return ToolResult(success=False, content=f"手机操作超时: {exc}", error="timeout",
                           data={"action": action, "note": note})
@@ -538,6 +663,12 @@ async def phone_action_tool(context, action="inspect", target=None, text="", dir
         logger.error(f"[Phone] {action} 失败: {exc}")
         return ToolResult(success=False, content=f"手机操作失败: {exc}", error="action_failed",
                           data={"action": action, "note": note})
+
+    if remember and before is not None and step and step.get("op") in RECORDABLE_OPS:
+        try:
+            pm.phone_history.record(context.chat_id, step, before, tree)
+        except Exception as exc:  # 历史写失败不影响操作结果
+            logger.warning(f"[Phone] 写历史失败: {exc}")
 
     # 智能按需截图：模型要图，或控件树里几乎没文字（图标/图片页）时补一张
     text_nodes = [n for n in tree["nodes"] if n["kind"] in ("文本", "输入", "可点") and n["label"]]

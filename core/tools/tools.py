@@ -9,6 +9,7 @@ from .tools_media import download_file_tool, generate_image_tool
 from .tools_message import poke_tool, send_master_private_tool, send_qq_file_tool
 from .tools_notebook import update_notebook_tool
 from .tools_phone import phone_action_tool
+from .tools_phone_macro import phone_macro_tool
 from .tools_rich import parse_rich_message_tool
 from .tools_skip import skip_reply_tool
 from .tools_snapshot import capture_group_snapshot_tool, search_group_snapshots_tool
@@ -52,6 +53,7 @@ TOOL_SPECS = [
             "input 的 text 支持中文（需要手机装 ADBKeyboard，否则会提示）；"
             "每次操作后会自动等界面刷新并返回最新控件树，"
             "若控件树没什么文字（图片/图标页）会自动附一张带红框编号的低分辨率截图。"
+            "每一步都会自动记进操作历史，摸熟后可用 phone_macro 的 save(from_history=N) 存成组合技。"
         ),
         parameters={
             "type": "object",
@@ -82,12 +84,70 @@ TOOL_SPECS = [
                 },
                 "remember": {
                     "type": "boolean",
-                    "description": "输出是否写进长期记忆，默认true",
+                    "description": "是否写进长期记忆与手机操作历史，默认true；纯试探可传false",
                     "default": True,
                 },
             },
         },
         handler=phone_action_tool,
+    ),
+    ToolSpec(
+        name="phone_macro",
+        description=(
+            "手机组合技：把摸熟的操作流程存成可复用的宏，以后一句话跑完。"
+            "phone_action 的每一步都会自动记进操作历史（remember=false 不记）；"
+            "流程走通后 save(name=..., from_history=10) 取最近 10 步存成宏，"
+            "会自动折叠「点进页面又返回」这类白跑步骤，也能用 exclude=[历史编号] 手动剔。"
+            "之后 play(name=..., params={...}) 回放：每步先按控件文案重新定位，"
+            "执行后校验界面是否按预期变化，不对就停在那一颗并回传现场控件树与截图。"
+            "固定文字想复用可以 param_defs 声明参数 + replace={\"炸鸡\":\"{{food}}\"} 参数化。"
+            "历史用 history 回看；宏跑挂了就修好后 save 同名覆盖（version 自增）。"
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": ["list", "history", "show", "save", "play", "delete"],
+                    "description": "list=列出宏；history=看操作历史；show=看某个宏的步骤；save=存宏；play=回放；delete=删宏",
+                    "default": "list",
+                },
+                "name": {"type": "string", "description": "宏的名字（save/show/play/delete 用）"},
+                "desc": {"type": "string", "description": "save 时的一句话说明"},
+                "app": {"type": "string", "description": "save 时的主 App 包名，留空自动从 launch 步骤取"},
+                "from_history": {
+                    "type": "integer",
+                    "description": "save 时取最近多少条成功操作作为步骤，如 10",
+                },
+                "exclude": {
+                    "type": "array",
+                    "items": {"type": "integer"},
+                    "description": "save 时要剔掉的历史编号（history 里显示的 #n）",
+                },
+                "steps": {
+                    "type": "array",
+                    "items": {"type": "object"},
+                    "description": "save 时直接手写步骤（会覆盖 from_history），一般不用",
+                },
+                "param_defs": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "save 时声明的参数名，如 [\"food\"]",
+                },
+                "replace": {
+                    "type": "object",
+                    "description": "save 时把录下来的固定文字换成占位符，如 {\"炸鸡\": \"{{food}}\"}",
+                },
+                "params": {
+                    "type": "object",
+                    "description": "play 时传给宏的参数值，如 {\"food\": \"炸鸡\"}",
+                },
+                "dry_run": {"type": "boolean", "description": "play 时只列步骤不执行", "default": False},
+                "limit": {"type": "integer", "description": "history 最多返回多少条，默认15"},
+                "note": {"type": "string", "description": "顺手记一句这步在做什么"},
+            },
+        },
+        handler=phone_macro_tool,
     ),
     ToolSpec(
         name="delegate_to_maid",
