@@ -5,6 +5,7 @@ import time
 from typing import Callable
 
 from config import cfg
+from core.history_filter import dialogue_length
 from utils.logger import get_logger
 
 logger = get_logger("engine")
@@ -39,12 +40,12 @@ class EngineMonitorService:
 
                 if cid not in history_dict:
                     continue
-                non_system_msgs = [msg for msg in history_dict[cid] if msg["role"] != "system"]
-                non_system_count = len(non_system_msgs)
-                if non_system_count < cfg.DIARY_MIN_TURNS:
+                # 轮数只算聊天，工具调用与工具输出不算（否则连着用几次工具就触发日记）
+                dialogue_count = dialogue_length(history_dict[cid])
+                if dialogue_count < cfg.DIARY_MIN_TURNS:
                     continue
 
-                logger.info(f"[Engine] 群 {cid} 空闲 {idle_seconds:.0f}s，轮数 {non_system_count}，触发日记")
+                logger.info(f"[Engine] 群 {cid} 空闲 {idle_seconds:.0f}s，聊天轮数 {dialogue_count}，触发日记")
                 self.yuki.writing_diary.add(cid)
                 try:
                     await self.diary_service.summarize_idle_session(cid, history_dict[cid])

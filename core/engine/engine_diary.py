@@ -4,6 +4,7 @@ import json
 import re
 
 from config import cfg
+from core.history_filter import dialogue_messages
 from core.prompts import get_base_setting, get_summary_prompt
 from utils.llm_client import llm_chat
 from utils.logger import get_logger
@@ -19,9 +20,13 @@ class EngineDiaryService:
         self.history = history
 
     async def do_summarize(self, chat_id, history):
-        """总结会话内容并写入记忆库。"""
+        """总结会话内容并写入记忆库。
+
+        只总结聊天部分：工具执行结果（bash 输出、手机控件树）与调用痕迹不进日记，
+        它们是当时的临时材料，写进日记只会污染长期记忆。
+        """
         logger.info(f"[Engine] [{chat_id}] 记忆过长，{cfg.ROBOT_NAME.title()} 正在写日记...")
-        dialogue_msgs = [msg for msg in history if msg["role"] != "system"]
+        dialogue_msgs = dialogue_messages(history)
         content_to_summarize = json.dumps(dialogue_msgs, ensure_ascii=False)
         try:
             diary_content = await llm_chat(

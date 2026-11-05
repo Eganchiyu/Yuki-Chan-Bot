@@ -502,3 +502,10 @@
 - `launch` 改为 `_launch()`：检测 monkey 的 `aborted`/`No activities found`（退出码仍为 0），失败时回传已安装第三方包名；补充 浏览器/备忘录/termux 别名。
 - 实机验证：inspect 首页 18 个节点正常；`include_screenshot=True` 截图 720x1592/152KB，红框编号与图标对齐。
 - 测试：`tests/test_tool_hands.py` 增至 19 例（含 ASCII 与中文输入路径、IME 还原断言），全套 80 passed。
+
+## 2026-11-05 日记只记聊天，轮数不计工具
+- 新增 `core/history_filter.py`（`is_dialogue_message` / `dialogue_messages` / `dialogue_length`），把「聊天消息」定义为 user/assistant。
+- `SessionPipeline.finalize_conversation`：强制写日记的阈值从 `len(session) > diary.max_length` 改为按聊天条数判断，工具消息不再顶数。
+- `EngineMonitorService` 空闲巡检：`diary.min_turns` 同样只数聊天条数（日志改成「聊天轮数」）。
+- `EngineDiaryService.do_summarize`：总结输入只喂聊天消息，工具输出/工具调用痕迹不进日记；回写历史保留 system + 最近 KEEP_LAST_DIALOGUE 条聊天。
+- 测试：新增 `tests/test_diary_filter.py`（7 例）覆盖过滤器、总结输入过滤、两个阈值；全套 87 passed。容器已平滑重启，/health ready。

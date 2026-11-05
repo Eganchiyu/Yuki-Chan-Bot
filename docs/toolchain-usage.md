@@ -79,6 +79,7 @@
 ### 亲手操作类工具的两个约定
 
 - **动态 `no_persist`**：handler 可在 `ToolResult.data` 里返回 `no_persist=True`（`bash` / `phone_action` 的 `remember=false`），`EngineReplyService` 会跳过写历史，效果等同静态 `persist_result=False`，但由 Yuki 每次调用自行决定。
+- **日记只看聊天**：`core/history_filter.py` 定义了「聊天消息」（user/assistant）。日记的两个触发阈值（`diary.max_length` 强制、`diary.min_turns` 空闲）都只数聊天条数，`EngineDiaryService.do_summarize` 的总结输入也只喂聊天消息——工具输出与工具调用痕迹既不会提前触发日记，也不会写进日记。
 - **历史折叠**：`core/tool_prune.py` 按会话统计连续未调用工具的轮数，达到 `tools.prune_idle_turns`（默认 2）时把历史里的 `role="tool"` 消息压成一行 `【历史操作·已折叠】…备注…` 存根，不额外调用 LLM。想调整或排查时看日志 `[ToolPrune]`。
 - **手机工具依赖**：
   - 宿主：`sudo apt install android-tools-adb`，手机开 USB 调试并在弹窗点允许，`adb devices` 看到 `device` 即可；
