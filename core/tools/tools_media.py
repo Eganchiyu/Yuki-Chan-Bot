@@ -429,27 +429,47 @@ async def generate_image_tool(context, prompt, size="1024*1024", image_paths=Non
         def _do_generate():
             from openai import OpenAI
             client = OpenAI(api_key=api_key, base_url=base_url)
-            if not reference_paths:
-                return client.images.generate(
-                    model=model, prompt=prompt, n=1,
-                    size=size, response_format="b64_json",
-                )
 
-            # 有参考图时走 images.edit（multipart，image 传文件列表，最多 4 张）
-            handles = []
-            try:
-                for path in reference_paths:
-                    handles.append(open(path, "rb"))
-                return client.images.edit(
-                    model=model, prompt=prompt, image=handles, n=1,
-                    size=size, response_format="b64_json",
-                )
-            finally:
-                for handle in handles:
-                    try:
-                        handle.close()
-                    except OSError:
-                        pass
+            def _call(size_value, use_response_format):
+                kwargs = {"model": model, "prompt": prompt, "n": 1, "size": size_value}
+                if use_response_format:
+                    kwargs["response_format"] = "b64_json"
+                if not reference_paths:
+                    return client.images.generate(**kwargs)
+
+                # 有参考图时走 images.edit（multipart，image 传文件列表，最多 4 张）
+                handles = []
+                try:
+                    for path in reference_paths:
+                        handles.append(open(path, "rb"))
+                    return client.images.edit(image=handles, **kwargs)
+                finally:
+                    for handle in handles:
+                        try:
+                            handle.close()
+                        except OSError:
+                            pass
+
+            # 部分模型（如 grok-imagine）不接受具体尺寸或 response_format：
+            # 首个请求保持调用方尺寸，400 时依次降级重试（400 不计费）
+            attempts = [(size, True)]
+            if size != "auto":
+                attempts.append(("auto", True))
+            attempts.append(("auto", False))
+            last_error = None
+            for size_value, use_response_format in attempts:
+                try:
+                    return _call(size_value, use_response_format)
+                except Exception as e:
+                    status = getattr(e, "status_code", None)
+                    if status != 400:
+                        raise
+                    last_error = e
+                    logger.warning(
+                        f"[ImageGen] {status} 拒绝 size={size_value} "
+                        f"response_format={use_response_format}，尝试降级重试: {e}"
+                    )
+            raise last_error
 
         try:
             response = await asyncio.to_thread(_do_generate)
