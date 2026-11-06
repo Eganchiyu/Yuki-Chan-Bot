@@ -279,3 +279,45 @@ async def test_netforce_command_routing_and_auth(fake_refresh):
         "probes": {"direct": {"ok": False}, "proxy": {"ok": True}},
     })
     assert "没连通" in fail_text and "direct 不通" in fail_text and "重载 mihomo 配置" in fail_text
+
+
+# ==================== /切换 主备模型线路对调指令 ====================
+
+async def test_switch_command_swaps_route_and_auth(monkeypatch):
+    """/切换 在主备线路间对调（模型/地址/Key），群聊私聊都回原会话，非 master 拒绝。"""
+    api, model = cfg.api, cfg.model
+    monkeypatch.setattr(api, "llm_base_url", "http://main/v1")
+    monkeypatch.setattr(api, "backup_base_url", "http://backup/v1")
+    monkeypatch.setattr(api, "llm_api_key", "key-main")
+    monkeypatch.setattr(api, "backup_api_key", "key-backup")
+    monkeypatch.setattr(model, "llm", "model-main")
+    monkeypatch.setattr(model, "backup", "model-backup")
+    monkeypatch.setattr(model, "llm_native_vision_enabled", True)
+    monkeypatch.setattr(model, "backup_native_vision_enabled", False)
+
+    master = _master_qq()
+    gw = _FakeGateway()
+
+    assert listen_main.handle_group_switch(None, gw, 1057020972, "1057020972", master, "/切换") is True
+    await _drain()
+    assert cfg.LLM_BASE_URL == "http://backup/v1" and cfg.BACKUP_BASE_URL == "http://main/v1"
+    assert cfg.LLM_API_KEY == "key-backup" and cfg.BACKUP_API_KEY == "key-main"
+    assert cfg.LLM_MODEL == "model-backup" and cfg.BACKUP_MODEL == "model-main"
+    assert cfg.LLM_NATIVE_VISION_ENABLED is False and cfg.BACKUP_NATIVE_VISION_ENABLED is True
+    assert [m["chat_id"] for m in gw.sent] == [1057020972]
+    assert "备用模型" in gw.sent[0]["text"] and "model-backup" in gw.sent[0]["text"]
+
+    # 私聊再切一次：回到主模型
+    gw_priv = _FakeGateway()
+    assert listen_main.handle_private_command(gw_priv, master, "/切换") is True
+    await _drain()
+    assert cfg.LLM_MODEL == "model-main" and cfg.BACKUP_MODEL == "model-backup"
+    assert cfg.LLM_BASE_URL == "http://main/v1" and cfg.LLM_API_KEY == "key-main"
+    assert "主模型" in gw_priv.sent[0]["text"] and gw_priv.sent[0]["mode"] == "private"
+
+    # 非 master 拒绝且不改线路
+    gw_unauth = _FakeGateway()
+    assert listen_main.handle_private_command(gw_unauth, 999999, "/切换") is True
+    await _drain()
+    assert cfg.LLM_MODEL == "model-main"
+    assert "只有哥哥大人" in gw_unauth.sent[0]["text"]

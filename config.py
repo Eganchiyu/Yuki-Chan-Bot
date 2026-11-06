@@ -740,6 +740,27 @@ class Config:
         """机器人名称（小写）"""
         return (self.robot_name or "yuki").lower()
 
+    def swap_llm_route(self) -> bool:
+        """主备请求线路对调（QQ /切换 指令），返回切换后是否为「备用为主」。
+
+        对调模型名、API 地址、API Key 与原生视觉开关，让整条主线路真的改走
+        备用端点。只改内存，不写 config.yaml，重启后回到配置文件设定。
+        """
+        api, model = self.api, self.model
+        api.llm_base_url, api.backup_base_url = api.backup_base_url, api.llm_base_url
+        api.llm_api_key, api.backup_api_key = api.backup_api_key, api.llm_api_key
+        # 备用 Key 留空时主线路会借用备用，对调后主线路不能没有 Key
+        if not api.llm_api_key:
+            api.llm_api_key = api.backup_api_key
+        model.llm, model.backup = model.backup, model.llm
+        model.llm_native_vision_enabled, model.backup_native_vision_enabled = (
+            model.backup_native_vision_enabled,
+            model.llm_native_vision_enabled,
+        )
+        swapped = bool(getattr(self, "_llm_route_swapped", False))
+        self._llm_route_swapped = not swapped
+        return self._llm_route_swapped
+
     @property
     def MASTER_NAME(self) -> str:
         """主人称呼"""

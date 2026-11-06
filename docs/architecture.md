@@ -111,7 +111,7 @@ Yuki 是基于 NapCat（OneBot 11 正向 WebSocket）的 QQ AI 助手。线上�
    - `echo` 命中挂起请求 → 唤醒 `gateway.call()`；
    - 含 `post_type` → 放入事件队列供 `gateway.listen()` 消费；API 响应与事件流严格隔离。
 2. **入站适配 (`modules/QQNapcatListen/listen_main.py::napcat_listen`)**：
-   - 拦截群指令：主人专用 `/开启`、`/关闭`、`/重启`（写 `data/restart_notice.json` + `staging/restart_*/request.json`）、`/刷新`（写 `data/netforce_pending/` 触发宿主探活，私聊同样可用）；群友 `/help`；
+   - 拦截群指令：主人专用 `/开启`、`/关闭`、`/重启`（写 `data/restart_notice.json` + `staging/restart_*/request.json`）、`/刷新`（写 `data/netforce_pending/` 触发宿主探活，私聊同样可用）、`/切换`（内存里对调主备模型的模型名/地址/Key，私聊同样可用，重启后恢复）；群友 `/help`；
    - 路由模式：白名单群聊为 `group`；主人私聊为 `master_private`（跳过防抖与精力判定，必回）；
    - 唤醒判定：非 BOT 消息命中名字或 `@` 机器人时，`debounce_flag=False` 且 `force_reply=True`。
 3. **入队与预取 (`SessionPipeline.enqueue_message`)**：
@@ -141,7 +141,7 @@ Yuki 是基于 NapCat（OneBot 11 正向 WebSocket）的 QQ AI 助手。线上�
 | 启动流程、单实例锁、`/health` 与 `/notify` | `main.py` |
 | 新增/修改配置项、默认值、YAML 热重载 | `config.py`（改 `_ATTR_MAP` 或 `@property`） |
 | 主人多 QQ 号判定 (`cfg.MASTER_QQS` / `cfg.is_master_qq`) | `config.py` (`TargetConfig`) |
-| 群指令 (`/开启` `/关闭` `/重启` `/刷新`)、戳一戳、`@` 唤醒 | `modules/QQNapcatListen/listen_main.py` |
+| 群指令 (`/开启` `/关闭` `/重启` `/刷新` `/切换`)、戳一戳、`@` 唤醒 | `modules/QQNapcatListen/listen_main.py` |
 | OneBot WebSocket 收发、CQ 码解析、合并转发拉取 | `network/napcat.py` (`NapCatGateway`) |
 | 防抖合并、图片占位替换、分段发表情包、`skip` 抹痕 | `core/session_pipeline.py` (`SessionPipeline`) |
 | 群聊回不回、精力消耗、回复欲打分、纯 BOT 降欲 | `core/engine/engine_decision.py` (`EngineDecisionService`) |

@@ -316,10 +316,26 @@ async def _restart_flow(gateway, group_id):
         logger.error(f"[Restart] 投递重启请求失败: {e}")
 
 
+def switch_llm_route() -> str:
+    """主备请求线路对调（仅内存生效），返回给机主的提示文案。"""
+    from utils.llm_client import reset_route_state
+
+    swapped = cfg.swap_llm_route()
+    reset_route_state()
+    role = "备用" if swapped else "主"
+    logger.warning(
+        f"[Switch] 主备线路已对调，当前主模型={cfg.model.llm} 备用={cfg.model.backup}（{role}线路上线）"
+    )
+    return (
+        f"已经换成{role}模型啦（{cfg.model.llm}），"
+        f"出事就自动退到 {cfg.model.backup}，重启后会切回配置里的设定~"
+    )
+
+
 def handle_group_switch(pipeline, gateway, group_id, gid_str, user_id, raw_msg):
-    """处理群聊开关/重启/刷新指令，返回 True 表示已拦截。"""
+    """处理群聊开关/重启/刷新/切换指令，返回 True 表示已拦截。"""
     msg_clean = raw_msg.strip()
-    if msg_clean not in {"/关闭", "/开启", "/重启", "/刷新"}:
+    if msg_clean not in {"/关闭", "/开启", "/重启", "/刷新", "/切换"}:
         return False
 
     if not cfg.is_master_qq(user_id):
@@ -328,12 +344,18 @@ def handle_group_switch(pipeline, gateway, group_id, gid_str, user_id, raw_msg):
             "/开启": "只有哥哥大人才能唤醒我哦！",
             "/重启": "只有哥哥大人才能重启我哦！",
             "/刷新": "只有哥哥大人才能刷新网络哦！",
+            "/切换": "只有哥哥大人才能给我换模型哦！",
         }[msg_clean]
         asyncio.create_task(gateway.send(group_id, hint, mode="group"))
         return True
 
     if msg_clean == "/刷新":
         asyncio.create_task(_refresh_flow(gateway, group_id, mode="group"))
+        return True
+
+    if msg_clean == "/切换":
+        text = switch_llm_route()
+        asyncio.create_task(gateway.send(group_id, text, mode="group"))
         return True
 
     if msg_clean == "/重启":
@@ -357,11 +379,17 @@ def handle_group_switch(pipeline, gateway, group_id, gid_str, user_id, raw_msg):
 
 
 def handle_private_command(gateway, user_id, raw_msg) -> bool:
-    """私聊侧指令：目前只有 /刷新（/开启 /关闭 /重启 仍只在群里生效）。"""
-    if raw_msg.strip() != "/刷新":
+    """私聊侧指令：/刷新 与 /切换（/开启 /关闭 /重启 仍只在群里生效）。"""
+    msg_clean = raw_msg.strip()
+    if msg_clean not in {"/刷新", "/切换"}:
         return False
     if not cfg.is_master_qq(user_id):
-        asyncio.create_task(gateway.send(user_id, "只有哥哥大人才能刷新网络哦！", mode="private"))
+        hint = "只有哥哥大人才能刷新网络哦！" if msg_clean == "/刷新" else "只有哥哥大人才能给我换模型哦！"
+        asyncio.create_task(gateway.send(user_id, hint, mode="private"))
+        return True
+    if msg_clean == "/切换":
+        text = switch_llm_route()
+        asyncio.create_task(gateway.send(user_id, text, mode="private"))
         return True
     asyncio.create_task(_refresh_flow(gateway, user_id, mode="private"))
     return True

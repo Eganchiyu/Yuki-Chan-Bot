@@ -29,6 +29,12 @@ _fallback_state: Dict[str, Any] = {
 }
 
 
+def reset_route_state() -> None:
+    """清空主备熔断状态：QQ /切换 换线后重新判定，不沿用旧线路的降级结论。"""
+    _fallback_state["is_degraded"] = False
+    _fallback_state["last_fail_time"] = 0.0
+
+
 _GEMINI_UNSUPPORTED_PARAMS = (
     "frequency_penalty",
     "presence_penalty",
