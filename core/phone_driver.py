@@ -205,15 +205,18 @@ class AndroidDriver:
         return serial
 
     def resolve_screen_size(self, tree: dict | None = None) -> tuple[int, int]:
-        """优先从 tree 获取有效屏幕尺寸，否则使用缓存的真实物理分辨率。"""
+        """优先对齐缓存的真实物理分辨率（防 XML 根节点扣除底部导航栏高度导致坐标偏移）。"""
+        tw, th = 0, 0
         if tree and isinstance(tree.get("size"), (tuple, list)) and len(tree["size"]) == 2:
-            w, h = int(tree["size"][0] or 0), int(tree["size"][1] or 0)
-            if w > 0 and h > 0:
-                if not self.screen_size:
-                    self.screen_size = (w, h)
-                return w, h
+            tw, th = int(tree["size"][0] or 0), int(tree["size"][1] or 0)
         if self.screen_size and min(self.screen_size) > 0:
-            return self.screen_size
+            sw, sh = self.screen_size
+            if tw > 0 and th > 0:
+                return max(tw, sw), max(th, sh)
+            return sw, sh
+        if tw > 0 and th > 0:
+            self.screen_size = (tw, th)
+            return tw, th
         return (0, 0)
 
     def remote_dump_path(self) -> str:

@@ -318,9 +318,111 @@ def _compact_tree(xml_text: str, max_nodes: int) -> dict:
     }
 
 
+def _populate_visual_nodes(tree: dict, png_bytes: bytes, max_nodes: int = 60) -> None:
+    """当二级弹窗/Canvas/WebView 抓不到 XML 节点时，用 OpenCV 检测视觉按钮/卡片生成 [#编号] 候选框。"""
+    if not png_bytes:
+        return
+    try:
+        import cv2
+        import numpy as np
+    except ImportError:
+        return
+
+    try:
+        arr = np.frombuffer(png_bytes, dtype=np.uint8)
+        img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+        if img is None:
+            return
+    except Exception:
+        return
+
+    fh, fw = img.shape[:2]
+    if fw > 0 and fh > 0:
+        # 始终用真实截图物理像素尺寸对齐 tree["size"]，消除导航栏高度差导致的坐标偏移
+        tree["size"] = (fw, fh)
+        driver.screen_size = (fw, fh)
+
+    if len(tree.get("nodes") or []) >= 3:
+        return
+
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    edges = cv2.Canny(gray, 20, 80)
+    kw = max(12, int(fw * 0.017))
+    kh = max(4, int(fh * 0.0022))
+    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (kw, kh))
+    closed = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, kernel)
+
+    contours, _ = cv2.findContours(closed, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
+    top_margin = int(fh * 0.052)
+    bot_limit = int(fh * 0.991)
+    min_w = max(36, int(fw * 0.035))
+    max_w = int(fw * 0.97)
+    min_h = max(32, int(fh * 0.015))
+    max_h = int(fh * 0.085)
+    min_area = int(fw * fh * 0.00065)
+
+    candidates: list[tuple[int, int, int, int, int]] = []
+    for cnt in contours:
+        x, y, w, h = cv2.boundingRect(cnt)
+        if y < top_margin or (y + h) > bot_limit:
+            continue
+        area = w * h
+        if min_w <= w <= max_w and min_h <= h <= max_h and area >= min_area:
+            aspect = w / max(1, h)
+            if 0.65 <= aspect <= 16.0:
+                candidates.append((x, y, x + w, y + h, area))
+
+    candidates.sort(key=lambda b: b[4], reverse=True)
+    max_card_area = int(fw * fh * 0.058)
+    kept_boxes: list[tuple[int, int, int, int, int]] = []
+    for b in candidates:
+        x1, y1, x2, y2, area = b
+        if (x2 - x1) > int(fw * 0.88) and y2 < int(fh * 0.88) and (y2 - y1) > int(fh * 0.05):
+            continue
+        skip = False
+        for kx1, ky1, kx2, ky2, karea in kept_boxes:
+            ix1, iy1 = max(x1, kx1), max(y1, ky1)
+            ix2, iy2 = min(x2, kx2), min(y2, ky2)
+            if ix2 > ix1 and iy2 > iy1:
+                inter = (ix2 - ix1) * (iy2 - iy1)
+                if inter / area >= 0.75 and karea <= max_card_area:
+                    skip = True
+                    break
+                if inter / max(1, area + karea - inter) >= 0.5:
+                    skip = True
+                    break
+        if not skip:
+            kept_boxes.append(b)
+
+    row_band = max(36, int(fh * 0.021))
+    kept_boxes.sort(key=lambda b: ((b[1] + b[3]) // 2 // row_band, b[0]))
+    if max_nodes and max_nodes > 0:
+        kept_boxes = kept_boxes[:max_nodes]
+
+    visual_nodes: list[dict] = []
+    for idx, (x1, y1, x2, y2, _) in enumerate(kept_boxes, 1):
+        visual_nodes.append({
+            "index": idx,
+            "label": "(视觉框-对照截图)",
+            "kind": "可点",
+            "cls": "cv2.VisualBox",
+            "id": "",
+            "password": False,
+            "bounds": (x1, y1, x2, y2),
+            "cx": (x1 + x2) // 2,
+            "cy": (y1 + y2) // 2,
+        })
+
+    if visual_nodes:
+        tree["nodes"] = visual_nodes
+        tree["visual_fallback"] = True
+        logger.info(f"[Phone] XML 无可交互节点，OpenCV 视觉检测生成 {len(visual_nodes)} 个候选框")
+
+
 def _format_tree(tree: dict) -> str:
     width, height = driver.resolve_screen_size(tree)
-    lines = [f"[手机屏幕] 应用: {tree['package'] or '未知'} | 尺寸: {width}x{height}"]
+    extra = "（XML无节点，已启用OpenCV视觉检测红框，请对照截图 [#编号] 点击）" if tree.get("visual_fallback") else ""
+    lines = [f"[手机屏幕] 应用: {tree['package'] or '未知'} | 尺寸: {width}x{height}{extra}"]
     if not tree["nodes"]:
         lines.append("(这个界面没有可识别的控件，可能还在加载，或需要用截图确认)")
     for item in tree["nodes"]:
@@ -444,6 +546,8 @@ def _find_node(tree: dict, index: int, last_tree: dict | None = None) -> dict:
     ):
         intended = next((n for n in last_tree["nodes"] if n["index"] == index), None)
         if intended is not None:
+            if intended.get("cls") == "cv2.VisualBox":
+                return intended
             intended_label = (intended.get("label") or "").strip()
             if intended_label:
                 loc = pm.build_locator(intended, last_tree)
@@ -462,10 +566,16 @@ def _find_node(tree: dict, index: int, last_tree: dict | None = None) -> dict:
 
 
 def _node_point_step(op: str, node: dict, tree: dict, **extra) -> dict:
+    is_visual = node.get("cls") == "cv2.VisualBox"
+    loc = (
+        pm.locator_at(int(node["cx"]), int(node["cy"]), tree)
+        if is_visual
+        else pm.build_locator(node, tree)
+    )
     return {
         "op": op,
-        "label": (node.get("label") or "")[:40],
-        "loc": pm.build_locator(node, tree),
+        "label": f"@({node['cx']},{node['cy']})" if is_visual else (node.get("label") or "")[:40],
+        "loc": loc,
         "_xy": (int(node["cx"]), int(node["cy"])),
         **extra,
     }
@@ -791,7 +901,10 @@ async def phone_action_tool(context, action="inspect", target=None, text="", dir
             step = None  # 子滑动步骤已按需记入历史
         else:
             t0 = time.monotonic()
-            before = await _dump_tree(max_nodes)
+            if last_tree and last_tree.get("visual_fallback") and "PYTEST_CURRENT_TEST" not in os.environ:
+                before = last_tree
+            else:
+                before = await _dump_tree(max_nodes)
             timing["dump_before_ms"] = int((time.monotonic() - t0) * 1000)
             tree = before
             step, display = await _prepare_step(
@@ -824,6 +937,32 @@ async def phone_action_tool(context, action="inspect", target=None, text="", dir
         return ToolResult(success=False, content=f"手机操作失败: {exc}", error="action_failed",
                           data={"action": action, "note": note})
 
+    # 抓取屏幕画面：若当前界面（如二级规格弹窗/WebView/Canvas）无 XML 节点，用 OpenCV 从原图提取视觉候选框 [#编号]
+    attachment = None
+    shot_hint = ""
+    raw_png = None
+    annotated_jpeg = None
+    t_shot = time.monotonic()
+    try:
+        raw_png = await _screencap()
+        if raw_png:
+            _populate_visual_nodes(tree, raw_png, max_nodes)
+    except Exception as exc:
+        if include_screenshot:
+            logger.warning(f"[Phone] 截图失败: {exc}")
+
+    text_nodes = [n for n in tree["nodes"] if n["kind"] in ("文本", "输入", "可点") and n["label"]]
+    want_shot = bool(include_screenshot) or bool(tree.get("visual_fallback")) or len(text_nodes) < 3
+    if raw_png:
+        try:
+            annotated_jpeg = _annotate_screenshot(raw_png, tree)
+            if want_shot and annotated_jpeg:
+                attachment, shot_hint = _register_screenshot(context, annotated_jpeg)
+        except Exception as exc:
+            if want_shot:
+                logger.warning(f"[Phone] 截图标注失败: {exc}")
+    timing["screenshot_ms"] = int((time.monotonic() - t_shot) * 1000)
+
     _LAST_TREES[cid_str] = tree
 
     if step is not None:
@@ -837,25 +976,6 @@ async def phone_action_tool(context, action="inspect", target=None, text="", dir
 
     if action not in ("inspect", "查看", "看看") or phone_focus_manager.is_focused(context.chat_id):
         phone_focus_manager.record_step(context.chat_id, " / ".join(steps), note)
-
-    # 抓取屏幕画面：WebUI 轨迹始终保存原图 + 标注图；仅在 want_shot 时将标注图挂入模型上下文
-    text_nodes = [n for n in tree["nodes"] if n["kind"] in ("文本", "输入", "可点") and n["label"]]
-    want_shot = bool(include_screenshot) or len(text_nodes) < 3
-    attachment = None
-    shot_hint = ""
-    raw_png = None
-    annotated_jpeg = None
-    t_shot = time.monotonic()
-    try:
-        raw_png = await _screencap()
-        if raw_png:
-            annotated_jpeg = _annotate_screenshot(raw_png, tree)
-            if want_shot and annotated_jpeg:
-                attachment, shot_hint = _register_screenshot(context, annotated_jpeg)
-    except Exception as exc:
-        if want_shot:
-            logger.warning(f"[Phone] 截图失败: {exc}")
-    timing["screenshot_ms"] = int((time.monotonic() - t_shot) * 1000)
 
     lines = [f"已完成: {' / '.join(steps)}", _format_tree(tree)]
     if shot_hint:

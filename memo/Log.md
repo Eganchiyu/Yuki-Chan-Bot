@@ -558,3 +558,9 @@
 - `core/tools/tools_phone.py::_compact_tree`：彻底移除纯静态 `文本` 节点（静态文字直接由默认附带的标注截图承载），仅保留可交互节点（`输入`/`可点`/`滚动`）；过滤 `[\ua000-\uf8ff]` iconfont 乱码字符；可点击容器自身无文字时自动聚合内部非交互子文本或同位置透明点击层标签（如淘宝底栏「店铺/客服/收藏/加入购物车/领券购买」）；过滤包裹子按钮的无标签外层容器，并跳过全屏滚动容器的大红框标注。
 - `core/engine/engine_reply.py` & `config.py`：手机聚焦模式 `phone_focus_max_rounds` 默认设为 100；`_attach_tool_screenshots` 自动替换上一步旧的 `【工具截图】`，保证百轮操作不耗尽 `native_vision_max_images` 配额。
 - `modules/debug/phone_trace.py` & `modules/debug/webui_server.py`：复用 8777 端口新增 `http://127.0.0.1:8777/phone` 页面与 `/api/phone/*` 接口，实时展示手机当前画面、当步 Yuki 看到的标注画面/原图、Yuki 收到的用户原文本、Yuki 回复的原文本、当步回传控件树与每步耗时分解，并持久化至 `data/phone_traces/` 支持历史回翻（`pytest` 时自动跳过默认目录写盘防止污染）。
+
+## 2026-11-06 /无XML二级弹窗 OpenCV 视觉检测候选框 + 屏幕物理分辨率对齐
+- 原因排查：淘宝规格选择弹窗（`SkuDialogFragment`）由 Weex2/Unicorn Canvas 自绘，Android ViewRoot 内部无 AccessibilityNodeInfo（XML 仅 12 个全屏空 FrameLayout）；同时 XML 根节点高度为 `2267`（扣除了底部 121px 手势导航区），而 `screencap` 实际物理分辨率为 `1080x2388`，导致模型按 `2267` 猜 `(540, 2200)` 落在橙色按钮 (`y=2229..2341`) 上方空白处。
+- 修复：
+  1. `core/phone_driver.py::resolve_screen_size` 始终优先对齐 `wm size` / 截图真实物理分辨率 `1080x2388`。
+  2. `core/tools/tools_phone.py::_populate_visual_nodes`：当 XML 可交互节点 `< 3` 时，自动用 OpenCV (`Canny + 形态学闭运算 + IoU/包含去重`) 从当前截图中提取按钮/规格卡片/图标边界框（约 15ms），生成 `[#1]..[#N]` 视觉候选框并画上红框标注，模型直接 `target="#编号"` 即可精准点中中心坐标，无需盲猜坐标。

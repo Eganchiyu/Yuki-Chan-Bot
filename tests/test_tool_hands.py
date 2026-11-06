@@ -134,6 +134,27 @@ def test_annotate_screenshot_draws_and_shrinks():
     assert image.width <= 720
 
 
+def test_populate_visual_nodes_fallback_when_xml_empty():
+    from PIL import ImageDraw
+    from core.tools.tools_phone import _populate_visual_nodes
+
+    img = Image.new("RGB", (1080, 2388), (255, 255, 255))
+    draw = ImageDraw.Draw(img)
+    # 模拟一个无 XML 的二级弹窗底部橙色大按钮与中间规格卡
+    draw.rectangle([100, 1100, 460, 1190], outline=(255, 100, 0), width=4)
+    draw.rectangle([46, 2225, 1034, 2340], fill=(255, 110, 0))
+    buf = io.BytesIO()
+    img.save(buf, "PNG")
+
+    tree = {"package": "com.taobao.taobao", "size": (1080, 2267), "nodes": []}
+    _populate_visual_nodes(tree, buf.getvalue(), max_nodes=60)
+    assert tree["size"] == (1080, 2388)
+    assert tree.get("visual_fallback") is True
+    assert len(tree["nodes"]) >= 2
+    # 底部按钮中心应在 y≈2282
+    assert any(abs(n["cy"] - 2282) <= 15 and abs(n["cx"] - 540) <= 15 for n in tree["nodes"])
+
+
 async def test_phone_reports_missing_adb(monkeypatch):
     async def _boom(*args, **kwargs):
         raise FileNotFoundError("adb")
