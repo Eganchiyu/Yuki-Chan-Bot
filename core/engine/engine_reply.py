@@ -2,6 +2,7 @@
 import asyncio
 import json
 import re
+import time
 from typing import Any, Callable, Optional
 
 from config import cfg
@@ -361,12 +362,30 @@ class EngineReplyService:
             else active_tool_manager.max_rounds
         )
         round_idx = 0
+        tool_trace = []
+        tools_used_list = []
+        debug_snap_id = getattr(self, "_debug_snapshot_by_chat", {}).get(str(chat_id))
+
+        def _sync_debug_snapshot():
+            if not debug_snap_id:
+                return
+            try:
+                context_snapshot_store.update(
+                    debug_snap_id,
+                    built_messages=tool_messages,
+                    llm_rounds=round_idx,
+                    tool_trace=tool_trace,
+                    tools_used=tools_used_list,
+                )
+            except Exception:
+                pass
 
         while round_idx < max_rounds:
             round_idx += 1
             in_phone_focus = phone_focus_manager.is_focused(chat_id)
             if in_phone_focus and not phone_finished_this_turn:
                 max_rounds = max(max_rounds, phone_focus_max_rounds)
+            t_llm0 = time.monotonic()
             response_message = await llm_chat_raw(
                 messages=tool_messages,
                 model=cfg.LLM_MODEL,
@@ -381,6 +400,7 @@ class EngineReplyService:
                 tool_choice="auto",
                 fallback_messages_factory=fallback_factory,
             )
+            llm_ms = int((time.monotonic() - t_llm0) * 1000)
             tool_calls = response_message.get("tool_calls") or []
             if not tool_calls:
                 # 模型偶尔把工具调用写成正文文本（DSML/<tool_call> 标记）：
@@ -402,6 +422,9 @@ class EngineReplyService:
                     call.get("function", {}).get("name", "")
                     for call in tool_calls
                 ]
+                for tn in tool_names:
+                    if tn:
+                        tools_used_list.append(tn)
                 is_phone_batch = in_phone_focus or any(n in PHONE_WORK_TOOL_NAMES for n in tool_names)
                 if any(n in PHONE_WORK_TOOL_NAMES for n in tool_names):
                     phone_tools_used = True
@@ -442,6 +465,7 @@ class EngineReplyService:
                 if response_message.get("_finish_reason") == "content_filter":
                     logger.warning(f"[ToolChain] {chat_id} 回复被内容安全过滤")
                     self._after_turn(chat_id, tools_executed, phone_tools_used)
+                    _sync_debug_snapshot()
                     return "Filtered", "Filtered"
                 # 写回历史保留归一化标记；可见文本为空且已执行过工具时用工作中占位
                 self._after_turn(chat_id, tools_executed, phone_tools_used)
@@ -449,6 +473,13 @@ class EngineReplyService:
                     strip_tool_call_markup(response_message.get("content")),
                     tools_executed,
                 )
+                tool_trace.append({
+                    "round": round_idx,
+                    "llm_ms": llm_ms,
+                    "thought": (response_message.get("content") or "")[:240],
+                    "calls": [],
+                })
+                _sync_debug_snapshot()
                 if (phone_tools_used or in_phone_focus) and phone_trace_store is not None:
                     try:
                         phone_trace_store.record_turn_final_reply(str(chat_id), raw_ans, clean_ans)
@@ -457,11 +488,27 @@ class EngineReplyService:
                 return raw_ans, clean_ans
 
             tool_messages.append(response_message)
+            t_exec0 = time.monotonic()
             tool_result_messages = await active_tool_manager.execute_tool_calls(
                 tool_calls,
                 context,
                 finish_reason=response_message.get("_finish_reason") or "",
             )
+            exec_ms = int((time.monotonic() - t_exec0) * 1000)
+            tool_trace.append({
+                "round": round_idx,
+                "llm_ms": llm_ms,
+                "exec_ms": exec_ms,
+                "thought": (response_message.get("content") or "")[:240],
+                "calls": [
+                    {
+                        "name": (c.get("function") or {}).get("name") or "",
+                        "args": str((c.get("function") or {}).get("arguments") or "")[:200],
+                    }
+                    for c in tool_calls
+                ],
+            })
+            _sync_debug_snapshot()
             if context.metadata.get("skip_reply"):
                 # skip 工具生效：本轮不生成也不要发送任何内容，交给管线收尾
                 logger.info(f"[ToolChain] {chat_id} 本轮选择 skip，保持安静")
@@ -558,6 +605,9 @@ class EngineReplyService:
             except Exception as exc:
                 logger.debug(f"[ContextDebug] 记录 LLM messages 失败: {exc}")
 
+        if not hasattr(self, "_debug_snapshot_by_chat"):
+            self._debug_snapshot_by_chat = {}
+        self._debug_snapshot_by_chat[str(chat_id)] = debug_snapshot_id
         logger.info(f"[Engine] {cfg.ROBOT_NAME.title()} 正在打字...")
         try:
             yuki_answer_raw, yuki_answer = await self.chat_with_tools(
@@ -574,3 +624,5 @@ class EngineReplyService:
         except Exception as e:
             logger.error(f"[Engine] LLM 调用失败: {e}")
             return "暂时连接不上网络", "暂时连接不上网络", ""
+        finally:
+            self._debug_snapshot_by_chat.pop(str(chat_id), None)

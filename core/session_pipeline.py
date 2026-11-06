@@ -120,6 +120,12 @@ class SessionPipeline:
             self.send_reply,
             self.finalize_conversation,
         ]
+        try:
+            context_snapshot_store.bind_runtime(
+                yuki=self.yuki, sender=self.sender, group_active_state=self.group_active_state
+            )
+        except Exception:
+            pass
 
     # ---------------------------------------------------------------
     # 基础设施
@@ -281,7 +287,9 @@ class SessionPipeline:
         try:
             context["debug_snapshot_id"] = context_snapshot_store.put({
                 "chat_id": str(chat_id), "mode": mode, "stage": "run_once",
-                "should_reply": None, "tool_context": {"pipeline_stages": PIPELINE_STAGES},
+                "should_reply": None, "ice_break": bool(ice_break),
+                "force_reply": bool(force_reply),
+                "tool_context": {"pipeline_stages": PIPELINE_STAGES},
             })
         except Exception:
             pass
@@ -341,6 +349,13 @@ class SessionPipeline:
         context["incoming_messages"] = incoming_messages
         context["message_objs"] = incoming_messages
         await self.yuki.boost_activity(chat_id)
+        senders = []
+        for m in incoming_messages:
+            if isinstance(m, dict):
+                nm = str(m.get("name") or m.get("user_id") or "").strip()
+                if nm and nm not in senders:
+                    senders.append(nm)
+        self._update_snapshot(context, incoming_count=len(incoming_messages), senders=senders)
         return context
 
     # ---------------------------------------------------------------
@@ -561,20 +576,35 @@ class SessionPipeline:
 
     async def decide_reply_action(self, context):
         """群聊中判断是否继续回复；潜水时保留用户上下文。"""
+        chat_id = context["chat_id"]
+        cid = str(chat_id)
+        rag_interest = self._compute_rag_interest(
+            context.get("recall_new_results", context.get("relevant_diaries", []))
+        )
+        try:
+            energy_val = round(float(getattr(self.yuki, "energy", {}).get(cid, cfg.INITIAL_ENERGY)), 1)
+            activity_val = round(float(getattr(self.yuki, "group_activity", {}).get(cid, 0.0)), 2)
+            bioclock_val = round(float(YukiState.get_smooth_time_weight()), 3)
+        except Exception:
+            energy_val, activity_val, bioclock_val = None, None, None
+
         # 破冰模式强制回复，跳过决策
         if context.get("ice_break"):
+            self._update_snapshot(
+                context, should_reply=True, rag_interest=round(rag_interest, 3),
+                energy=energy_val, activity=activity_val, bioclock=bioclock_val,
+            )
             return context
 
         # 私聊 / 桌宠 / 聚焦模式：永远回复，跳过群聊潜水决策
         if context["mode"] in _ALWAYS_REPLY_MODES:
-            self._update_snapshot(context, should_reply=True)
+            self._update_snapshot(
+                context, should_reply=True, rag_interest=round(rag_interest, 3),
+                energy=energy_val, activity=activity_val, bioclock=bioclock_val,
+            )
             return context
 
-        chat_id = context["chat_id"]
         session = context["session"]
-        rag_interest = self._compute_rag_interest(
-            context.get("recall_new_results", context.get("relevant_diaries", []))
-        )
 
         if context["mode"] == "group" and not await self.engine.decide_to_reply(
             session,
@@ -586,9 +616,15 @@ class SessionPipeline:
             self.history_manager.replace_session(chat_id, session)
             logger.info(f"[Pipeline] {cfg.ROBOT_NAME.title()} 决定继续潜水")
             context["stop"] = True
-            self._update_snapshot(context, should_reply=False)
+            self._update_snapshot(
+                context, should_reply=False, rag_interest=round(rag_interest, 3),
+                energy=energy_val, activity=activity_val, bioclock=bioclock_val,
+            )
         else:
-            self._update_snapshot(context, should_reply=True)
+            self._update_snapshot(
+                context, should_reply=True, rag_interest=round(rag_interest, 3),
+                energy=energy_val, activity=activity_val, bioclock=bioclock_val,
+            )
         return context
 
     # ---------------------------------------------------------------

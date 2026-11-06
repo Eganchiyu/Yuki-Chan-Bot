@@ -564,3 +564,12 @@
 - 修复：
   1. `core/phone_driver.py::resolve_screen_size` 始终优先对齐 `wm size` / 截图真实物理分辨率 `1080x2388`。
   2. `core/tools/tools_phone.py::_populate_visual_nodes`：当 XML 可交互节点 `< 3` 时，自动用 OpenCV (`Canny + 形态学闭运算 + IoU/包含去重`) 从当前截图中提取按钮/规格卡片/图标边界框（约 15ms），生成 `[#1]..[#N]` 视觉候选框并画上红框标注，模型直接 `target="#编号"` 即可精准点中中心坐标，无需盲猜坐标。
+
+## 2026-11-06 /WebUI 甜酷千禧粉重写 + 深度遥测埋点与可视化大屏
+- `modules/debug/context_snapshot.py` & `core/session_pipeline.py` & `core/engine/engine_reply.py`：
+  - 修正 `PIPELINE_STAGES` 阶段顺序（`retrieve_memories` -> `decide_reply_action`）；
+  - 绑定运行时 `YukiState`，新增 `yuki_runtime_state()`（采集 24h 生物钟采样曲线与当前相位、各群实时精力/活跃度/说话欲望、小女仆与手机聚焦状态）；
+  - 单轮快照补充发送者、RAG 兴趣度、当轮群精力/热度/生物钟倍率、多轮 LLM 耗时与工具调用链轨迹 `tool_trace`；
+  - 新增 `analytics()` 聚合回复决策分布、8 阶段平均耗时瀑布、最近 24 轮 Token 角色堆叠趋势、热门工具 Top 榜与手机自动化统计。
+- `modules/debug/webui_server.py`：
+  - 重写为甜酷千禧粉（Sweet-Cyber Pink）亮色毛玻璃统一单页工作台（兼容 `/`、`/analytics`、`/phone` 直接访问与丝滑切换），带轻量樱花粒子动效、本轮收发速览卡、System Prompt 默认折叠、24h 生物钟 SVG 面积曲线、双粉色手机拟物外框与控件树搜索过滤。
