@@ -114,6 +114,11 @@ class EngineReplyService:
                         attachments.append(attachment)
 
         logger.info(f"[ToolChain] {chat_id} 合并工具调用期间新增消息: {pending_text}")
+        try:
+            from modules.debug.phone_trace import phone_trace_store
+            phone_trace_store.set_turn_incoming(str(chat_id), pending_text)
+        except Exception:
+            pass
         self.history.append_session_message(
             chat_id,
             "user",
@@ -233,6 +238,20 @@ class EngineReplyService:
             return {}
         return payload if isinstance(payload, dict) else {}
 
+    @staticmethod
+    def _is_tool_screenshot_msg(msg: dict) -> bool:
+        if not isinstance(msg, dict) or msg.get("role") != "user":
+            return False
+        content = msg.get("content")
+        if isinstance(content, str) and content.startswith("【工具截图】"):
+            return True
+        if isinstance(content, list) and any(
+            isinstance(b, dict) and str(b.get("text") or "").startswith("【工具截图】")
+            for b in content
+        ):
+            return True
+        return False
+
     async def _attach_tool_screenshots(self, tool_result_messages, tool_messages):
         """把工具产生的截图（如手机屏幕）渲染成多模态图像块塞进本轮上下文。"""
         if not cfg.LLM_NATIVE_VISION_ENABLED:
@@ -246,7 +265,10 @@ class EngineReplyService:
         if not attachments:
             return
 
-        budget = max(0, cfg.model.native_vision_max_images - self._used_image_slots(tool_messages))
+        # 移除上一步旧的【工具截图】，始终只保留最新一步手机画面，防止多轮操作耗尽图片配额
+        tool_messages[:] = [m for m in tool_messages if not self._is_tool_screenshot_msg(m)]
+
+        budget = max(1, cfg.model.native_vision_max_images - self._used_image_slots(tool_messages))
         for shot in attachments[-max(1, cfg.model.native_vision_max_images):]:
             if budget <= 0:
                 break
@@ -324,8 +346,27 @@ class EngineReplyService:
         phone_tools_used = False
         phone_finished_this_turn = False
 
-        for _ in range(active_tool_manager.max_rounds):
+        try:
+            from modules.debug.phone_trace import phone_trace_store
+            phone_trace_store.set_turn_incoming(str(chat_id), combined_text)
+        except Exception:
+            phone_trace_store = None
+
+        phone_focus_max_rounds = int(
+            getattr(getattr(cfg, "tools", None), "phone_focus_max_rounds", 100) or 100
+        )
+        max_rounds = (
+            max(active_tool_manager.max_rounds, phone_focus_max_rounds)
+            if phone_focus_manager.is_focused(chat_id)
+            else active_tool_manager.max_rounds
+        )
+        round_idx = 0
+
+        while round_idx < max_rounds:
+            round_idx += 1
             in_phone_focus = phone_focus_manager.is_focused(chat_id)
+            if in_phone_focus and not phone_finished_this_turn:
+                max_rounds = max(max_rounds, phone_focus_max_rounds)
             response_message = await llm_chat_raw(
                 messages=tool_messages,
                 model=cfg.LLM_MODEL,
@@ -364,6 +405,17 @@ class EngineReplyService:
                 is_phone_batch = in_phone_focus or any(n in PHONE_WORK_TOOL_NAMES for n in tool_names)
                 if any(n in PHONE_WORK_TOOL_NAMES for n in tool_names):
                     phone_tools_used = True
+                    if not phone_finished_this_turn:
+                        max_rounds = max(max_rounds, phone_focus_max_rounds)
+                if is_phone_batch and phone_trace_store is not None:
+                    try:
+                        phone_trace_store.set_pending_model_call(
+                            str(chat_id),
+                            response_message.get("content") or "",
+                            tool_calls,
+                        )
+                    except Exception:
+                        pass
                 logger.info(f"[ToolChain] 模型请求工具调用 chat_id={chat_id} tools={tool_names}")
 
                 # 同批里有 skip 就当作本轮什么都没发生：不发送、也不记录阶段文本
@@ -393,10 +445,16 @@ class EngineReplyService:
                     return "Filtered", "Filtered"
                 # 写回历史保留归一化标记；可见文本为空且已执行过工具时用工作中占位
                 self._after_turn(chat_id, tools_executed, phone_tools_used)
-                return self.finalize_answer(
+                raw_ans, clean_ans = self.finalize_answer(
                     strip_tool_call_markup(response_message.get("content")),
                     tools_executed,
                 )
+                if (phone_tools_used or in_phone_focus) and phone_trace_store is not None:
+                    try:
+                        phone_trace_store.record_turn_final_reply(str(chat_id), raw_ans, clean_ans)
+                    except Exception:
+                        pass
+                return raw_ans, clean_ans
 
             tool_messages.append(response_message)
             tool_result_messages = await active_tool_manager.execute_tool_calls(
@@ -463,7 +521,13 @@ class EngineReplyService:
             fallback_messages_factory=fallback_factory,
         )
         self._after_turn(chat_id, tools_executed, phone_tools_used)
-        return self.finalize_answer(fallback_raw, tools_executed)
+        raw_ans, clean_ans = self.finalize_answer(fallback_raw, tools_executed)
+        if phone_tools_used and phone_trace_store is not None:
+            try:
+                phone_trace_store.record_turn_final_reply(str(chat_id), raw_ans, clean_ans)
+            except Exception:
+                pass
+        return raw_ans, clean_ans
 
     async def api_reply(self, chat_id: str, combined_text: str, session: list, mode,
                         relevant_diaries: list[Any],

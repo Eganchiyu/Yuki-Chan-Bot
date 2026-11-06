@@ -63,6 +63,11 @@ class PhoneFocusManager:
             state = PhoneFocusState(chat_id=cid, goal=(goal or "").strip())
             self._states[cid] = state
             logger.info(f"[PhoneFocus] {cid} 进入手机聚焦模式 goal={state.goal or '无'}")
+            try:
+                from modules.debug.phone_trace import phone_trace_store
+                phone_trace_store.start_session(cid, goal=state.goal)
+            except Exception as exc:
+                logger.debug(f"[PhoneFocus] 启动轨迹会话失败: {exc}")
         else:
             if goal and not state.goal:
                 state.goal = goal.strip()
@@ -205,6 +210,12 @@ class PhoneFocusManager:
 
         if tool_messages is not None:
             self.rewrite_in_memory_tool_messages(tool_messages, final_summary)
+
+        try:
+            from modules.debug.phone_trace import phone_trace_store
+            phone_trace_store.finish_session(cid, summary=final_summary, status="finished")
+        except Exception as exc:
+            logger.debug(f"[PhoneFocus] 结束轨迹会话失败: {exc}")
 
         logger.info(f"[PhoneFocus] {cid} 已退出手机聚焦模式，注入总结: {final_summary[:80]}")
         return final_summary

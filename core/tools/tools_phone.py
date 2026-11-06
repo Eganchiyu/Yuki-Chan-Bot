@@ -15,6 +15,7 @@ import asyncio
 import io
 import os
 import re
+import time
 import xml.etree.ElementTree as ET
 
 from config import cfg
@@ -72,6 +73,7 @@ KEY_ALIASES = {
 RECORDABLE_OPS = {"tap", "long_press", "input", "swipe", "key", "launch"}
 
 _BOUNDS_RE = re.compile(r"\[(-?\d+),(-?\d+)\]\[(-?\d+),(-?\d+)\]")
+_ICONFONT_RE = re.compile(r"[\ua000-\uf8ff]+")
 _SCREENSHOT_DIR = os.path.join(os.path.abspath(BASE_DIR), "temp", "phone_shots")
 
 
@@ -105,29 +107,65 @@ def _parse_bounds(node) -> tuple[int, int, int, int] | None:
     return x1, y1, x2, y2
 
 
+def _clean_label_text(raw: str) -> str:
+    """剔除淘宝/支付宝等 App 在 text 中塞入的私有区/彝文/韩文区 iconfont 乱码字符。"""
+    cleaned = _ICONFONT_RE.sub("", raw or "").strip()
+    return re.sub(r"\s+", " ", cleaned)
+
+
 def _node_label(node) -> str:
-    text = (node.get("text") or "").strip()
-    desc = (node.get("content-desc") or "").strip()
+    text = _clean_label_text(node.get("text") or "")
+    desc = _clean_label_text(node.get("content-desc") or "")
     return text or desc
 
 
+def _is_interactive_node(node) -> bool:
+    cls = node.get("class") or ""
+    clickable = (
+        node.get("clickable") == "true"
+        or node.get("long-clickable") == "true"
+        or node.get("checkable") == "true"
+    )
+    scrollable = node.get("scrollable") == "true"
+    editable = "EditText" in cls or node.get("password") == "true"
+    return clickable or scrollable or editable
+
+
+def _collect_child_labels(node) -> str:
+    """当可点击容器自身无文字时，聚合其内部非交互子节点的文字说明。"""
+    parts: list[str] = []
+    own = _node_label(node)
+    if own:
+        parts.append(own)
+    for child in node:
+        if child.get("visible-to-user") == "false":
+            continue
+        if _is_interactive_node(child):
+            continue
+        sub = _collect_child_labels(child)
+        if sub and sub not in parts:
+            parts.append(sub)
+    return " ".join(parts).strip()
+
+
 def _node_priority(item: dict) -> int:
-    """节点截断优先级：输入(0) > 可点带文字(1) > 文本(2) > 滚动(3) > 无文字可点(4)。"""
+    """节点截断优先级：输入(0) > 可点带文字(1) > 滚动(2) > 无文字可点(3)。"""
     kind = item.get("kind")
     has_label = bool(item.get("label"))
     if kind == "输入":
         return 0
     if kind == "可点" and has_label:
         return 1
-    if kind == "文本":
-        return 2
     if kind == "滚动":
-        return 3
-    return 4
+        return 2
+    return 3
 
 
 def _compact_tree(xml_text: str, max_nodes: int) -> dict:
-    """把原始 uiautomator XML 精简成带编号的可操作节点列表。"""
+    """把原始 uiautomator XML 精简成仅含可交互控件（输入/可点/滚动）的带编号列表。
+
+    纯静态文本不占控件树名额（直接由屏幕截图承载），并将内部子文字或同区域标签自动合入可点击按钮。
+    """
     root = ET.fromstring(xml_text)
     # 真实 dump 里 package/bounds 挂在第一个 <node> 上，<hierarchy> 只带 rotation
     first_node = root.find("node")
@@ -143,49 +181,101 @@ def _compact_tree(xml_text: str, max_nodes: int) -> dict:
     )
     screen_area = max(1, (root_bounds[2] - root_bounds[0]) * (root_bounds[3] - root_bounds[1]))
 
+    # 预先收集所有带文字节点的区域与所有 clickable 矩形，用于给透明点击层补标签并过滤外层冗余容器
+    labeled_regions: list[tuple[tuple[int, int, int, int], str]] = []
+    clickable_rects: list[tuple[int, int, int, int]] = []
+    for n in root.iter("node"):
+        if n.get("visible-to-user") == "false":
+            continue
+        b = _parse_bounds(n)
+        lbl = _node_label(n)
+        if b and lbl:
+            labeled_regions.append((b, lbl))
+        if b and (
+            n.get("clickable") == "true"
+            or n.get("long-clickable") == "true"
+            or n.get("checkable") == "true"
+        ):
+            clickable_rects.append(b)
+
     kept: list[dict] = []
-    seen: set[tuple[str, tuple[int, int, int, int]]] = set()
+    seen: set[tuple[str, str, tuple[int, int, int, int]]] = set()
     for node in root.iter("node"):
         if node.get("visible-to-user") == "false":
             continue
         bounds = _parse_bounds(node)
         if not bounds:
             continue
+        if not _is_interactive_node(node):
+            continue
+
         x1, y1, x2, y2 = bounds
-        label = _node_label(node)
+        area = (x2 - x1) * (y2 - y1)
         cls = node.get("class") or ""
         res_id = (node.get("resource-id") or "").strip()
         is_password = node.get("password") == "true"
-        clickable = node.get("clickable") == "true" or node.get("long-clickable") == "true"
+        clickable = (
+            node.get("clickable") == "true"
+            or node.get("long-clickable") == "true"
+            or node.get("checkable") == "true"
+        )
         scrollable = node.get("scrollable") == "true"
         editable = "EditText" in cls or is_password
-        area = (x2 - x1) * (y2 - y1)
-        if not (label or clickable or scrollable or editable):
+
+        own = _node_label(node)
+        inner_clickables = sum(
+            1
+            for cb in clickable_rects
+            if cb != bounds and cb[0] >= x1 and cb[1] >= y1 and cb[2] <= x2 and cb[3] <= y2
+        )
+
+        if editable:
+            kind = "输入"
+        elif scrollable and (not clickable or (not own and inner_clickables >= 1)):
+            kind = "滚动"
+        else:
+            kind = "可点"
+
+        # 自身无标签且几何上包裹了其他可点子控件的外层包装容器，直接跳过
+        if kind == "可点" and not own and inner_clickables >= 1:
             continue
-        # 防误杀全屏交互容器：当 scrollable 为 true 时，即使无 label 且面积 >= 0.9 也保留
-        if not label and not scrollable and area >= screen_area * 0.9:
+
+        if kind == "滚动":
+            label = own[:60]
+        else:
+            label = (own or _collect_child_labels(node))[:60]
+            if not label and kind == "可点" and area < screen_area * 0.25:
+                matched: list[str] = []
+                for rb, rlbl in labeled_regions:
+                    if (
+                        rb[0] >= x1 - 15
+                        and rb[1] >= y1 - 28
+                        and rb[2] <= x2 + 15
+                        and rb[3] <= y2 + 15
+                    ):
+                        if rlbl not in matched:
+                            matched.append(rlbl)
+                if matched:
+                    label = " ".join(matched)[:60]
+
+        # 防误杀全屏滚动容器：仅过滤非滚动的大面积无文字背景层
+        if not label and kind != "滚动" and area >= screen_area * 0.25:
             continue
-        key = (label, bounds)
+
+        key = (kind, label, bounds)
         if key in seen:
             continue
-        # 父节点先入列：同文案的子节点落在已保留节点范围内时跳过，点父节点命中率更高
-        if label and any(
-            item["label"] == label
+        norm_label = label.replace(" ", "")
+        # 父节点先入列：同文案（忽略空格差异）的子节点落在已保留节点范围内时跳过
+        if norm_label and any(
+            item["kind"] == kind
+            and item["label"].replace(" ", "") == norm_label
             and item["bounds"][0] <= x1 and item["bounds"][1] <= y1
             and item["bounds"][2] >= x2 and item["bounds"][3] >= y2
             for item in kept
         ):
             continue
         seen.add(key)
-
-        if editable:
-            kind = "输入"
-        elif clickable:
-            kind = "可点"
-        elif scrollable:
-            kind = "滚动"
-        else:
-            kind = "文本"
 
         center = ((x1 + x2) // 2, (y1 + y2) // 2)
         candidate = {
@@ -212,11 +302,11 @@ def _compact_tree(xml_text: str, max_nodes: int) -> dict:
 
         kept.append(candidate)
 
-    # 智能截断：当超出 max_nodes 时，先按优先级排序截取前 max_nodes 个，再按屏幕从上到下、从左到右重新排列并分配 index
+    # 超出 max_nodes 时先按优先级截取，最终统一按屏幕从上到下、从左到右排列并编号
     if max_nodes and max_nodes > 0 and len(kept) > max_nodes:
         kept.sort(key=lambda item: (_node_priority(item), item["cy"], item["cx"]))
         kept = kept[:max_nodes]
-        kept.sort(key=lambda item: (item["cy"], item["cx"], item["bounds"][1], item["bounds"][0]))
+    kept.sort(key=lambda item: (item["cy"], item["cx"], item["bounds"][1], item["bounds"][0]))
 
     for index, item in enumerate(kept, 1):
         item.pop("_area", None)
@@ -240,7 +330,7 @@ def _format_tree(tree: dict) -> str:
 
 
 def _annotate_screenshot(png_bytes: bytes, tree: dict) -> bytes | None:
-    """缩放截图并把 [#编号] 画在控件位置上，返回 JPEG 字节。"""
+    """缩放截图并把 [#编号] 画在可交互控件位置上，返回 JPEG 字节。"""
     try:
         from PIL import Image, ImageDraw
     except ImportError:
@@ -255,13 +345,18 @@ def _annotate_screenshot(png_bytes: bytes, tree: dict) -> bytes | None:
         logger.warning(f"[Phone] 截图解码失败: {exc}")
         return None
 
+    orig_area = max(1, image.width * image.height)
     scale = min(1.0, max_width / max(1, image.width))
     if scale < 1.0:
         image = image.resize((int(image.width * scale), int(image.height * scale)), Image.LANCZOS)
 
     draw = ImageDraw.Draw(image)
     for item in tree["nodes"]:
-        x1, y1, x2, y2 = (int(v * scale) for v in item["bounds"])
+        bx1, by1, bx2, by2 = item["bounds"]
+        # 全屏/大半屏滚动容器不画红框，避免遮挡画面四周边缘
+        if item.get("kind") == "滚动" and (bx2 - bx1) * (by2 - by1) >= orig_area * 0.25:
+            continue
+        x1, y1, x2, y2 = (int(v * scale) for v in (bx1, by1, bx2, by2))
         draw.rectangle([x1, y1, x2, y2], outline=(255, 64, 64), width=2)
         label = f"#{item['index']}"
         tx, ty = max(0, x1), max(0, y1 - 12)
@@ -295,11 +390,27 @@ def _register_screenshot(context, jpeg_bytes: bytes) -> tuple[dict | None, str]:
         return None, ""
 
 
+_LAST_TREES: dict[str, dict] = {}
+
+
 async def _dump_tree(max_nodes: int) -> dict:
-    xml_text = await driver.dump_xml()
-    tree = _compact_tree(xml_text, max_nodes)
-    driver.resolve_screen_size(tree)
-    return tree
+    try:
+        xml_text = await driver.dump_xml()
+        tree = _compact_tree(xml_text, max_nodes)
+        driver.resolve_screen_size(tree)
+        return tree
+    except Exception as exc:
+        logger.warning(f"[Phone] dump_xml 退避重试后仍失败，降级为空控件树+截图模式: {exc}")
+        pkg = await driver.current_focus_package()
+        w, h = driver.resolve_screen_size()
+        if w <= 0 or h <= 0:
+            w, h = 1080, 2388
+        return {
+            "package": pkg,
+            "size": (w, h),
+            "nodes": [],
+            "dump_error": str(exc),
+        }
 
 
 def _resolve_target(target) -> tuple[int, int] | None:
@@ -320,11 +431,34 @@ def _index_of(target) -> int | None:
     return int(raw) if raw.isdigit() else None
 
 
-def _find_node(tree: dict, index: int) -> dict:
-    node = next((n for n in tree["nodes"] if n["index"] == index), None)
-    if not node:
-        raise PhoneStepError(f"没有 [#{index}] 这个控件，请重新 inspect 当前界面。")
-    return node
+def _find_node(tree: dict, index: int, last_tree: dict | None = None) -> dict:
+    """按 [#编号] 查找节点；若当前树因节点数收缩找不到该编号，尝试从上一步模型看到的 last_tree 对齐。"""
+    current_node = next((n for n in tree["nodes"] if n["index"] == index), None)
+    if current_node is not None:
+        return current_node
+
+    if last_tree and last_tree.get("nodes") and (
+        not tree.get("package")
+        or not last_tree.get("package")
+        or tree.get("package") == last_tree.get("package")
+    ):
+        intended = next((n for n in last_tree["nodes"] if n["index"] == index), None)
+        if intended is not None:
+            intended_label = (intended.get("label") or "").strip()
+            if intended_label:
+                loc = pm.build_locator(intended, last_tree)
+                matched = pm.resolve_locator(tree, loc)
+                if matched:
+                    mx, my, mlabel, _ = matched
+                    return {
+                        **intended,
+                        "cx": mx,
+                        "cy": my,
+                        "label": mlabel or intended_label,
+                    }
+            return intended
+
+    raise PhoneStepError(f"没有 [#{index}] 这个控件，请重新 inspect 当前界面。")
 
 
 def _node_point_step(op: str, node: dict, tree: dict, **extra) -> dict:
@@ -332,6 +466,7 @@ def _node_point_step(op: str, node: dict, tree: dict, **extra) -> dict:
         "op": op,
         "label": (node.get("label") or "")[:40],
         "loc": pm.build_locator(node, tree),
+        "_xy": (int(node["cx"]), int(node["cy"])),
         **extra,
     }
 
@@ -365,7 +500,8 @@ def _swipe_coords(tree: dict, target, direction: str) -> tuple[float, float, flo
 
 
 async def _prepare_step(action: str, tree: dict, *, target=None, text="", direction="up",
-                        duration=300, app="", seconds=1.0) -> tuple[dict | None, str]:
+                        duration=300, app="", seconds=1.0,
+                        last_tree: dict | None = None) -> tuple[dict | None, str]:
     """把一次工具调用翻译成可记录的单步。inspect 返回 (None, 展示文本)。"""
     if action in ("inspect", "查看", "看看"):
         return None, "inspect"
@@ -378,7 +514,7 @@ async def _prepare_step(action: str, tree: dict, *, target=None, text="", direct
         index = _index_of(target)
         if index is None:
             raise ValueError("tap 需要 target=控件编号 或 target=\"x,y\"")
-        node = _find_node(tree, index)
+        node = _find_node(tree, index, last_tree=last_tree)
         step = _node_point_step("tap", node, tree)
         return step, f"tap #{index}({node['label'][:12] or '无文字'})"
 
@@ -394,7 +530,7 @@ async def _prepare_step(action: str, tree: dict, *, target=None, text="", direct
         index = _index_of(target)
         if index is None:
             raise ValueError("long_press 需要控件编号或坐标")
-        node = _find_node(tree, index)
+        node = _find_node(tree, index, last_tree=last_tree)
         step = _node_point_step("long_press", node, tree)
         return step, f"long_press #{index}({node['label'][:12] or '无文字'})"
 
@@ -406,8 +542,12 @@ async def _prepare_step(action: str, tree: dict, *, target=None, text="", direct
         if target is not None:
             index = _index_of(target)
             if index is not None:
-                target_node = _find_node(tree, index)
-                step.update({"label": (target_node["label"] or "")[:40], "loc": pm.build_locator(target_node, tree)})
+                target_node = _find_node(tree, index, last_tree=last_tree)
+                step.update({
+                    "label": (target_node["label"] or "")[:40],
+                    "loc": pm.build_locator(target_node, tree),
+                    "_xy": (int(target_node["cx"]), int(target_node["cy"])),
+                })
                 display = f"tap #{index}({target_node['label'][:12] or '输入框'}) + " + display
             else:
                 coords = _resolve_target(target)
@@ -469,6 +609,9 @@ async def _prepare_step(action: str, tree: dict, *, target=None, text="", direct
 
 
 def _step_point(step: dict, tree: dict) -> tuple[int, int, str]:
+    direct_xy = step.get("_xy")
+    if isinstance(direct_xy, (tuple, list)) and len(direct_xy) == 2:
+        return int(direct_xy[0]), int(direct_xy[1]), step.get("label") or ""
     matched = pm.resolve_locator(tree, step.get("loc") or {})
     if not matched:
         label = (step.get("loc") or {}).get("text") or "坐标点"
@@ -603,13 +746,17 @@ async def _exec_scroll_to_find(
 
 
 async def phone_action_tool(context, action="inspect", target=None, text="", direction="up",
-                            duration=300, app="", seconds=1.0, include_screenshot=False,
+                            duration=300, app="", seconds=1.0, include_screenshot=True,
                             note="", remember=True):
     """手机操作：inspect/tap/long_press/input/swipe/scroll_to_find/key/launch/back/home/wait。"""
+    t_start = time.monotonic()
+    timing: dict[str, int] = {}
     action = (action or "inspect").strip().lower()
     tools_cfg = _tools_cfg()
     max_nodes = int(getattr(tools_cfg, "phone_max_nodes", 60) or 60)
     wait_seconds = float(getattr(tools_cfg, "phone_wait_seconds", 1.0) or 1.0)
+    cid_str = str(getattr(context, "chat_id", "") or "default")
+    last_tree = _LAST_TREES.get(cid_str)
 
     try:
         await _ensure_device()
@@ -623,34 +770,48 @@ async def phone_action_tool(context, action="inspect", target=None, text="", dir
         if action in ("inspect", "查看", "看看"):
             steps.append("inspect")
             await asyncio.sleep(0.1)
+            t0 = time.monotonic()
             tree = await _dump_tree(max_nodes)
+            timing["dump_after_ms"] = int((time.monotonic() - t0) * 1000)
         elif action in ("scroll_to_find", "滑动查找"):
+            t0 = time.monotonic()
             tree = await _dump_tree(max_nodes)
+            timing["dump_before_ms"] = int((time.monotonic() - t0) * 1000)
             step, _ = await _prepare_step(
                 action, tree, target=target, text=text, direction=direction,
-                duration=duration, app=app, seconds=seconds,
+                duration=duration, app=app, seconds=seconds, last_tree=last_tree,
             )
+            t1 = time.monotonic()
             tree, find_steps, _ = await _exec_scroll_to_find(
                 context, tree, step["text"], step["direction"], step["duration"],
                 max_nodes, wait_seconds, remember,
             )
+            timing["exec_ms"] = int((time.monotonic() - t1) * 1000)
             steps.extend(find_steps)
             step = None  # 子滑动步骤已按需记入历史
         else:
+            t0 = time.monotonic()
             before = await _dump_tree(max_nodes)
+            timing["dump_before_ms"] = int((time.monotonic() - t0) * 1000)
             tree = before
             step, display = await _prepare_step(
                 action, tree, target=target, text=text, direction=direction,
-                duration=duration, app=app, seconds=seconds,
+                duration=duration, app=app, seconds=seconds, last_tree=last_tree,
             )
+            t1 = time.monotonic()
             display_text = await _exec_step(step, tree)
+            timing["exec_ms"] = int((time.monotonic() - t1) * 1000)
             steps.append(display_text or display)
             if step.get("op") == "launch":
                 wait_seconds = max(wait_seconds, 2.0)
 
             # 操作后等界面稳定，再回传最新控件树
+            t_wait = time.monotonic()
             await asyncio.sleep(wait_seconds if step else 0.1)
+            timing["wait_ms"] = int((time.monotonic() - t_wait) * 1000)
+            t2 = time.monotonic()
             tree = await _dump_tree(max_nodes)
+            timing["dump_after_ms"] = int((time.monotonic() - t2) * 1000)
     except ValueError as exc:
         return ToolResult(success=False, content=str(exc), error="invalid_target")
     except PhoneStepError as exc:
@@ -663,6 +824,11 @@ async def phone_action_tool(context, action="inspect", target=None, text="", dir
         return ToolResult(success=False, content=f"手机操作失败: {exc}", error="action_failed",
                           data={"action": action, "note": note})
 
+    _LAST_TREES[cid_str] = tree
+
+    if step is not None:
+        step.pop("_xy", None)
+
     if remember and before is not None and step and step.get("op") in RECORDABLE_OPS:
         try:
             pm.phone_history.record(context.chat_id, step, before, tree)
@@ -672,26 +838,57 @@ async def phone_action_tool(context, action="inspect", target=None, text="", dir
     if action not in ("inspect", "查看", "看看") or phone_focus_manager.is_focused(context.chat_id):
         phone_focus_manager.record_step(context.chat_id, " / ".join(steps), note)
 
-    # 智能按需截图：模型要图，或控件树里几乎没文字（图标/图片页）时补一张
+    # 抓取屏幕画面：WebUI 轨迹始终保存原图 + 标注图；仅在 want_shot 时将标注图挂入模型上下文
     text_nodes = [n for n in tree["nodes"] if n["kind"] in ("文本", "输入", "可点") and n["label"]]
     want_shot = bool(include_screenshot) or len(text_nodes) < 3
     attachment = None
     shot_hint = ""
-    if want_shot:
-        try:
-            jpeg = _annotate_screenshot(await _screencap(), tree)
-            if jpeg:
-                attachment, shot_hint = _register_screenshot(context, jpeg)
-        except Exception as exc:
+    raw_png = None
+    annotated_jpeg = None
+    t_shot = time.monotonic()
+    try:
+        raw_png = await _screencap()
+        if raw_png:
+            annotated_jpeg = _annotate_screenshot(raw_png, tree)
+            if want_shot and annotated_jpeg:
+                attachment, shot_hint = _register_screenshot(context, annotated_jpeg)
+    except Exception as exc:
+        if want_shot:
             logger.warning(f"[Phone] 截图失败: {exc}")
+    timing["screenshot_ms"] = int((time.monotonic() - t_shot) * 1000)
 
     lines = [f"已完成: {' / '.join(steps)}", _format_tree(tree)]
     if shot_hint:
         lines.append(f"已附屏幕截图 {shot_hint}（红框编号与上面 [#编号] 对应）")
 
+    content_text = "\n".join(lines)
+    total_elapsed_ms = int((time.monotonic() - t_start) * 1000)
+
+    try:
+        from modules.debug.phone_trace import phone_trace_store
+        phone_trace_store.record_step(
+            cid_str,
+            tool_name="phone_action",
+            action=action,
+            target=target,
+            text=text,
+            note=note or "",
+            step_display=" / ".join(steps),
+            package=tree.get("package") or "",
+            node_count=len(tree.get("nodes") or []),
+            success=True,
+            elapsed_ms=total_elapsed_ms,
+            timing_breakdown=timing,
+            tool_result_text=content_text,
+            raw_png_bytes=raw_png,
+            annotated_jpeg_bytes=annotated_jpeg,
+        )
+    except Exception as exc:
+        logger.debug(f"[Phone] 记录轨迹步骤失败: {exc}")
+
     return ToolResult(
         success=True,
-        content="\n".join(lines),
+        content=content_text,
         data={
             "action": action,
             "steps": steps,
@@ -699,6 +896,7 @@ async def phone_action_tool(context, action="inspect", target=None, text="", dir
             "node_count": len(tree["nodes"]),
             "screenshot": attachment,
             "note": note or "",
+            "elapsed_ms": total_elapsed_ms,
             "no_persist": not remember,
         },
     )

@@ -552,3 +552,9 @@
 - 本机无锁屏密码（机主确认），故不做凭据输入。
 - 实测：KEYCODE_SLEEP 后 phone_start → 「已点亮屏幕、上滑解锁成功(第1次)」，inspect 拿到 bili 首页；`pytest tests` 121 passed。
 - 改成静默：`phone_start` 输出与 data 不再出现唤醒/解锁字样（仅 logger.warning 记录失败），模型只看到屏幕内容；实测休眠→自动解锁→inspect 正常，121 passed。
+
+## 2026-11-06 /手机控件树精简 + 退避重试 + 100轮上限 + /phone 实时监控WebUI
+- `core/phone_driver.py::dump_xml`：常规 dump 失败自动尝试 `uiautomator dump --compressed`（绕过淘宝等 WebView/DinamicX 触发的 NAF 空指针崩溃），并按 0.6s -> 1.2s -> 2.0s 退避等待加载重试；仍失败时降级为空控件树+截图模式，不再整轮抛错掉线。
+- `core/tools/tools_phone.py::_compact_tree`：彻底移除纯静态 `文本` 节点（静态文字直接由默认附带的标注截图承载），仅保留可交互节点（`输入`/`可点`/`滚动`）；过滤 `[\ua000-\uf8ff]` iconfont 乱码字符；可点击容器自身无文字时自动聚合内部非交互子文本或同位置透明点击层标签（如淘宝底栏「店铺/客服/收藏/加入购物车/领券购买」）；过滤包裹子按钮的无标签外层容器，并跳过全屏滚动容器的大红框标注。
+- `core/engine/engine_reply.py` & `config.py`：手机聚焦模式 `phone_focus_max_rounds` 默认设为 100；`_attach_tool_screenshots` 自动替换上一步旧的 `【工具截图】`，保证百轮操作不耗尽 `native_vision_max_images` 配额。
+- `modules/debug/phone_trace.py` & `modules/debug/webui_server.py`：复用 8777 端口新增 `http://127.0.0.1:8777/phone` 页面与 `/api/phone/*` 接口，实时展示手机当前画面、当步 Yuki 看到的标注画面/原图、Yuki 收到的用户原文本、Yuki 回复的原文本、当步回传控件树与每步耗时分解，并持久化至 `data/phone_traces/` 支持历史回翻（`pytest` 时自动跳过默认目录写盘防止污染）。

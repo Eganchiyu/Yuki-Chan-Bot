@@ -65,12 +65,11 @@ TOOL_SPECS = [
         name="phone_action",
         description=(
             "亲手操作插在电脑上的安卓手机（adb）。先 action=inspect 看清当前界面，"
-            "返回带编号 [#1][#2] 的控件树（每个编号都带中心坐标）；"
+            "返回仅含可交互元素（输入/可点/滚动）的带编号 [#1][#2] 控件树与红框标注截图（静态文字直接看截图）；"
             "之后用 target=编号 精确点按，不用猜坐标。"
             "action 可选：inspect / tap / long_press / input / swipe / key / back / home / launch / wait。"
             "input 的 text 支持中文（需要手机装 ADBKeyboard，否则会提示）；"
-            "每次操作后会自动等界面刷新并返回最新控件树，"
-            "若控件树没什么文字（图片/图标页）会自动附一张带红框编号的低分辨率截图。"
+            "每次操作后会自动等界面刷新并返回最新可交互控件树与带红框编号的屏幕截图。"
             "每一步都会自动记进操作历史，摸熟后可用 phone_macro 的 save(from_history=N) 存成组合技。"
         ),
         parameters={
@@ -96,8 +95,8 @@ TOOL_SPECS = [
                 "seconds": {"type": "number", "description": "wait 的秒数"},
                 "include_screenshot": {
                     "type": "boolean",
-                    "description": "强制附一张当前屏幕截图（默认只在控件树文字太少时自动附）",
-                    "default": False,
+                    "description": "是否附带当前屏幕红框标注截图（默认 true）",
+                    "default": True,
                 },
                 "note": {
                     "type": "string",

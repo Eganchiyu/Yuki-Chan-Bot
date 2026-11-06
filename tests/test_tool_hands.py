@@ -16,9 +16,11 @@ SAMPLE_XML = """<?xml version="1.0" encoding="UTF-8"?>
 <hierarchy rotation="0">
   <node class="android.widget.FrameLayout" package="com.sankuai.meituan" bounds="[0,0][1080,2400]"
         clickable="false" text="" content-desc="">
-    <node class="android.widget.TextView" bounds="[420,400][660,470]" clickable="false" text="外卖" content-desc="">
+    <node class="android.widget.FrameLayout" bounds="[420,400][660,470]" clickable="true" text="" content-desc="">
       <node class="android.widget.TextView" bounds="[430,410][650,460]" clickable="false" text="外卖" content-desc=""/>
     </node>
+    <node class="android.widget.TextView" bounds="[100,900][500,960]" clickable="false"
+          text="纯静态说明文字不进控件树" content-desc=""/>
     <node class="android.widget.EditText" bounds="[100,180][980,260]" clickable="true"
           text="搜索商家" content-desc=""/>
     <node class="android.widget.ImageView" bounds="[900,2180][1020,2300]" clickable="true"
@@ -102,13 +104,15 @@ def test_compact_tree_numbers_nodes_and_dedupes():
     assert tree["package"] == "com.sankuai.meituan"
     assert tree["size"] == (1080, 2400)
     labels = [node["label"] for node in tree["nodes"]]
-    # 同文案的子节点被父节点吸收，隐藏节点不出现
+    # 可交互父容器聚合内部非交互子文本，纯静态文本与隐藏节点不进控件树
     assert labels.count("外卖") == 1
+    assert "纯静态说明文字不进控件树" not in labels
     assert "隐藏节点" not in labels
+    assert all(node["kind"] in ("输入", "可点", "滚动") for node in tree["nodes"])
     assert [node["index"] for node in tree["nodes"]] == list(range(1, len(tree["nodes"]) + 1))
-    # 编号带中心坐标，模型可以直接 target=编号
-    first = tree["nodes"][0]
-    assert (first["cx"], first["cy"]) == (540, 435)
+    # 编号按从上到下排序且带中心坐标，模型可以直接 target=编号
+    waimai = next(node for node in tree["nodes"] if node["label"] == "外卖")
+    assert (waimai["cx"], waimai["cy"]) == (540, 435)
 
 
 def test_compact_tree_respects_max_nodes():

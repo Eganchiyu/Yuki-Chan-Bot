@@ -532,6 +532,11 @@ class ToolsConfig:
         comment="手机聚焦模式连续未操作手机的轮数上限（大于该轮数自动退出并注入总结）",
         section="tools"
     )
+    phone_focus_max_rounds: int = config_field(
+        100,
+        comment="手机聚焦模式下单轮对话允许的最大工具调用轮次",
+        section="tools"
+    )
 
 
 @dataclass

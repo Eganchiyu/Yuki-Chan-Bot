@@ -222,15 +222,51 @@ class AndroidDriver:
         safe_token = _SAFE_TOKEN_RE.sub("_", token).strip("_") or str(os.getpid())
         return f"/data/local/tmp/yuki_ui_{safe_token}.xml"
 
+    async def current_focus_package(self) -> str:
+        """从 dumpsys window 提取当前前台应用包名（用于 dump 失败时兜底）。"""
+        try:
+            text = await self.adb_text(["shell", "dumpsys", "window"], timeout=10)
+        except Exception:
+            return ""
+        for pattern in (
+            r"mCurrentFocus=Window\{[^\}]*\s+([A-Za-z0-9_.]+)/",
+            r"mFocusedApp=ActivityRecord\{[^\}]*\s+([A-Za-z0-9_.]+)/",
+        ):
+            m = re.search(pattern, text)
+            if m:
+                return m.group(1)
+        return ""
+
     async def dump_xml(self) -> str:
-        """执行 uiautomator dump 并读取原始 XML 文本。"""
+        """执行 uiautomator dump 并读取原始 XML 文本。
+
+        当界面正在加载或 WebView/自定义控件触发 uiautomator NAF 空指针崩溃时：
+        1. 先尝试常规 dump，若失败立即尝试 `uiautomator dump --compressed`（跳过 NAF 检查）；
+        2. 若仍因界面加载未就绪而失败，按退避间隔（0.6s -> 1.2s -> 2.0s）等待后重试。
+        """
         remote = self.remote_dump_path()
-        await self.adb(["shell", "uiautomator", "dump", remote], timeout=20)
-        code, raw = await self.adb(["exec-out", "cat", remote], timeout=20)
-        xml_text = raw.decode("utf-8", "replace")
-        if code != 0 or "<hierarchy" not in xml_text:
-            raise RuntimeError(f"控件树读取失败: {xml_text[:200]}")
-        return xml_text
+        backoff_delays = (0.0, 0.6, 1.2, 2.0)
+        last_detail = ""
+
+        for attempt, delay in enumerate(backoff_delays):
+            if delay > 0:
+                logger.info(f"[PhoneDriver] dump_xml 第 {attempt + 1} 次退避等待 {delay:.1f}s...")
+                await asyncio.sleep(delay)
+
+            for cmd_args in (
+                ["shell", "uiautomator", "dump", remote],
+                ["shell", "uiautomator", "dump", "--compressed", remote],
+            ):
+                await self.adb(["shell", "rm", "-f", remote], timeout=8)
+                dump_code, dump_out = await self.adb(cmd_args, timeout=20)
+                code, raw = await self.adb(["exec-out", "cat", remote], timeout=20)
+                xml_text = raw.decode("utf-8", "replace")
+                if code == 0 and "<hierarchy" in xml_text:
+                    return xml_text
+                dump_msg = dump_out.decode("utf-8", "replace").strip()
+                last_detail = xml_text.strip() or dump_msg or f"exit={dump_code}"
+
+        raise RuntimeError(f"控件树读取失败: {last_detail[:200]}")
 
     async def screencap(self) -> bytes:
         override = self._tp_override("_screencap", self.screencap)

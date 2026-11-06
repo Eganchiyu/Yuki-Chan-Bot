@@ -618,3 +618,76 @@ def test_phone_focus_auto_exits_after_more_than_five_idle_turns():
     assert "查美团订单" in history.session[-1]["content"]
 
 
+async def test_driver_dump_xml_compressed_and_backoff_retry(monkeypatch):
+    from core.phone_driver import AndroidDriver
+
+    drv = AndroidDriver()
+    calls = []
+
+    async def fake_adb(args, timeout=20.0):
+        calls.append(args)
+        if args[:3] == ["shell", "uiautomator", "dump"] and "--compressed" not in args:
+            return 137, b"Killed"
+        if args[:4] == ["shell", "uiautomator", "dump", "--compressed"]:
+            return 0, b"UI hierchary dumped"
+        if args[:2] == ["exec-out", "cat"]:
+            # 第一次 cat 对应普通 dump（空），第二次 cat 对应 --compressed（成功）
+            cat_count = sum(1 for c in calls if c[:2] == ["exec-out", "cat"])
+            if cat_count == 1:
+                return 0, b""
+            return 0, b'<?xml version="1.0"?><hierarchy rotation="0"><node package="com.taobao.taobao" bounds="[0,0][1080,2388]"/></hierarchy>'
+        return 0, b""
+
+    monkeypatch.setattr(drv, "adb", fake_adb)
+    xml = await drv.dump_xml()
+    assert "<hierarchy" in xml
+    assert any("--compressed" in c for c in calls)
+
+
+def test_phone_trace_store_persists_steps_and_texts(tmp_path):
+    from modules.debug.phone_trace import PhoneTraceStore
+    from config import cfg
+
+    assert int(getattr(cfg.tools, "phone_focus_max_rounds", 0)) == 100
+
+    store = PhoneTraceStore(base_dir=str(tmp_path / "traces"))
+    store.set_turn_incoming("1057020972", "yuki拿手机支付宝给我点个午饭吧")
+    sid = store.start_session("1057020972", goal="用支付宝点午饭")
+    store.set_pending_model_call(
+        "1057020972",
+        "好哒，我先点开支付宝看看~",
+        [{"function": {"name": "phone_action", "arguments": '{"action":"tap","target":"10"}'}}],
+    )
+    step = store.record_step(
+        "1057020972",
+        action="tap",
+        target="10",
+        note="打开支付宝",
+        step_display="tap #10(支付宝)",
+        package="com.eg.android.AlipayGphone",
+        node_count=18,
+        elapsed_ms=1420,
+        timing_breakdown={"dump_before_ms": 400, "exec_ms": 120, "wait_ms": 500, "dump_after_ms": 400},
+        tool_result_text="已完成: tap #10(支付宝)\n[手机屏幕] 应用: com.eg.android.AlipayGphone",
+        raw_png_bytes=b"\xff\xd8\xff\xe0fakejpeg",
+        annotated_jpeg_bytes=b"\xff\xd8\xff\xe0annotated",
+    )
+    store.record_turn_final_reply("1057020972", "已经帮哥哥选好午饭啦~")
+    store.finish_session("1057020972", summary="完成支付宝点餐")
+
+    assert step["elapsed_ms"] == 1420
+    # 重新实例化验证落盘持久化可恢复
+    reloaded = PhoneTraceStore(base_dir=str(tmp_path / "traces"))
+    sess = reloaded.get_session(sid)
+    assert sess is not None
+    assert sess["goal"] == "用支付宝点午饭"
+    assert sess["total_elapsed_ms"] == 1420
+    assert sess["last_incoming_text"] == "yuki拿手机支付宝给我点个午饭吧"
+    assert sess["last_final_reply"] == "已经帮哥哥选好午饭啦~"
+    assert len(sess["steps"]) == 1
+    assert "好哒，我先点开支付宝看看~" in sess["steps"][0]["yuki_replied_text"]
+    assert reloaded.get_step_image(sid, 1, "yuki") == b"\xff\xd8\xff\xe0annotated"
+    assert reloaded.get_step_image(sid, 1, "raw") is not None
+
+
+
