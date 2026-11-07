@@ -2,7 +2,7 @@
 
 [![Python Version](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
 [![DeepSeek](https://img.shields.io/badge/LLM-DeepSeek--V3-green.svg)](https://www.deepseek.com/)
-[![License](https://img.shields.io/badge/license-MIT-important.svg)](LICENSE)
+[![License](https://img.shields.io/badge/license-AGPL--3.0-important.svg)](LICENSE)
 
 > **"虽然现在还很笨拙，但 Yuki 会慢慢成长的。所以...不许丢下我不管哦！"**
 
