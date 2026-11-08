@@ -580,3 +580,11 @@
 - 实现：`config.Config.swap_llm_route()` 对调 `api.llm_*` / `model.*`（备用 Key 为空时回填，避免主线路没 Key）；`utils/llm_client.reset_route_state()` 清主备熔断状态；`listen_main.switch_llm_route()` 封装切换并回报当前主/备模型名，接进 `handle_group_switch`（master 限定）与 `handle_private_command`。
 - 测试：`tests/test_napcat.py::test_switch_command_swaps_route_and_auth`；容器内 `pytest tests/test_napcat.py tests/test_llm_client.py tests/test_config.py -q` 23 passed。
 - 状态：代码完成，容器需重启（`deploy/run.sh` 或 supervisor）后生效。
+
+## 2026-11-08 分支 feature/diary-adversarial：日记建图与可视化（外部程序组）
+- 需求：为 6000+ 篇日记做关键词共现图谱 + 物理仿真可视化（节点可看内容），作为后续「话题随机游走/自主对抗定长期目标」的地基；本分支只做建图与可视化。
+- 新增独立程序组 `diary_graph/`（自带 `.venv`，不污染主项目/容器依赖）：`loader.py` 纯 sqlite3 只读 chroma.sqlite3 的 diaries collection（6485 篇）；`extract.py` jieba + custom_dict/aliases/stopwords + 词性过滤 + TF-IDF Top-K；`graph.py` 共现建图 + 时间衰减（半衰期）+ 剪枝 + Louvain 簇 + 介数/桥接；`render.py` pyvis（`cdn_resources=in_line`，离线单文件）注入侧栏，点节点看相关日记片段；`__main__.py` 提供 `build`/`serve`。
+- 关键词缓存带词典指纹（custom_dict/stopwords/aliases/extra_stop/top_k 改动即失效）。
+- 全量实测：6485 篇 → 剪枝后 2517 节点/12283 边；默认输出 1200 节点/9897 边/15 簇，HTML 约 7MB，本地 `serve` 冒烟 HTTP 200。
+- 已知：jieba 的 nr 不可靠（蔚蓝档案/安卓被标人名），未自动去人名；高频群友名（Momo、白姐姐…）成超级枢纽，用 `--extra-stop` 手工排除。
+- 状态：可跑，未提交待提交。
