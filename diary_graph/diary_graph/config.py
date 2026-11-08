@@ -28,3 +28,5 @@ class BuildOptions:
     max_docs_per_node: int = 8
     snippet_len: int = 260
     use_cache: bool = True
+    dynamic_k: bool = True    # 按文本长度自适应每篇关键词数
+    mix_rank: bool = True     # TF-IDF ∩ TextRank

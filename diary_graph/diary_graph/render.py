@@ -23,7 +23,8 @@ def _size(degree: int, weighted: float) -> float:
 
 
 def render(bundle: GraphBundle, out_path: str | Path, *,
-           title: str = "Yuki 日记图谱", height: str = "100vh") -> Path:
+           title: str = "Yuki 日记图谱", height: str = "100vh",
+           label_min_degree: int = 12) -> Path:
     G: nx.Graph = bundle.graph
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -42,17 +43,23 @@ def render(bundle: GraphBundle, out_path: str | Path, *,
     for node, meta in bundle.metrics.items():
         cid = meta["community"]
         color = PALETTE[cid % len(PALETTE)]
+        # 全图缩放下 899 个标签会糊成一片：只给枢纽概念常显文字，其余靠悬停/点选
+        show_label = meta["degree"] >= label_min_degree
         net.add_node(
             node,
-            label=node,
+            label=node if show_label else " ",
             title=(f"{node}\n度 {meta['degree']} | 加权度 {meta['weighted_degree']}\n"
                    f"簇 {cid} | 跨簇桥接 {meta['bridging']} | 介数 {meta['betweenness']}"),
             size=_size(meta["degree"], meta["weighted_degree"]),
             color={"background": color, "border": "#ffffff33",
                    "highlight": {"background": "#ffffff", "border": color}},
-            font={"size": 15 if meta["degree"] > 6 else 12},
             group=cid,
         )
+        # pyvis 会用构造函数的 font_color 覆盖 add_node 的 font 参数，只能事后改写
+        net.node_map[node]["font"] = (
+            {"size": 44 if meta["degree"] >= 30 else 34, "color": "#ffe9f7",
+             "strokeWidth": 4, "strokeColor": "#0e0916", "vadjust": -2}
+            if show_label else {"size": 0})
 
     for u, v, d in G.edges(data=True):
         w = d["weight"]
@@ -71,19 +78,25 @@ def render(bundle: GraphBundle, out_path: str | Path, *,
         "physics": {
             "solver": "forceAtlas2Based",
             "forceAtlas2Based": {
-                "gravitationalConstant": -70, "centralGravity": 0.012,
-                "springLength": 130, "springConstant": 0.06,
-                "damping": 0.55, "avoidOverlap": 0.35,
+                "gravitationalConstant": -70,    # 节点排斥：撑开但仍留得住簇
+                "centralGravity": 0.03,          # 向心力温和，避免整图飞散
+                "springLength": 90,              # 弹簧自然长度
+                "springConstant": 0.07,
+                "damping": 0.85,                 # 高阻尼 = 糖浆里运动，不抖
+                "avoidOverlap": 0.5,
             },
-            "stabilization": {"enabled": True, "iterations": 400,
-                              "updateInterval": 25, "fit": True},
-            "minVelocity": 0.8,
-            "maxVelocity": 60,
+            "stabilization": {"enabled": True, "iterations": 800,
+                              "updateInterval": 50, "fit": True},
+            "minVelocity": 2.0,                  # 提高静止阈值，提前停住微小抖动
+            "maxVelocity": 40,
         },
         "interaction": {"hover": True, "tooltipDelay": 120, "navigationButtons": True,
                         "multiselect": True, "keyboard": {"enabled": True}},
     }
     net.set_options(json.dumps(options))
+
+    # 最大连通分量：初始视角只聚焦它，避免零散孤岛把画面拉得很远
+    main_component = max(nx.connected_components(G), key=len)
 
     html = net.generate_html(notebook=False)
     payload = json.dumps({
@@ -91,6 +104,8 @@ def render(bundle: GraphBundle, out_path: str | Path, *,
         "meta": bundle.metrics,
         "docs": bundle.node_docs,
         "colors": PALETTE,
+        "physics": options["physics"],
+        "main": sorted(main_component),
         "stats": {k: bundle.stats.get(k) for k in ("nodes", "edges", "communities")},
     }, ensure_ascii=False).replace("</", "<\\/")
 
@@ -176,14 +191,36 @@ _OVERLAY_JS = """
       const m = G.meta[p.node];
       hint.textContent = m ? `${p.node} · 度 ${m.degree} · 跨簇 ${m.bridging}` : '';
     });
-    document.getElementById('dgFit').onclick = () => net.fit({animation:true});
-    let running = true;
+    const fitMain = () => net.fit({nodes: G.main, animation: {duration: 350}});
+    document.getElementById('dgFit').onclick = fitMain;
+
     const btn = document.getElementById('dgPhysics');
-    btn.onclick = () => {
-      running = !running;
-      if (running) net.startSimulation(); else net.stopSimulation();
-      btn.textContent = running ? '⏸ 冻结布局' : '▶ 继续布局';
+    let running = true;
+    const freeze = () => {
+      net.setOptions({physics: {enabled: false}});
+      net.stopSimulation();
+      setRunning(false);
     };
+    function setRunning(v){
+      running = v;
+      btn.textContent = v ? '⏸ 冻结布局' : '▶ 继续布局';
+    }
+    btn.onclick = () => {
+      if (running) { freeze(); return; }
+      net.setOptions({physics: Object.assign({enabled: true}, G.physics)});
+      net.startSimulation();
+      setRunning(true);
+    };
+
+    // 预布局跑完立刻冻结物理引擎：彻底消除残留的微震
+    let fitted = false;
+    const settle = () => {
+      freeze();
+      if (!fitted) { fitted = true; fitMain(); }
+    };
+    net.on('stabilizationIterationsDone', settle);
+    net.on('stabilized', settle);
+
     const search = document.getElementById('dgSearch');
     search.onkeydown = e => {
       if (e.key !== 'Enter') return;

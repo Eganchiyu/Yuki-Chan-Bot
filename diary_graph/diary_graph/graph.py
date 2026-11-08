@@ -1,4 +1,4 @@
-"""共现建图 + 时间衰减 + 剪枝 + 图分析指标。"""
+"""共现建图 + 时间衰减 + 显著性剪枝 + 骨架提取 + 图分析指标。"""
 
 from __future__ import annotations
 
@@ -30,22 +30,38 @@ def _decay(days_ago: float, halflife_days: float) -> float:
     return math.pow(2.0, -max(days_ago, 0.0) / halflife_days)
 
 
+def _pmi(co: float, df_u: float, df_v: float, n_docs: int) -> float:
+    """点互信息：共现是否比"随机同框"更显著。<=0 说明这条边没有逻辑。"""
+    if co <= 0 or df_u <= 0 or df_v <= 0 or n_docs <= 0:
+        return float("-inf")
+    return math.log((co * n_docs) / (df_u * df_v))
+
+
 def build_graph(
     entries: list[tuple[list[str], float]],
     *,
     now: float | None = None,
     halflife_days: float = 365.0,
     min_weight: float = 0.0,
+    min_pmi: float = 0.0,
+    keep_per_node: int = 5,
     max_nodes: int = 0,
 ) -> nx.Graph:
-    """entries = [(关键词列表, 日记时间戳)]，返回剪枝后的无向加权图。"""
+    """entries = [(关键词列表, 日记时间戳)]，返回剪枝 + 骨架化后的无向加权图。
+
+    边属性：weight = 时间衰减后的共现强度，count = 原始共现篇数。
+    """
     if now is None:
         now = max((ts for _, ts in entries), default=0.0)
     now = max(now, max((ts for _, ts in entries), default=0.0))
 
     G = nx.Graph()
+    df: Counter[str] = Counter()          # 词出现于多少篇日记（用于 PMI）
     for kws, ts in entries:
         uniq = list(dict.fromkeys(k for k in kws if k))
+        if not uniq:
+            continue
+        df.update(uniq)
         if len(uniq) < 2:
             G.add_nodes_from(uniq)
             continue
@@ -53,9 +69,19 @@ def build_graph(
         for u, v in itertools.combinations(uniq, 2):
             if G.has_edge(u, v):
                 G[u][v]["weight"] += w
+                G[u][v]["count"] += 1
             else:
-                G.add_edge(u, v, weight=w)
+                G.add_edge(u, v, weight=w, count=1)
 
+    n_docs = len(entries)
+
+    # 1) 显著性剪枝：共现不高于随机同框的边直接丢掉
+    if min_pmi > float("-inf"):
+        drop = [(u, v) for u, v, d in G.edges(data=True)
+                if _pmi(d["count"], df[u], df[v], n_docs) < min_pmi]
+        G.remove_edges_from(drop)
+
+    # 2) 强度剪枝
     if min_weight > 0:
         G.remove_edges_from([(u, v) for u, v, d in G.edges(data=True)
                              if d["weight"] < min_weight])
@@ -63,9 +89,25 @@ def build_graph(
     if G.number_of_edges() == 0:
         return G
 
+    # 3) 局部骨架：每个节点只留最强的 N 条边，打破"局部全连接"的致密团块
+    if keep_per_node and keep_per_node > 0:
+        keep: set[tuple[str, str]] = set()
+        for n in G.nodes():
+            edges = sorted(G.edges(n, data=True),
+                           key=lambda e: e[2]["weight"], reverse=True)
+            for u, v, _ in edges[:keep_per_node]:
+                keep.add((u, v) if u <= v else (v, u))
+        node_set = set(G.nodes())
+        keep = {(u, v) for u, v in keep if u in node_set and v in node_set}
+        G = G.edge_subgraph(keep).copy()
+        G.remove_nodes_from([n for n, d in G.degree() if d == 0])
+    if G.number_of_edges() == 0:
+        return G
+
+    # 4) 控制规模：只保留加权度最高的 N 个概念
     if max_nodes and G.number_of_nodes() > max_nodes:
-        keep = sorted(G.degree(weight="weight"), key=lambda x: x[1], reverse=True)
-        G = G.subgraph([n for n, _ in keep[:max_nodes]]).copy()
+        keep_top = sorted(G.degree(weight="weight"), key=lambda x: x[1], reverse=True)
+        G = G.subgraph([n for n, _ in keep_top[:max_nodes]]).copy()
         G.remove_nodes_from([n for n, d in G.degree() if d == 0])
     return G
 

@@ -588,3 +588,10 @@
 - 全量实测：6485 篇 → 剪枝后 2517 节点/12283 边；默认输出 1200 节点/9897 边/15 簇，HTML 约 7MB，本地 `serve` 冒烟 HTTP 200。
 - 已知：jieba 的 nr 不可靠（蔚蓝档案/安卓被标人名），未自动去人名；高频群友名（Momo、白姐姐…）成超级枢纽，用 `--extra-stop` 手工排除。
 - 状态：可跑，未提交待提交。
+
+## 2026-11-08 分支 feature/diary-adversarial：修掉"毛线球 + 颤抖"
+- 渲染层（`render.py`）：forceAtlas2Based 参数改为 排斥 -70 / 向心 0.03 / 弹簧 90 / 阻尼 0.85 / avoidOverlap 0.5；监听 `stabilizationIterationsDone`+`stabilized` 后 `physics:{enabled:false}` 彻底冻结，并 fit 到最大连通分量；"继续布局"按钮会重新下发 physics 配置再 startSimulation；只有度 ≥ `--label-degree`(12) 的枢纽常显标签（pyvis 会用构造函数的 font_color 覆盖 add_node 的 font，需事后改 `net.node_map[id]["font"]`）。
+- 抽取层（`extract.py`）：按文本长度自适应 K（`min(top_k, max(3, len//50))`）+ TF-IDF ∩ TextRank 混合（交集优先，不足用 TF-IDF 补），开关 `--fixed-k` / `--no-textrank`；缓存指纹包含这两项策略。
+- 建图层（`graph.py`）：边额外记录原始共现篇数；新增 PMI 显著性剪枝（`--min-pmi`，默认 0）、每节点局部骨架 `--keep-per-node`（默认 5）。
+- 实测：6485 篇 → 899 节点 / 1775 边 / 49 簇 / 平均度 3.95（原为 1200 节点 / 9897 边 / 15 簇），无头 Chrome 截图确认簇团分明、物理已冻结（spread≈3000，标签可读）。
+- 状态：已完成并提交。

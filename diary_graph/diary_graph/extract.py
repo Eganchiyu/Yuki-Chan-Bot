@@ -21,10 +21,13 @@ _DIARY_PREFIX = re.compile(r"^\s*【日记\([^)）]*\)】[：:]?\s*")
 class KeywordExtractor:
     def __init__(self, base_dir: str | Path, min_len: int = 2,
                  allow_pos: tuple[str, ...] = ALLOW_POS,
-                 extra_stop: str | Path | None = None):
+                 extra_stop: str | Path | None = None,
+                 dynamic_k: bool = True, mix_rank: bool = True):
         base = Path(base_dir)
         self.min_len = min_len
         self.allow_pos = allow_pos
+        self.dynamic_k = dynamic_k   # 按文本长度自适应 Top-K
+        self.mix_rank = mix_rank     # TF-IDF ∩ TextRank 收敛噪声
         self.aliases = self._load_aliases(base / "aliases.txt")
         self.stopwords = self._load_stopwords(base / "stopwords.txt")
         if extra_stop:
@@ -81,16 +84,25 @@ class KeywordExtractor:
         return w.lower() not in self.stopwords
 
     def extract(self, text: str, top_k: int = 8) -> list[str]:
+        """按文本长度自适应 K，并用 TF-IDF ∩ TextRank 收敛噪声词。"""
         text = self.normalize(text)
         if not text:
             return []
-        tags = jieba.analyse.extract_tags(
-            text, topK=max(top_k * 3, top_k + 4), allowPOS=self.allow_pos,
-        )
+        # 短日记强行抽 8 个词只会塞噪声，长日记只抽 8 个又会丢细节
+        actual_k = min(top_k, max(3, len(text) // 50)) if self.dynamic_k else top_k
+        pool = max(actual_k * 3, actual_k + 6)
+
+        tfidf = jieba.analyse.extract_tags(
+            text, topK=pool, allowPOS=self.allow_pos)
         picked: list[str] = []
-        for w in tags:
+        if self.mix_rank:
+            textrank = set(jieba.analyse.textrank(
+                text, topK=pool, allowPOS=self.allow_pos))
+            # 两种算法都认定的词优先（逻辑更稳，随机游走不会逻辑跳崖）
+            picked = [w for w in tfidf if w in textrank and self._keep(w)]
+        for w in tfidf:
+            if len(picked) >= actual_k:
+                break
             if self._keep(w) and w not in picked:
                 picked.append(w)
-            if len(picked) >= top_k:
-                break
-        return picked
+        return picked[:actual_k]

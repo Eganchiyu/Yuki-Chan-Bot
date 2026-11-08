@@ -26,9 +26,9 @@ def _log(msg: str) -> None:
     print(msg, file=sys.stderr, flush=True)
 
 
-def _lexicon_fingerprint(top_k: int, extra_stop=None) -> str:
-    """词典/停用词/别名任一改动都应让缓存失效。"""
-    h = hashlib.md5(f"topk={top_k}".encode())
+def _lexicon_fingerprint(top_k: int, extra_stop=None, flags: str = "") -> str:
+    """词典/停用词/别名/抽取策略任一改动都应让缓存失效。"""
+    h = hashlib.md5(f"topk={top_k}|{flags}".encode())
     files = [ROOT / "custom_dict.txt", ROOT / "stopwords.txt", ROOT / "aliases.txt"]
     if extra_stop:
         files.append(Path(extra_stop))
@@ -39,8 +39,11 @@ def _lexicon_fingerprint(top_k: int, extra_stop=None) -> str:
 
 
 def _extract_all(diaries, opts: BuildOptions, cache_path: Path, extra_stop=None):
-    extractor = KeywordExtractor(ROOT, extra_stop=extra_stop)
-    fingerprint = _lexicon_fingerprint(opts.top_k, extra_stop)
+    extractor = KeywordExtractor(
+        ROOT, extra_stop=extra_stop,
+        dynamic_k=opts.dynamic_k, mix_rank=opts.mix_rank)
+    fingerprint = _lexicon_fingerprint(
+        opts.top_k, extra_stop, f"dyn={opts.dynamic_k}|rank={opts.mix_rank}")
     cache: dict[str, dict] = {}
     if opts.use_cache and cache_path.exists():
         try:
@@ -82,6 +85,7 @@ def cmd_build(args: argparse.Namespace) -> int:
         min_weight=args.min_weight, max_nodes=args.max_nodes,
         max_docs_per_node=args.max_docs, snippet_len=args.snippet_len,
         use_cache=not args.no_cache,
+        dynamic_k=not args.fixed_k, mix_rank=not args.no_textrank,
     )
     _log(f"读取记忆库: {opts.db}（collection={opts.collection}）")
     diaries = load_diaries(opts.db, opts.collection, limit=opts.limit or None)
@@ -94,9 +98,12 @@ def cmd_build(args: argparse.Namespace) -> int:
                             extra_stop=args.extra_stop)
     entries = [(kw, d.timestamp) for d, kw in zip(diaries, keywords)]
 
-    _log(f"建图: 半衰期 {opts.halflife_days:g} 天，剪枝阈值 {opts.min_weight}，最多保留 {opts.max_nodes or '不限'} 节点")
+    _log(f"建图: 半衰期 {opts.halflife_days:g} 天，权重阈值 {opts.min_weight}，"
+         f"PMI 阈值 {args.min_pmi:g}，每节点保留 {args.keep_per_node or '全部'} 条边，"
+         f"最多 {opts.max_nodes or '不限'} 节点")
     G = build_graph(entries, halflife_days=opts.halflife_days,
-                    min_weight=opts.min_weight, max_nodes=opts.max_nodes)
+                    min_weight=opts.min_weight, min_pmi=args.min_pmi,
+                    keep_per_node=args.keep_per_node, max_nodes=opts.max_nodes)
     if G.number_of_nodes() == 0:
         _log("剪枝后图为空，请降低 --min-weight 或提高 --max-nodes")
         return 1
@@ -108,7 +115,8 @@ def cmd_build(args: argparse.Namespace) -> int:
         snippet_len=opts.snippet_len)
 
     html_path = render(bundle, opts.out_dir / "mind_map.html",
-                       title=f"Yuki 日记图谱（{len(diaries)} 篇）")
+                       title=f"Yuki 日记图谱（{len(diaries)} 篇）",
+                       label_min_degree=args.label_degree)
     md_path = opts.out_dir / "graph_stats.md"
     md_path.write_text(stats_markdown(bundle.stats), encoding="utf-8")
     (opts.out_dir / "graph_stats.json").write_text(
@@ -152,12 +160,22 @@ def build_parser() -> argparse.ArgumentParser:
     b.add_argument("--min-weight", type=float, default=1.0, help="边权重剪枝阈值")
     b.add_argument("--max-nodes", type=int, default=900,
                    help="保留加权度最高的 N 个概念（0=不限）")
+    b.add_argument("--min-pmi", type=float, default=0.0,
+                   help="边显著性阈值（PMI），<=0 即剔除不高于随机同框的边")
+    b.add_argument("--keep-per-node", type=int, default=5,
+                   help="骨架提取：每个概念只留最强的 N 条边（0=不剪）")
+    b.add_argument("--no-textrank", action="store_true",
+                   help="关闭 TF-IDF ∩ TextRank 混合，只用 TF-IDF")
+    b.add_argument("--fixed-k", action="store_true",
+                   help="关闭按文本长度自适应 K，强制每篇取 --top-k 个词")
     b.add_argument("--max-docs", type=int, default=8, help="每个概念最多挂几篇日记")
     b.add_argument("--snippet-len", type=int, default=260, help="日记片段长度")
     b.add_argument("--extra-stop", default=str(DEFAULT_EXTRA_STOP),
                    help="额外屏蔽词文件（默认复用主项目 blacklist.txt）")
     b.add_argument("--resolution", type=float, default=1.0,
                    help="Louvain 分辨率，越大簇越细")
+    b.add_argument("--label-degree", type=int, default=12,
+                   help="度 >= N 的节点常显文字标签（其余悬停显示）")
     b.add_argument("--no-cache", action="store_true", help="忽略关键词缓存")
     b.set_defaults(func=cmd_build)
 
