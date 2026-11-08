@@ -1,0 +1,15 @@
+# 别名归一化表：规范名=别名1|别名2|...
+# 命中别名（大小写不敏感）时在分词前替换成规范名，避免同一概念散成多个节点。
+ArchLinux=Arch Linux|arch linux|archlinux
+Hyprland=hyprland
+ChromaDB=Chroma DB|chromadb|chroma db
+GalGame=Galgame|galgame|Galgame
+Minecraft=MC|Minecraft
+NapCat=NAP CAT|napcat
+QQ=qq
+NetworkX=networkx
+Phira=phira
+RMT=rmt
+Yuki=YUKI|yuki
+萌创项目=萌创
+Momo=momo
