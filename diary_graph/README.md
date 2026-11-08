@@ -26,7 +26,7 @@ python3 -m venv .venv
 
 # 打开可视化
 .venv/bin/python -m diary_graph serve --port 8778
-# 浏览器访问 http://127.0.0.1:8778/mind_map.html
+# 浏览器访问 http://127.0.0.1:8779/mind_map.html
 ```
 
 产物都在 `output/`：

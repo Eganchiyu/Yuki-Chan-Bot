@@ -162,7 +162,7 @@ def build_parser() -> argparse.ArgumentParser:
     b.set_defaults(func=cmd_build)
 
     s = sub.add_parser("serve", help="本地 http 服务打开生成的图谱")
-    s.add_argument("--port", type=int, default=8778)
+    s.add_argument("--port", type=int, default=8779)
     s.add_argument("--dir", default=str(DEFAULT_OUT))
     s.set_defaults(func=cmd_serve)
     return p
