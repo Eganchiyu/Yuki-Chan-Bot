@@ -41,6 +41,10 @@ DOWNLOAD_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__fi
 RECONNECT_DELAY = 3.0      # 断线后的重连间隔（秒）
 EVENT_QUEUE_MAX = 2000     # 入站事件队列上限，满了丢最旧的一条
 DEFAULT_TIMEOUT = 5.0      # call() 默认等待响应的秒数
+# 单帧上限：NapCat 的 get_file 响应可能带上整个文件的 base64（数 MB 起），
+# websockets 默认 1MB 会直接以 1009 关闭连接，表现为"获取文件失败"。
+MAX_FRAME_BYTES = 64 * 1024 * 1024
+FILE_TIMEOUT = 60.0        # 大文件的 base64 传输 + 解码可能超过默认 5s
 
 
 def _is_private(mode: str) -> bool:
@@ -200,7 +204,8 @@ class NapCatGateway:
             url = self._url_with_token()
             kwargs = {"ssl": create_ssl_context()} if urlparse(url).scheme == "wss" else {}
             self.websocket = await websockets.connect(
-                url, ping_interval=20, ping_timeout=60, close_timeout=10, **kwargs
+                url, ping_interval=20, ping_timeout=60, close_timeout=10,
+                max_size=MAX_FRAME_BYTES, **kwargs
             )
             logger.info(f"[NapCat] 连接已建立: {self.ws_url}")
             return self.websocket
@@ -345,7 +350,7 @@ class NapCatGateway:
 
     async def get_file(self, file_id: str):
         """按 file_id 取文件信息（可能含 base64 / url / 本地路径）。"""
-        return await self.call("get_file", {"file_id": file_id})
+        return await self.call("get_file", {"file_id": file_id}, timeout=FILE_TIMEOUT)
 
     async def download_file(self, file_id: str, filename: str = None) -> dict:
         """按 file_id 取回文件并落到 workspace/。
