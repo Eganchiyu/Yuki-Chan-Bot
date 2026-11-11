@@ -602,3 +602,11 @@
 - 提出 `core/focus/` 通用域 + 轮次 Hook 管线 + ToolView 的分阶段重构规划（P0~P5），待机主确认取舍后开工。未改代码。
 - 机主决策：P4 只修 B1（同批 finish 泄漏）+ B5（重启清孤儿记录）；聚焦状态不落盘；先写设计文档。目的：为「艺术创作聚焦模式 art」铺路，让新增模式按范式声明式接入、可自迭代。
 - 产出 `docs/focus-mode-architecture.md`（FocusDomain/FocusManager/ToolView/TurnState+Hooks/写入闸门/孤儿清扫/art 示例/契约测试/P0~P6 路线）。状态：设计稿，未实施。
+
+## 2026-11-09 聚焦模式通用架构分阶段实施（P0–P5）
+- P0：新增 `tests/test_focus_snapshot.py`，覆盖同轮视图切换、插话保序、连续闲置 >5 轮自动退出、禁止同轮重入、4 条返回路径收尾次数，以及 B1/B5 复现用例。
+- P1：新增 `core/focus/`（`domain.py`、`manager.py`、`rewrite.py`、`tools.py`、`domains/phone.py`），将 `core/phone_focus.py` 改为薄兼容层，保持旧符号与单测 monkeypatch 兼容。
+- P2：新增 `core/focus/view.py`（`ToolView`），`core/toolchain.py` 与 `core/engine/engine_reply.py` 彻底移除 `phone` 硬编码。
+- P3：新增 `core/engine/turn.py`（`TurnState`）与 `core/engine/turn_hooks.py`（`FocusHook` / `PruneHook` / `FocusTraceHook` / `SnapshotHook`），`chat_with_tools` 瘦身为单一出口骨架（33 行），补齐多出口遥测（S3）与快照 `tool_count`（S6）。
+- P4：启用同批退出写入闸门（修 B1）与 `YukiEngine.__init__` 启动孤儿记录清扫 `focus_manager.sweep_orphans`（修 B5），B1/B5 测试转为通过。
+- P5：新增 `tests/test_focus_contract.py` 参数化契约测试，更新 `docs/focus-mode-paradigm.md` 与 `docs/focus-mode-architecture.md`。全量测试 140 passed。状态：P0–P5 已完成并分阶段提交，P6（`art` 域）待单独设计工具细节。

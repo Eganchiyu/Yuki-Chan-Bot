@@ -80,44 +80,61 @@
 
 ## 三、开发新聚焦模式的标准模板（Checklist）
 
-以后若要新增例如 **浏览器聚焦模式（`browser`）** 或 **Bilibili 聚焦模式（`bili`）**，只需按以下 4 步实现：
+通过 `core/focus/` 通用聚焦框架，**新增一个聚焦模式只需新建 1 个域声明文件 `core/focus/domains/<domain>.py`**，主循环（`engine_reply.py`）、工具注册表（`toolchain.py`）与历史管理器均无需修改：
 
-### 第 1 步：定义三件套工具（`<domain>_start` / `<domain>_action`... / `<domain>_finish`）
+### 第 1 步：声明 `FocusDomain` 并注册
 
-1. **`<domain>_start(goal="")`**（常态下唯一暴露的入口）：
+在 `core/focus/domains/<domain>.py` 中声明域配置并调用 `register_domain`：
+
+```python
+from core.focus import BASE_KEEP_TOOLS, FocusDomain, focus_finish_spec, focus_start_spec, register_domain
+
+ART = FocusDomain(
+    name="art",
+    title="艺术创作",
+    entry_tool="art_start",
+    exit_tool="art_finish",
+    domain_tools=frozenset({"art_draw", "art_asset"}),
+    keep_tools=BASE_KEEP_TOOLS,
+    summary_prefix="【艺术创作总结】",
+    exit_hint="（你已结束本轮创作并收起画板，请直接根据创作结果回复用户。）",
+    idle_turns_key="art_focus_idle_turns",
+    max_rounds_key="art_focus_max_rounds",
+)
+register_domain(ART)
+```
+
+### 第 2 步：用工厂生成入口/退出工具并实现专精工具
+
+1. **入口工具 `focus_start_spec(domain, description=..., handler=..., wrap_enter=True)`**：
    - 描述控制在 2 句话以内；
-   - 执行时：调用 `focus_manager.enter(context.chat_id, goal)`，**顺带执行一次首屏观察**（如手机的 `inspect`、浏览器的当前标签页概览、B站首页/热搜概览），避免模型进模式后还要多花一轮调观察工具。
-2. **领域核心工具（如 `<domain>_action`、`<domain>_macro`）**：
-   - 拥有完整的参数枚举与详细说明，仅在聚焦模式开启时暴露；
-   - 每次执行成功时调用 `focus_manager.record_step(context.chat_id, step_desc, note)` 记录一行简短轨迹（供超时自动退出兜底生成总结）。
-3. **`<domain>_finish(summary="...")`**（退出工具）：
-   - 必填参数 `summary`；
-   - 执行时：调用 `focus_manager.exit_and_summarize(...)` 清理历史并写入 `context.metadata["<domain>_finish_summary"] = final_summary`，返回 `data={"no_persist": True}`。
+   - handler 返回首屏观察概览；若底层环境不可用，返回 `data={"focus": "aborted", "no_persist": True}`，框架会自动回滚聚焦状态。
+2. **专精工具（如 `art_draw`、`art_asset`）**：
+   - 只在聚焦视图中展开；
+   - 执行成功时调用 `focus_manager.record_step(context.chat_id, step_desc, note, domain=ART.name)` 记录轨迹（供闲置超时自动退出生成兜底总结）。
+3. **退出工具 `focus_finish_spec(domain)`**：
+   - 直接使用通用工厂生成，无需手写历史覆写逻辑。
 
-### 第 2 步：在 `FunctionRegistry.get_tools` 中配置视图映射
+### 第 3 步：运行契约测试自证接入正确
 
-在 `core/phone_focus.py`（或通用化的 `core/focus_manager.py`）中维护每个聚焦模式的两个集合：
+在 `tests/test_focus_contract.py` 中确认新域名被纳入参数化列表，运行：
 
-- `HIDDEN_IN_DEFAULT`：常态下隐藏的重型工具名（如 `{"phone_action", "phone_macro", "phone_finish"}`）；
-- `FOCUS_ALLOWED_TOOLS`：该聚焦模式下允许暴露的工具白名单（领域工具 + `{"skip", "send_master_private", "send_qq_file"}`）。
+```bash
+docker exec yuki python -m pytest tests/test_focus_contract.py -q
+```
 
-### 第 3 步：给工作过程消息打上 `_focus_work` 标记
-
-在 `EngineReplyService.chat_with_tools` 中：
-- 聚焦期间产生的 `is_tool_thought=True` 的阶段性 `assistant` 消息，以及该领域的 `role="tool"` 消息，在 `history.append_session_message(...)` 时带上 `phone_focus_work=True`（或通用的 `focus_work="<domain>"`）。
-- 普通群友发来的 `role="user"` 消息和每轮最终的 `role="assistant"` 回复**不打该标记**，从而在退出清理时被100%保留。
-
-### 第 4 步：双端清理与 USER 总结注入
-
-退出聚焦模式时，同时清理两处：
-1. **持久化历史（`HistoryManager`）**：过滤掉带 `focus_work` 的 `tool` 与 `is_tool_thought` 消息，追加 `{"role": "user", "content": "【XX操作总结】...", "is_focus_summary": True}`。
-2. **当轮内存消息（`tool_messages`）**：通过 `rewrite_in_memory_tool_messages` 移除当轮该领域的 `assistant(tool_calls)` + `role="tool"` + `【工具截图】` 消息对，在末尾追加同一条 `role="user"` 总结（附带一句“已结束操作，请直接回复用户”的当轮提示），同时将本轮标记为 `finished_this_turn=True` 以在本轮剩余步骤中收起 `<domain>_start`，**防止模型在记忆被抹除后在同一轮内二次重入聚焦模式**。
+契约测试会自动验证常态/聚焦视图隔离、同轮无缝切换、同批退出写入闸门（B1）、群友插话保序、闲置超时退出、禁止同轮重入、重启孤儿清扫（B5）及 `aborted` 状态回滚。
 
 ---
 
 ## 四、参考实现代码位置
 
-- **聚焦状态机与上下文覆写器**：`core/phone_focus.py`（`PhoneFocusManager`、`phone_start_tool`、`phone_finish_tool`）
-- **动态 ToolSpec 过滤**：`core/toolchain.py::FunctionRegistry.get_tools(phone_focus=...)`
-- **多轮对话循环内的动态切换与内存覆写**：`core/engine/engine_reply.py::EngineReplyService.chat_with_tools` 与 `_after_turn`
-- **单元测试参考**：`tests/test_tool_phone_macro.py` 末尾的 `test_registry_get_tools_switches_between_default_and_phone_focus`、`test_phone_focus_enter_and_finish_overwrites_work_records_preserving_chat`、`test_phone_focus_auto_exits_after_more_than_five_idle_turns`
+- **通用聚焦框架**：
+  - `core/focus/domain.py`（`FocusDomain` 声明）
+  - `core/focus/manager.py`（`FocusManager` 多域状态机与启动孤儿清扫 `sweep_orphans`）
+  - `core/focus/view.py`（`ToolView` 动态可见工具推导）
+  - `core/focus/rewrite.py`（持久化历史与当轮内存消息覆写纯函数）
+  - `core/focus/tools.py`（`focus_start_spec` / `focus_finish_spec` 通用工具工厂）
+- **手机聚焦域声明**：`core/focus/domains/phone.py`（`core/phone_focus.py` 保留为向后兼容层）
+- **主循环与单轮生命周期钩子**：`core/engine/turn.py`、`core/engine/turn_hooks.py`（`FocusHook` / `PruneHook` / `FocusTraceHook` / `SnapshotHook`）、`core/engine/engine_reply.py`
+- **契约测试与快照测试**：`tests/test_focus_contract.py`、`tests/test_focus_snapshot.py`
