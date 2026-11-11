@@ -1,4 +1,4 @@
-# core/engine_reply.py
+# core/engine/engine_reply.py
 import asyncio
 import json
 import re
@@ -6,6 +6,15 @@ import time
 from typing import Any, Callable, Optional
 
 from config import cfg
+from core.engine.turn import TurnState
+from core.engine.turn_hooks import (
+    FocusHook,
+    FocusTraceHook,
+    PruneHook,
+    SnapshotHook,
+    TurnHookChain,
+)
+from core.focus import ToolView, focus_manager
 from core.prompts import build_chat_context
 from core.reply_format import (
     clean_visible_reply,
@@ -13,10 +22,9 @@ from core.reply_format import (
     strip_layout_markup,
     strip_meme_tags,
 )
-from core.tool_prune import ToolHistoryPruner
-from core.focus import ToolView, focus_manager, rewrite_in_memory_messages
-from core.toolchain import SKIP_REPLY_MARKER, ToolCallManager, ToolContext, ToolRuntime
 from core.tool_markup import extract_text_tool_calls, strip_tool_call_markup
+from core.tool_prune import ToolHistoryPruner
+from core.toolchain import SKIP_REPLY_MARKER, ToolCallManager, ToolContext, ToolRuntime
 from modules.debug.context_snapshot import context_snapshot_store
 from modules.vision.prefetch import resolve_image
 from utils.llm_client import llm_chat, llm_chat_raw
@@ -50,11 +58,20 @@ class EngineReplyService:
         self.get_process_callback = get_process_callback
         self.get_image_store = get_image_store
         self.get_meme_processor = get_meme_processor
-        # 连续若干轮不调工具就折叠历史工具输出，保持上下文干净
         self.pruner = ToolHistoryPruner(
             history,
             idle_turns=int(getattr(getattr(cfg, "tools", None), "prune_idle_turns", 2) or 2),
         )
+        self.focus_hook = FocusHook(lambda: self.history)
+        self.prune_hook = PruneHook(lambda: self.pruner)
+        self.trace_hook = FocusTraceHook()
+        self.snapshot_hook = SnapshotHook()
+        self.hooks = TurnHookChain([
+            self.focus_hook,
+            self.prune_hook,
+            self.trace_hook,
+            self.snapshot_hook,
+        ])
 
     @staticmethod
     def clean_visible_reply(content):
@@ -63,13 +80,7 @@ class EngineReplyService:
 
     @staticmethod
     def finalize_answer(raw_content, tools_executed=False):
-        """收敛最终回复，返回 (写回历史的文本, 实际发送的文本)。
-
-        清洗只作用于可见文本；写回历史保留归一化后的原始标记（含 `<layout>` 盘算），
-        避免丢掉模型的内心戏。若清洗后已无可见内容，但本轮确实执行过工具，说明
-        「操作已经开始、只是回复被清洗干净」，此时用「工作中......」占位而不是让
-        发送阶段误报空字符。
-        """
+        """收敛最终回复，返回 (写回历史的文本, 实际发送的文本)。"""
         visible = clean_visible_reply(raw_content)
         if not visible.strip() and tools_executed:
             logger.info("[ToolChain] 回复被清洗为空但本轮已执行工具，发送工作中占位")
@@ -255,7 +266,7 @@ class EngineReplyService:
         return False
 
     async def _attach_tool_screenshots(self, tool_result_messages, tool_messages):
-        """把工具产生的截图（如手机屏幕）渲染成多模态图像块塞进本轮上下文。"""
+        """把工具产生的截图渲染成多模态图像块塞进本轮上下文。"""
         if not cfg.LLM_NATIVE_VISION_ENABLED:
             return
         attachments = []
@@ -267,7 +278,7 @@ class EngineReplyService:
         if not attachments:
             return
 
-        # 移除上一步旧的【工具截图】，始终只保留最新一步手机画面，防止多轮操作耗尽图片配额
+        # 移除上一步旧的【工具截图】，始终只保留最新一步画面，防止多轮操作耗尽图片配额
         tool_messages[:] = [m for m in tool_messages if not self._is_tool_screenshot_msg(m)]
 
         budget = max(1, cfg.model.native_vision_max_images - self._used_image_slots(tool_messages))
@@ -285,7 +296,7 @@ class EngineReplyService:
             tool_messages.append(rendered)
 
     def _after_turn(self, chat_id, tools_executed: bool, used_domains: set[str] | None = None) -> None:
-        """一轮结束：连续若干轮没调工具时折叠历史里的工具原始输出；聚焦模式闲置超阈值自动退出并总结。"""
+        """保留向后兼容的单轮收尾方法。"""
         try:
             focus_manager.after_turn(chat_id, used_domains or set(), history=self.history)
         except Exception as exc:
@@ -302,8 +313,9 @@ class EngineReplyService:
         except TypeError:
             return active_registry.get_tools()
 
-    async def chat_with_tools(self, chat_id, combined_text, session, mode, messages, message_objs=None):
-        """执行支持多轮工具调用的 LLM 对话。"""
+    async def _begin_turn(
+        self, chat_id, combined_text, session, mode, messages, message_objs=None
+    ) -> TurnState:
         context = ToolContext(
             chat_id=str(chat_id),
             mode=mode,
@@ -329,257 +341,200 @@ class EngineReplyService:
         ) or None
 
         async def build_backup_messages():
-            """备用线路不支持视觉时，按需把图片附件转写为文本。"""
             return await self._prepare_model_messages(messages, native_vision=False)
 
-        native_vision_enabled = cfg.LLM_NATIVE_VISION_ENABLED
-        tool_messages = await self._prepare_model_messages(messages, native_vision=native_vision_enabled)
-        fallback_factory = None
-        if native_vision_enabled and not cfg.BACKUP_NATIVE_VISION_ENABLED:
-            fallback_factory = build_backup_messages
-        sent_thoughts = set()
-        tools_executed = False
-        used_domains: set[str] = set()
-        exited_this_turn: set[str] = set()
-
-        for domain in focus_manager.domains():
-            if domain.on_incoming is not None:
-                try:
-                    domain.on_incoming(str(chat_id), combined_text)
-                except Exception:
-                    pass
-
-        active_state = focus_manager.active(chat_id)
-        max_rounds = (
-            focus_manager.max_rounds_for(active_state.domain, active_tool_manager.max_rounds)
-            if active_state is not None
-            else active_tool_manager.max_rounds
+        native_vision = cfg.LLM_NATIVE_VISION_ENABLED
+        tool_messages = await self._prepare_model_messages(messages, native_vision=native_vision)
+        fallback_factory = (
+            build_backup_messages
+            if native_vision and not cfg.BACKUP_NATIVE_VISION_ENABLED
+            else None
         )
-        round_idx = 0
-        tool_trace = []
-        tools_used_list = []
         debug_snap_id = getattr(self, "_debug_snapshot_by_chat", {}).get(str(chat_id))
+        return TurnState(
+            chat_id=str(chat_id),
+            mode=mode,
+            context=context,
+            tool_messages=tool_messages,
+            active_registry=active_registry,
+            active_tool_manager=active_tool_manager,
+            valid_tool_names=valid_tool_names,
+            fallback_factory=fallback_factory,
+            max_rounds=active_tool_manager.max_rounds,
+            base_max_rounds=active_tool_manager.max_rounds,
+            debug_snap_id=debug_snap_id,
+        )
 
-        def _sync_debug_snapshot():
-            if not debug_snap_id:
-                return
-            try:
-                context_snapshot_store.update(
-                    debug_snap_id,
-                    built_messages=tool_messages,
-                    llm_rounds=round_idx,
-                    tool_trace=tool_trace,
-                    tools_used=tools_used_list,
-                )
-            except Exception:
-                pass
+    async def _call_llm(self, st: TurnState, view: ToolView) -> tuple[dict, int]:
+        t0 = time.monotonic()
+        msg = await llm_chat_raw(
+            messages=st.tool_messages,
+            model=cfg.LLM_MODEL,
+            temperature=0.9,
+            top_p=0.8,
+            frequency_penalty=0.3,
+            presence_penalty=0.2,
+            max_tokens=1024,
+            tools=self._resolve_active_tools(st.active_registry, view),
+            tool_choice="auto",
+            fallback_messages_factory=st.fallback_factory,
+        )
+        return msg, int((time.monotonic() - t0) * 1000)
 
-        while round_idx < max_rounds:
-            round_idx += 1
-            active_state = focus_manager.active(chat_id)
-            if active_state is not None and active_state.domain not in exited_this_turn:
-                max_rounds = focus_manager.max_rounds_for(active_state.domain, max_rounds)
-            view = ToolView.resolve(active_registry, focus_manager, chat_id, exited_this_turn)
-            t_llm0 = time.monotonic()
-            response_message = await llm_chat_raw(
-                messages=tool_messages,
-                model=cfg.LLM_MODEL,
-                temperature=0.9,
-                top_p=0.8,
-                frequency_penalty=0.3,
-                presence_penalty=0.2,
-                max_tokens=1024,
-                tools=self._resolve_active_tools(active_registry, view),
-                tool_choice="auto",
-                fallback_messages_factory=fallback_factory,
+    @staticmethod
+    def _extract_calls(st: TurnState, msg: dict) -> list[dict]:
+        tool_calls = msg.get("tool_calls") or []
+        if not tool_calls:
+            text_calls, cleaned_content = extract_text_tool_calls(
+                msg.get("content"), st.valid_tool_names
             )
-            llm_ms = int((time.monotonic() - t_llm0) * 1000)
-            tool_calls = response_message.get("tool_calls") or []
-            if not tool_calls:
-                # 模型偶尔把工具调用写成正文文本（DSML/<tool_call> 标记）：
-                # 还原成真实调用继续执行，避免标记外泄且任务落空。
-                text_calls, cleaned_content = extract_text_tool_calls(
-                    response_message.get("content"), valid_tool_names
+            if text_calls:
+                logger.warning(
+                    f"[ToolChain] {st.chat_id} 工具调用被写成正文文本，已解析为真实调用: "
+                    f"{[c['function']['name'] for c in text_calls]}"
                 )
-                if text_calls:
-                    logger.warning(
-                        f"[ToolChain] {chat_id} 工具调用被写成正文文本，已解析为真实调用: "
-                        f"{[c['function']['name'] for c in text_calls]}"
-                    )
-                    response_message["content"] = cleaned_content
-                    response_message["tool_calls"] = text_calls
-                    tool_calls = text_calls
-            if tool_calls:
-                tools_executed = True
-                tool_names = [
-                    call.get("function", {}).get("name", "")
-                    for call in tool_calls
-                ]
-                for tn in tool_names:
-                    if tn:
-                        tools_used_list.append(tn)
-                batch_domains = {
-                    d.name
-                    for tn in tool_names
-                    if (d := focus_manager.domain_of_tool(tn)) is not None
-                }
-                if active_state is not None:
-                    batch_domains.add(active_state.domain)
-                for dn in batch_domains:
-                    used_domains.add(dn)
-                    if dn not in exited_this_turn:
-                        max_rounds = focus_manager.max_rounds_for(dn, max_rounds)
-                    d_obj = focus_manager.get_domain(dn)
-                    if d_obj is not None and d_obj.on_model_call is not None:
-                        try:
-                            d_obj.on_model_call(
-                                str(chat_id),
-                                response_message.get("content") or "",
-                                tool_calls,
-                            )
-                        except Exception:
-                            pass
-                batch_focus_domain = (
-                    active_state.domain
-                    if active_state is not None
-                    else (next(iter(batch_domains)) if batch_domains else None)
-                )
-                logger.info(f"[ToolChain] 模型请求工具调用 chat_id={chat_id} tools={tool_names}")
+                msg["content"] = cleaned_content
+                msg["tool_calls"] = text_calls
+                tool_calls = text_calls
+        return tool_calls
 
-                # 同批里有 skip 就当作本轮什么都没发生：不发送、也不记录阶段文本
-                if "skip" not in tool_names:
-                    sent_content = await self.send_tool_thought(
-                        chat_id,
-                        mode,
-                        response_message.get("content"),
-                        sent_thoughts,
-                        tool_names,
-                    )
-                    if sent_content:
-                        thought_extra = {"focus_work": batch_focus_domain} if batch_focus_domain else {}
-                        self.history.append_session_message(
-                            chat_id,
-                            "assistant",
-                            sent_content,
-                            is_tool_thought=True,
-                            sent_realtime=True,
-                            save_immediately=False,
-                            return_snapshot=False,
-                            **thought_extra,
-                        )
-            else:
-                if response_message.get("_finish_reason") == "content_filter":
-                    logger.warning(f"[ToolChain] {chat_id} 回复被内容安全过滤")
-                    self._after_turn(chat_id, tools_executed, used_domains)
-                    _sync_debug_snapshot()
-                    return "Filtered", "Filtered"
-                # 写回历史保留归一化标记；可见文本为空且已执行过工具时用工作中占位
-                self._after_turn(chat_id, tools_executed, used_domains)
-                raw_ans, clean_ans = self.finalize_answer(
-                    strip_tool_call_markup(response_message.get("content")),
-                    tools_executed,
-                )
-                tool_trace.append({
-                    "round": round_idx,
-                    "llm_ms": llm_ms,
-                    "thought": (response_message.get("content") or "")[:240],
-                    "calls": [],
-                })
-                _sync_debug_snapshot()
-                notify_domains = set(used_domains)
-                if active_state is not None:
-                    notify_domains.add(active_state.domain)
-                for dn in notify_domains:
-                    d_obj = focus_manager.get_domain(dn)
-                    if d_obj is not None and d_obj.on_final_reply is not None:
-                        try:
-                            d_obj.on_final_reply(str(chat_id), raw_ans, clean_ans)
-                        except Exception:
-                            pass
-                return raw_ans, clean_ans
+    def _finalize_turn(self, st: TurnState, msg: dict, llm_ms: int) -> tuple[str, str]:
+        if msg.get("_finish_reason") == "content_filter":
+            logger.warning(f"[ToolChain] {st.chat_id} 回复被内容安全过滤")
+            st.outcome = "filtered"
+            return "Filtered", "Filtered"
+        raw_ans, clean_ans = self.finalize_answer(
+            strip_tool_call_markup(msg.get("content")),
+            st.tools_executed,
+        )
+        st.tool_trace.append({
+            "round": st.round_idx,
+            "llm_ms": llm_ms,
+            "thought": (msg.get("content") or "")[:240],
+            "calls": [],
+        })
+        st.outcome = "reply"
+        return raw_ans, clean_ans
 
-            tool_messages.append(response_message)
-            t_exec0 = time.monotonic()
-            tool_result_messages = await active_tool_manager.execute_tool_calls(
-                tool_calls,
-                context,
-                finish_reason=response_message.get("_finish_reason") or "",
+    async def _emit_thought(self, st: TurnState, msg: dict, calls: list[dict]) -> None:
+        st.tools_executed = True
+        tool_names = [(c.get("function") or {}).get("name") or "" for c in calls]
+        for tn in tool_names:
+            if tn:
+                st.tools_used.append(tn)
+        logger.info(f"[ToolChain] 模型请求工具调用 chat_id={st.chat_id} tools={tool_names}")
+
+        st.pending_thought = ""
+        if "skip" not in tool_names:
+            st.pending_thought = await self.send_tool_thought(
+                st.chat_id,
+                st.mode,
+                msg.get("content"),
+                st.sent_thoughts,
+                tool_names,
             )
-            exec_ms = int((time.monotonic() - t_exec0) * 1000)
-            tool_trace.append({
-                "round": round_idx,
-                "llm_ms": llm_ms,
-                "exec_ms": exec_ms,
-                "thought": (response_message.get("content") or "")[:240],
-                "calls": [
-                    {
-                        "name": (c.get("function") or {}).get("name") or "",
-                        "args": str((c.get("function") or {}).get("arguments") or "")[:200],
-                    }
-                    for c in tool_calls
-                ],
-            })
-            _sync_debug_snapshot()
-            if context.metadata.get("skip_reply"):
-                # skip 工具生效：本轮不生成也不要发送任何内容，交给管线收尾
-                logger.info(f"[ToolChain] {chat_id} 本轮选择 skip，保持安静")
-                self._after_turn(chat_id, tools_executed, used_domains)
-                return SKIP_REPLY_MARKER, SKIP_REPLY_MARKER
 
-            for tool_result_message in tool_result_messages:
-                tool_name = tool_result_message.get("name")
-                spec = active_registry.get_spec(tool_name)
-                if spec is not None and not spec.persist_result:
-                    # 结果只在本轮对话内可见，不回写历史，避免污染长期上下文
-                    continue
-                payload_data = self._tool_payload(tool_result_message).get("data")
-                if isinstance(payload_data, dict) and payload_data.get("no_persist"):
-                    # 工具自己判断这次输出只是中间过程（remember=false），同样不落历史
-                    continue
-                cur_state = focus_manager.active(chat_id)
-                tool_domain = focus_manager.domain_of_tool(tool_name)
-                work_domain = (
-                    tool_domain.name
-                    if tool_domain is not None
-                    else (cur_state.domain if cur_state is not None else None)
-                )
-                extra_fields = {"focus_work": work_domain} if work_domain else {}
+    async def _execute_batch(
+        self, st: TurnState, msg: dict, calls: list[dict], llm_ms: int
+    ) -> list[dict]:
+        # P3 保持原写入时机：若未开写入闸门，在工具执行前先写入阶段性文本
+        if st.pending_thought and not self.focus_hook.gate_exited_writes:
+            decision = self.hooks.classify_persist(
+                st, {"role": "assistant", "content": st.pending_thought, "is_tool_thought": True}
+            )
+            if decision.action != "drop":
+                extra = {"focus_work": decision.focus_work} if decision.focus_work else {}
                 self.history.append_session_message(
-                    chat_id,
-                    "tool",
-                    tool_result_message.get("content"),
-                    name=tool_name,
-                    tool_call_id=tool_result_message.get("tool_call_id"),
+                    st.chat_id,
+                    "assistant",
+                    st.pending_thought,
+                    is_tool_thought=True,
+                    sent_realtime=True,
                     save_immediately=False,
                     return_snapshot=False,
-                    **extra_fields,
+                    **extra,
                 )
-            tool_messages.extend(tool_result_messages)
-            await self._attach_tool_screenshots(tool_result_messages, tool_messages)
+            st.pending_thought = ""
 
-            focus_exits = context.metadata.pop("focus_exits", None) or []
-            for d_obj in focus_manager.domains():
-                legacy_summary = context.metadata.pop(f"{d_obj.name}_finish_summary", None)
-                if legacy_summary is not None and not any(e.domain == d_obj.name for e in focus_exits):
-                    from core.focus import FocusExit
-                    focus_exits.append(
-                        FocusExit(chat_id=str(chat_id), domain=d_obj.name, summary=legacy_summary)
-                    )
-            for exit_item in focus_exits:
-                exited_this_turn.add(exit_item.domain)
-                d_obj = focus_manager.get_domain(exit_item.domain)
-                if d_obj is not None:
-                    rewrite_in_memory_messages(tool_messages, d_obj, exit_item.summary)
+        st.tool_messages.append(msg)
+        t_exec0 = time.monotonic()
+        results = await st.active_tool_manager.execute_tool_calls(
+            calls,
+            st.context,
+            finish_reason=msg.get("_finish_reason") or "",
+        )
+        exec_ms = int((time.monotonic() - t_exec0) * 1000)
+        st.tool_trace.append({
+            "round": st.round_idx,
+            "llm_ms": llm_ms,
+            "exec_ms": exec_ms,
+            "thought": (msg.get("content") or "")[:240],
+            "calls": [
+                {
+                    "name": (c.get("function") or {}).get("name") or "",
+                    "args": str((c.get("function") or {}).get("arguments") or "")[:200],
+                }
+                for c in calls
+            ],
+        })
+        return results
 
-            remaining_budget = max(
-                0,
-                cfg.model.native_vision_max_images - self._used_image_slots(tool_messages),
+    def _commit_batch(self, st: TurnState, msg: dict, results: list[dict]) -> None:
+        self.focus_hook.collect_batch_exits(st)
+        if st.pending_thought:
+            decision = self.hooks.classify_persist(
+                st, {"role": "assistant", "content": st.pending_thought, "is_tool_thought": True}
             )
-            await self.merge_pending_messages(chat_id, tool_messages, image_budget=remaining_budget)
+            if decision.action != "drop":
+                extra = {"focus_work": decision.focus_work} if decision.focus_work else {}
+                self.history.append_session_message(
+                    st.chat_id,
+                    "assistant",
+                    st.pending_thought,
+                    is_tool_thought=True,
+                    sent_realtime=True,
+                    save_immediately=False,
+                    return_snapshot=False,
+                    **extra,
+                )
+            st.pending_thought = ""
 
-        logger.warning(f"[ToolChain] {chat_id} 工具调用轮次用尽，转为纯文本收尾")
-        # 收尾请求不再带 tools，必须明确要求只输出文字，否则模型会把调用写成标记
-        closing_messages = tool_messages + [{
+        for tool_result_message in results:
+            tool_name = tool_result_message.get("name")
+            spec = st.active_registry.get_spec(tool_name)
+            if spec is not None and not spec.persist_result:
+                continue
+            payload_data = self._tool_payload(tool_result_message).get("data")
+            if isinstance(payload_data, dict) and payload_data.get("no_persist"):
+                continue
+            decision = self.hooks.classify_persist(st, tool_result_message)
+            if decision.action == "drop":
+                continue
+            extra = {"focus_work": decision.focus_work} if decision.focus_work else {}
+            self.history.append_session_message(
+                st.chat_id,
+                "tool",
+                tool_result_message.get("content"),
+                name=tool_name,
+                tool_call_id=tool_result_message.get("tool_call_id"),
+                save_immediately=False,
+                return_snapshot=False,
+                **extra,
+            )
+        st.tool_messages.extend(results)
+
+    async def _finish_batch(self, st: TurnState, results: list[dict]) -> None:
+        await self._attach_tool_screenshots(results, st.tool_messages)
+        self.hooks.after_batch(st, results)
+        remaining_budget = max(
+            0,
+            cfg.model.native_vision_max_images - self._used_image_slots(st.tool_messages),
+        )
+        await self.merge_pending_messages(st.chat_id, st.tool_messages, image_budget=remaining_budget)
+
+    async def _close_exhausted(self, st: TurnState) -> tuple[str, str]:
+        logger.warning(f"[ToolChain] {st.chat_id} 工具调用轮次用尽，转为纯文本收尾")
+        closing_messages = st.tool_messages + [{
             "role": "user",
             "content": "（本轮工具调用次数已用尽，请直接用文字回复用户，不要再输出任何工具调用、"
                        "参数 JSON 或类似标记。）",
@@ -590,18 +545,41 @@ class EngineReplyService:
             temperature=0.8,
             top_p=0.8,
             max_tokens=1024,
-            fallback_messages_factory=fallback_factory,
+            fallback_messages_factory=st.fallback_factory,
         )
-        self._after_turn(chat_id, tools_executed, used_domains)
-        raw_ans, clean_ans = self.finalize_answer(fallback_raw, tools_executed)
-        for dn in used_domains:
-            d_obj = focus_manager.get_domain(dn)
-            if d_obj is not None and d_obj.on_final_reply is not None:
-                try:
-                    d_obj.on_final_reply(str(chat_id), raw_ans, clean_ans)
-                except Exception:
-                    pass
-        return raw_ans, clean_ans
+        st.outcome = "exhausted"
+        return self.finalize_answer(fallback_raw, st.tools_executed)
+
+    async def chat_with_tools(self, chat_id, combined_text, session, mode, messages, message_objs=None):
+        """执行支持多轮工具调用的 LLM 对话。"""
+        st = await self._begin_turn(chat_id, combined_text, session, mode, messages, message_objs)
+        self.hooks.on_turn_start(st)
+        try:
+            while st.round_idx < st.max_rounds:
+                st.round_idx += 1
+                self.hooks.before_llm(st)
+                view = ToolView.resolve(
+                    st.active_registry, focus_manager, st.chat_id, st.exited_this_turn
+                )
+                msg, llm_ms = await self._call_llm(st, view)
+                calls = self._extract_calls(st, msg)
+                if not calls:
+                    st.final = self._finalize_turn(st, msg, llm_ms)
+                    return st.final
+                self.hooks.on_model_call(st, msg, calls)
+                await self._emit_thought(st, msg, calls)
+                results = await self._execute_batch(st, msg, calls, llm_ms)
+                if st.context.metadata.get("skip_reply"):
+                    logger.info(f"[ToolChain] {st.chat_id} 本轮选择 skip，保持安静")
+                    st.outcome = "skip"
+                    st.final = (SKIP_REPLY_MARKER, SKIP_REPLY_MARKER)
+                    return st.final
+                self._commit_batch(st, msg, results)
+                await self._finish_batch(st, results)
+            st.final = await self._close_exhausted(st)
+            return st.final
+        finally:
+            self.hooks.on_turn_end(st)
 
     async def api_reply(self, chat_id: str, combined_text: str, session: list, mode,
                         relevant_diaries: list[Any],
@@ -619,12 +597,13 @@ class EngineReplyService:
         )
         if debug_snapshot_id:
             try:
+                view = ToolView.resolve(self.tool_registry, focus_manager, chat_id)
                 context_snapshot_store.update(
                     debug_snapshot_id,
                     built_messages=combined_api_message,
                     tool_context={
                         "tools_enabled": True,
-                        "tool_count": len(self.tool_registry.get_tools()),
+                        "tool_count": len(view.visible),
                         "mode": mode,
                         "max_rounds": self.tool_manager.max_rounds,
                     },

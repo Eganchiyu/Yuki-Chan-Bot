@@ -54,11 +54,13 @@ def _trace_incoming(chat_id: str, text: str) -> None:
 
 def _phone_stub(payload: dict) -> str:
     data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
-    text = f"phone_action {data.get('action', '?')}"
-    steps = data.get("steps") or []
-    if steps:
-        text += f" ({' / '.join(str(s) for s in steps[:3])})"
-    return text
+    if "action" in data or "steps" in data:
+        text = f"phone_action {data.get('action', '?')}"
+        steps = data.get("steps") or []
+        if steps:
+            text += f" ({' / '.join(str(s) for s in steps[:3])})"
+        return text
+    return str(payload.get("content") or "").replace("\n", " ")
 
 
 PHONE = FocusDomain(

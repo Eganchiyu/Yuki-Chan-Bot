@@ -36,14 +36,15 @@ def _stub(name: str, payload: dict) -> str:
     if name == "bash":
         command = str(data.get("command") or "").strip().replace("\n", " ")
         text = f'bash "{command[:80]}" exit={data.get("exit_code", "?")}'
-    elif name == "phone_action":
-        text = f"phone_action {data.get('action', '?')}"
-        steps = data.get("steps") or []
-        if steps:
-            text += f" ({' / '.join(str(s) for s in steps[:3])})"
     else:
-        # 其他工具本来就不长，保守地保留开头
-        text = str(payload.get("content") or "").replace("\n", " ")
+        from core.focus import focus_manager
+
+        domain = focus_manager.domain_of_tool(name)
+        if domain is not None and domain.stub is not None:
+            text = domain.stub(payload)
+        else:
+            # 其他工具本来就不长，保守地保留开头
+            text = str(payload.get("content") or "").replace("\n", " ")
 
     if note:
         text += f" 备注:{note}"
