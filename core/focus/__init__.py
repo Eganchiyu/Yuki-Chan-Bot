@@ -23,6 +23,7 @@ from core.focus.tools import (
     make_focus_finish_handler,
     make_focus_start_handler,
 )
+from core.focus.view import ToolView
 
 # 导入内置域完成自动注册
 from core.focus import domains as _domains  # noqa: F401
@@ -34,6 +35,7 @@ __all__ = [
     "FocusExit",
     "FocusManager",
     "FocusState",
+    "ToolView",
     "focus_manager",
     "register_domain",
     "build_summary_message",

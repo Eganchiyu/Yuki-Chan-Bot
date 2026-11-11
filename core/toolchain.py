@@ -122,28 +122,21 @@ class FunctionRegistry:
             del self._tools[name]
             logger.info(f"[FunctionRegistry] 注销 function: {name}")
 
-    def get_tools(self, *, phone_focus: bool = False) -> list:
-        """获取当前模式下应暴露给模型的 tools schema 列表。
+    def get_tools(self, view: Any = None, **legacy_focus_kwargs) -> list:
+        """获取当前视图下应暴露给模型的 tools schema 列表。
 
-        常态下 (phone_focus=False) 隐藏 phone_action / phone_macro / phone_finish 的长提示词，只暴露 phone_start；
-        手机聚焦模式下 (phone_focus=True) 收起其他无关日常工具，只保留手机操作与基础群聊工具。
+        传入 ToolView 时按 view.visible 过滤；未传时支持 `<domain>_focus=bool` 兼容参数。
         """
-        from core.phone_focus import PHONE_FOCUS_ALLOWED_TOOLS, PHONE_HIDDEN_IN_DEFAULT
+        if view is None:
+            from core.focus import ToolView, focus_manager
 
-        has_phone_suite = "phone_start" in self._tools
-        if not has_phone_suite:
-            return [spec.to_schema() for spec in self._tools.values()]
+            view = ToolView.from_legacy_kwargs(self, focus_manager, legacy_focus_kwargs)
 
-        if phone_focus:
-            return [
-                spec.to_schema()
-                for spec in self._tools.values()
-                if spec.name in PHONE_FOCUS_ALLOWED_TOOLS
-            ]
+        visible = view.visible if hasattr(view, "visible") else set(view)
         return [
             spec.to_schema()
             for spec in self._tools.values()
-            if spec.name not in PHONE_HIDDEN_IN_DEFAULT
+            if spec.name in visible
         ]
 
     def get_handler(self, name: str):
@@ -179,7 +172,14 @@ class ToolCallManager:
     def _delay_seconds() -> float:
         return max(0.0, float(cfg.timing.tool_call_delay_seconds))
 
-    async def execute_tool_call(self, tool_call: dict, context: ToolContext, finish_reason: str = "") -> dict:
+    async def execute_tool_call(
+        self,
+        tool_call: dict,
+        context: ToolContext,
+        finish_reason: str = "",
+        *,
+        view: Any = None,
+    ) -> dict:
         """执行单个 tool call，并返回 OpenAI tool 消息。
 
         finish_reason 来自本轮模型响应，用于区分「参数写错」和「参数被输出上限截断」，
@@ -198,7 +198,9 @@ class ToolCallManager:
             await asyncio.sleep(delay_seconds)
 
         started_at = time.time()
-        if not handler:
+        if view is not None and name not in getattr(view, "visible", view):
+            result = ToolResult.failure("该工具当前未展开", "tool_not_in_view", name=name)
+        elif not handler:
             result = ToolResult.failure("工具未注册", "handler_not_found", name=name)
         else:
             try:
@@ -252,11 +254,18 @@ class ToolCallManager:
             "content": result.to_message_content(),
         }
 
-    async def execute_tool_calls(self, tool_calls: list, context: ToolContext, finish_reason: str = "") -> list:
+    async def execute_tool_calls(
+        self,
+        tool_calls: list,
+        context: ToolContext,
+        finish_reason: str = "",
+        *,
+        view: Any = None,
+    ) -> list:
         """按顺序执行一轮工具调用，避免共享状态并发写入。"""
         messages = []
         for tool_call in tool_calls:
-            messages.append(await self.execute_tool_call(tool_call, context, finish_reason))
+            messages.append(await self.execute_tool_call(tool_call, context, finish_reason, view=view))
             if context.metadata.get("skip_reply"):
                 # 已经决定不说话了，同批剩下的工具不再执行，避免跳过之后又发出消息
                 break

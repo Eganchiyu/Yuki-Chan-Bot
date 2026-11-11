@@ -325,18 +325,20 @@ async def test_snapshot_all_turn_exits_call_after_turn_once(monkeypatch, exit_ki
     focus_after_calls: list[tuple[str, bool]] = []
     prune_after_calls: list[tuple[str, bool]] = []
 
-    orig_focus_after = pf.phone_focus_manager.after_turn
+    from core.focus import focus_manager
+
+    orig_focus_after = focus_manager.after_turn
     orig_prune_after = svc.pruner.after_turn
 
-    def spy_focus_after(cid, used, history_manager=None):
+    def spy_focus_after(cid, used, *, history=None):
         focus_after_calls.append((str(cid), bool(used)))
-        return orig_focus_after(cid, used, history_manager=history_manager)
+        return orig_focus_after(cid, used, history=history)
 
     def spy_prune_after(cid, executed):
         prune_after_calls.append((str(cid), bool(executed)))
         return orig_prune_after(cid, executed)
 
-    monkeypatch.setattr(pf.phone_focus_manager, "after_turn", spy_focus_after)
+    monkeypatch.setattr(focus_manager, "after_turn", spy_focus_after)
     monkeypatch.setattr(svc.pruner, "after_turn", spy_prune_after)
 
     async def fake_llm_chat_raw(messages, tools=None, **_kwargs):

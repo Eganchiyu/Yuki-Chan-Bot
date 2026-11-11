@@ -14,7 +14,7 @@ from core.reply_format import (
     strip_meme_tags,
 )
 from core.tool_prune import ToolHistoryPruner
-from core.phone_focus import PHONE_WORK_TOOL_NAMES, phone_focus_manager
+from core.focus import ToolView, focus_manager, rewrite_in_memory_messages
 from core.toolchain import SKIP_REPLY_MARKER, ToolCallManager, ToolContext, ToolRuntime
 from core.tool_markup import extract_text_tool_calls, strip_tool_call_markup
 from modules.debug.context_snapshot import context_snapshot_store
@@ -115,11 +115,12 @@ class EngineReplyService:
                         attachments.append(attachment)
 
         logger.info(f"[ToolChain] {chat_id} 合并工具调用期间新增消息: {pending_text}")
-        try:
-            from modules.debug.phone_trace import phone_trace_store
-            phone_trace_store.set_turn_incoming(str(chat_id), pending_text)
-        except Exception:
-            pass
+        for domain in focus_manager.domains():
+            if domain.on_incoming is not None:
+                try:
+                    domain.on_incoming(str(chat_id), pending_text)
+                except Exception:
+                    pass
         self.history.append_session_message(
             chat_id,
             "user",
@@ -283,29 +284,23 @@ class EngineReplyService:
             )
             tool_messages.append(rendered)
 
-    def _after_turn(self, chat_id, tools_executed: bool, phone_tools_used: bool = False) -> None:
-        """一轮结束：连续若干轮没调工具时折叠历史里的工具原始输出；手机聚焦闲置超5轮自动退出并总结。"""
+    def _after_turn(self, chat_id, tools_executed: bool, used_domains: set[str] | None = None) -> None:
+        """一轮结束：连续若干轮没调工具时折叠历史里的工具原始输出；聚焦模式闲置超阈值自动退出并总结。"""
         try:
-            phone_focus_manager.after_turn(chat_id, phone_tools_used, history_manager=self.history)
+            focus_manager.after_turn(chat_id, used_domains or set(), history=self.history)
         except Exception as exc:
-            logger.warning(f"[PhoneFocus] 轮次闲置检查失败: {exc}")
+            logger.warning(f"[Focus] 轮次闲置检查失败: {exc}")
         try:
             self.pruner.after_turn(chat_id, tools_executed)
         except Exception as exc:
             logger.warning(f"[ToolPrune] 折叠失败: {exc}")
 
     @staticmethod
-    def _resolve_active_tools(active_registry, phone_focus: bool, phone_finished_this_turn: bool = False) -> list:
+    def _resolve_active_tools(active_registry, view: ToolView) -> list:
         try:
-            tools = active_registry.get_tools(phone_focus=phone_focus)
+            return active_registry.get_tools(view=view)
         except TypeError:
-            tools = active_registry.get_tools()
-        if phone_finished_this_turn and not phone_focus:
-            tools = [
-                t for t in tools
-                if (t.get("function") or {}).get("name") not in PHONE_WORK_TOOL_NAMES
-            ]
-        return tools
+            return active_registry.get_tools()
 
     async def chat_with_tools(self, chat_id, combined_text, session, mode, messages, message_objs=None):
         """执行支持多轮工具调用的 LLM 对话。"""
@@ -344,21 +339,20 @@ class EngineReplyService:
             fallback_factory = build_backup_messages
         sent_thoughts = set()
         tools_executed = False
-        phone_tools_used = False
-        phone_finished_this_turn = False
+        used_domains: set[str] = set()
+        exited_this_turn: set[str] = set()
 
-        try:
-            from modules.debug.phone_trace import phone_trace_store
-            phone_trace_store.set_turn_incoming(str(chat_id), combined_text)
-        except Exception:
-            phone_trace_store = None
+        for domain in focus_manager.domains():
+            if domain.on_incoming is not None:
+                try:
+                    domain.on_incoming(str(chat_id), combined_text)
+                except Exception:
+                    pass
 
-        phone_focus_max_rounds = int(
-            getattr(getattr(cfg, "tools", None), "phone_focus_max_rounds", 100) or 100
-        )
+        active_state = focus_manager.active(chat_id)
         max_rounds = (
-            max(active_tool_manager.max_rounds, phone_focus_max_rounds)
-            if phone_focus_manager.is_focused(chat_id)
+            focus_manager.max_rounds_for(active_state.domain, active_tool_manager.max_rounds)
+            if active_state is not None
             else active_tool_manager.max_rounds
         )
         round_idx = 0
@@ -382,9 +376,10 @@ class EngineReplyService:
 
         while round_idx < max_rounds:
             round_idx += 1
-            in_phone_focus = phone_focus_manager.is_focused(chat_id)
-            if in_phone_focus and not phone_finished_this_turn:
-                max_rounds = max(max_rounds, phone_focus_max_rounds)
+            active_state = focus_manager.active(chat_id)
+            if active_state is not None and active_state.domain not in exited_this_turn:
+                max_rounds = focus_manager.max_rounds_for(active_state.domain, max_rounds)
+            view = ToolView.resolve(active_registry, focus_manager, chat_id, exited_this_turn)
             t_llm0 = time.monotonic()
             response_message = await llm_chat_raw(
                 messages=tool_messages,
@@ -394,9 +389,7 @@ class EngineReplyService:
                 frequency_penalty=0.3,
                 presence_penalty=0.2,
                 max_tokens=1024,
-                tools=self._resolve_active_tools(
-                    active_registry, in_phone_focus, phone_finished_this_turn
-                ),
+                tools=self._resolve_active_tools(active_registry, view),
                 tool_choice="auto",
                 fallback_messages_factory=fallback_factory,
             )
@@ -425,20 +418,32 @@ class EngineReplyService:
                 for tn in tool_names:
                     if tn:
                         tools_used_list.append(tn)
-                is_phone_batch = in_phone_focus or any(n in PHONE_WORK_TOOL_NAMES for n in tool_names)
-                if any(n in PHONE_WORK_TOOL_NAMES for n in tool_names):
-                    phone_tools_used = True
-                    if not phone_finished_this_turn:
-                        max_rounds = max(max_rounds, phone_focus_max_rounds)
-                if is_phone_batch and phone_trace_store is not None:
-                    try:
-                        phone_trace_store.set_pending_model_call(
-                            str(chat_id),
-                            response_message.get("content") or "",
-                            tool_calls,
-                        )
-                    except Exception:
-                        pass
+                batch_domains = {
+                    d.name
+                    for tn in tool_names
+                    if (d := focus_manager.domain_of_tool(tn)) is not None
+                }
+                if active_state is not None:
+                    batch_domains.add(active_state.domain)
+                for dn in batch_domains:
+                    used_domains.add(dn)
+                    if dn not in exited_this_turn:
+                        max_rounds = focus_manager.max_rounds_for(dn, max_rounds)
+                    d_obj = focus_manager.get_domain(dn)
+                    if d_obj is not None and d_obj.on_model_call is not None:
+                        try:
+                            d_obj.on_model_call(
+                                str(chat_id),
+                                response_message.get("content") or "",
+                                tool_calls,
+                            )
+                        except Exception:
+                            pass
+                batch_focus_domain = (
+                    active_state.domain
+                    if active_state is not None
+                    else (next(iter(batch_domains)) if batch_domains else None)
+                )
                 logger.info(f"[ToolChain] 模型请求工具调用 chat_id={chat_id} tools={tool_names}")
 
                 # 同批里有 skip 就当作本轮什么都没发生：不发送、也不记录阶段文本
@@ -451,24 +456,25 @@ class EngineReplyService:
                         tool_names,
                     )
                     if sent_content:
+                        thought_extra = {"focus_work": batch_focus_domain} if batch_focus_domain else {}
                         self.history.append_session_message(
                             chat_id,
                             "assistant",
                             sent_content,
                             is_tool_thought=True,
                             sent_realtime=True,
-                            phone_focus_work=is_phone_batch,
                             save_immediately=False,
                             return_snapshot=False,
+                            **thought_extra,
                         )
             else:
                 if response_message.get("_finish_reason") == "content_filter":
                     logger.warning(f"[ToolChain] {chat_id} 回复被内容安全过滤")
-                    self._after_turn(chat_id, tools_executed, phone_tools_used)
+                    self._after_turn(chat_id, tools_executed, used_domains)
                     _sync_debug_snapshot()
                     return "Filtered", "Filtered"
                 # 写回历史保留归一化标记；可见文本为空且已执行过工具时用工作中占位
-                self._after_turn(chat_id, tools_executed, phone_tools_used)
+                self._after_turn(chat_id, tools_executed, used_domains)
                 raw_ans, clean_ans = self.finalize_answer(
                     strip_tool_call_markup(response_message.get("content")),
                     tools_executed,
@@ -480,11 +486,16 @@ class EngineReplyService:
                     "calls": [],
                 })
                 _sync_debug_snapshot()
-                if (phone_tools_used or in_phone_focus) and phone_trace_store is not None:
-                    try:
-                        phone_trace_store.record_turn_final_reply(str(chat_id), raw_ans, clean_ans)
-                    except Exception:
-                        pass
+                notify_domains = set(used_domains)
+                if active_state is not None:
+                    notify_domains.add(active_state.domain)
+                for dn in notify_domains:
+                    d_obj = focus_manager.get_domain(dn)
+                    if d_obj is not None and d_obj.on_final_reply is not None:
+                        try:
+                            d_obj.on_final_reply(str(chat_id), raw_ans, clean_ans)
+                        except Exception:
+                            pass
                 return raw_ans, clean_ans
 
             tool_messages.append(response_message)
@@ -512,7 +523,7 @@ class EngineReplyService:
             if context.metadata.get("skip_reply"):
                 # skip 工具生效：本轮不生成也不要发送任何内容，交给管线收尾
                 logger.info(f"[ToolChain] {chat_id} 本轮选择 skip，保持安静")
-                self._after_turn(chat_id, tools_executed, phone_tools_used)
+                self._after_turn(chat_id, tools_executed, used_domains)
                 return SKIP_REPLY_MARKER, SKIP_REPLY_MARKER
 
             for tool_result_message in tool_result_messages:
@@ -525,26 +536,40 @@ class EngineReplyService:
                 if isinstance(payload_data, dict) and payload_data.get("no_persist"):
                     # 工具自己判断这次输出只是中间过程（remember=false），同样不落历史
                     continue
+                cur_state = focus_manager.active(chat_id)
+                tool_domain = focus_manager.domain_of_tool(tool_name)
+                work_domain = (
+                    tool_domain.name
+                    if tool_domain is not None
+                    else (cur_state.domain if cur_state is not None else None)
+                )
+                extra_fields = {"focus_work": work_domain} if work_domain else {}
                 self.history.append_session_message(
                     chat_id,
                     "tool",
                     tool_result_message.get("content"),
                     name=tool_name,
                     tool_call_id=tool_result_message.get("tool_call_id"),
-                    phone_focus_work=bool(
-                        phone_focus_manager.is_focused(chat_id) or tool_name in PHONE_WORK_TOOL_NAMES
-                    ),
                     save_immediately=False,
                     return_snapshot=False,
+                    **extra_fields,
                 )
             tool_messages.extend(tool_result_messages)
             await self._attach_tool_screenshots(tool_result_messages, tool_messages)
 
-            finish_summary = context.metadata.pop("phone_finish_summary", None)
-            if finish_summary is not None:
-                # phone_finish_tool 已完成持久化历史覆写，这里只需同步清理当轮内存中的 tool_messages 并禁止同轮重入
-                phone_finished_this_turn = True
-                phone_focus_manager.rewrite_in_memory_tool_messages(tool_messages, finish_summary)
+            focus_exits = context.metadata.pop("focus_exits", None) or []
+            for d_obj in focus_manager.domains():
+                legacy_summary = context.metadata.pop(f"{d_obj.name}_finish_summary", None)
+                if legacy_summary is not None and not any(e.domain == d_obj.name for e in focus_exits):
+                    from core.focus import FocusExit
+                    focus_exits.append(
+                        FocusExit(chat_id=str(chat_id), domain=d_obj.name, summary=legacy_summary)
+                    )
+            for exit_item in focus_exits:
+                exited_this_turn.add(exit_item.domain)
+                d_obj = focus_manager.get_domain(exit_item.domain)
+                if d_obj is not None:
+                    rewrite_in_memory_messages(tool_messages, d_obj, exit_item.summary)
 
             remaining_budget = max(
                 0,
@@ -567,13 +592,15 @@ class EngineReplyService:
             max_tokens=1024,
             fallback_messages_factory=fallback_factory,
         )
-        self._after_turn(chat_id, tools_executed, phone_tools_used)
+        self._after_turn(chat_id, tools_executed, used_domains)
         raw_ans, clean_ans = self.finalize_answer(fallback_raw, tools_executed)
-        if phone_tools_used and phone_trace_store is not None:
-            try:
-                phone_trace_store.record_turn_final_reply(str(chat_id), raw_ans, clean_ans)
-            except Exception:
-                pass
+        for dn in used_domains:
+            d_obj = focus_manager.get_domain(dn)
+            if d_obj is not None and d_obj.on_final_reply is not None:
+                try:
+                    d_obj.on_final_reply(str(chat_id), raw_ans, clean_ans)
+                except Exception:
+                    pass
         return raw_ans, clean_ans
 
     async def api_reply(self, chat_id: str, combined_text: str, session: list, mode,
