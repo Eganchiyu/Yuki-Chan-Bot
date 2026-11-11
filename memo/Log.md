@@ -595,3 +595,10 @@
 - 建图层（`graph.py`）：边额外记录原始共现篇数；新增 PMI 显著性剪枝（`--min-pmi`，默认 0）、每节点局部骨架 `--keep-per-node`（默认 5）。
 - 实测：6485 篇 → 899 节点 / 1775 边 / 49 簇 / 平均度 3.95（原为 1200 节点 / 9897 边 / 15 簇），无头 Chrome 截图确认簇团分明、物理已冻结（spread≈3000，标签可读）。
 - 状态：已完成并提交。
+
+## 2026-11-09 聚焦模式主循环批判性审查（只读）
+- 对照 `docs/focus-mode-paradigm.md` 审查 `core/engine/engine_reply.py::chat_with_tools`、`core/phone_focus.py`、`core/toolchain.py`、`core/tool_prune.py`。
+- 结论：手机域硬编码散布 5 个模块；发现同批 phone_action+phone_finish 历史泄漏、隐藏工具可被执行、聚焦中 pruner 误折叠、finish 后轮次上限不回落、重启丢状态等问题。
+- 提出 `core/focus/` 通用域 + 轮次 Hook 管线 + ToolView 的分阶段重构规划（P0~P5），待机主确认取舍后开工。未改代码。
+- 机主决策：P4 只修 B1（同批 finish 泄漏）+ B5（重启清孤儿记录）；聚焦状态不落盘；先写设计文档。目的：为「艺术创作聚焦模式 art」铺路，让新增模式按范式声明式接入、可自迭代。
+- 产出 `docs/focus-mode-architecture.md`（FocusDomain/FocusManager/ToolView/TurnState+Hooks/写入闸门/孤儿清扫/art 示例/契约测试/P0~P6 路线）。状态：设计稿，未实施。
