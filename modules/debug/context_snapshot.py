@@ -390,10 +390,10 @@ class ContextSnapshotStore:
             })
 
         try:
-            from core.phone_focus import phone_focus_manager
+            from core.focus import focus_manager
             focused_chats = [
                 cid for cid in seen_g | set(last_snap_by_chat.keys())
-                if phone_focus_manager.is_focused(cid)
+                if focus_manager.is_focused(cid)
             ]
         except Exception:
             focused_chats = []

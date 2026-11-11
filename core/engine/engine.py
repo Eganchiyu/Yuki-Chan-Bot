@@ -5,6 +5,7 @@ from core.engine.engine_decision import EngineDecisionService
 from core.engine.engine_diary import EngineDiaryService
 from core.engine.engine_monitor import EngineMonitorService
 from core.engine.engine_reply import EngineReplyService
+from core.focus import focus_manager
 from core.toolchain import FunctionRegistry, ToolCallManager
 from core.tools import TOOL_SPECS
 from modules.stickers.manager import StickerManager
@@ -51,6 +52,7 @@ class YukiEngine:
             get_napcat_online=lambda: getattr(self, "napcat_online", True),
             get_process_callback=lambda: self.process_callback,
         )
+        focus_manager.sweep_orphans(self.history)
 
     async def api_reply(self, *args, **kwargs):
         """生成回复，保留原 YukiEngine 调用入口。"""

@@ -381,12 +381,8 @@ async def test_snapshot_all_turn_exits_call_after_turn_once(monkeypatch, exit_ki
     assert len(prune_after_calls) == 1
 
 
-# ==================== B1 复现（同批专精工具 + finish 时工作记录泄漏） ====================
+# ==================== B1 修复验证（同批专精工具 + finish 时工作记录不泄漏） ====================
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="B1: 同批执行 phone_action + phone_finish 时，phone_action 结果在 finish 覆写后又被追加进持久化历史（待 P4 写入闸门修复）",
-)
 async def test_b1_same_batch_action_and_finish_does_not_leak_work_record(monkeypatch):
     """当模型在同一批 tool_calls 中同时调用 phone_action 与 phone_finish 时，历史中不应残留 phone_action 记录。"""
     svc, history, _, _ = _build_reply_service()
@@ -422,12 +418,8 @@ async def test_b1_same_batch_action_and_finish_does_not_leak_work_record(monkeyp
     assert SUMMARY_PREFIX in persisted[-1]["content"]
 
 
-# ==================== B5 复现（重启后孤儿聚焦记录清扫） ====================
+# ==================== B5 修复验证（重启后孤儿聚焦记录清扫） ====================
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="B5: 重启后内存中无活跃聚焦状态，但持久化历史中残留的 phone_focus_work 孤儿片段未被清扫（待 P4 启动清扫修复）",
-)
 def test_b5_startup_sweeps_orphan_focus_work_records():
     """引擎启动时应清扫历史中没有活跃聚焦状态的孤儿工作记录，原地替换为兜底总结并保留期间群聊。"""
     history = InMemoryHistory({

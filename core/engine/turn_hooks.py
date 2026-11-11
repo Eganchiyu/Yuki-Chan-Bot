@@ -97,7 +97,7 @@ class FocusHook(BaseTurnHook):
         *,
         manager: FocusManager | None = None,
         restore_rounds_on_exit: bool = False,
-        gate_exited_writes: bool = False,
+        gate_exited_writes: bool = True,
     ):
         self._get_history = history_getter
         self._mgr = manager
