@@ -5,6 +5,7 @@ import time
 from typing import Callable
 
 from config import cfg
+from core.focus import focus_manager
 from core.history_filter import dialogue_length
 from utils.logger import get_logger
 
@@ -32,6 +33,8 @@ class EngineMonitorService:
             history_dict = self.history.load()
             for cid, last_msg in list(self.yuki.last_message_time.items()):
                 if cid in self.yuki.writing_diary:
+                    continue
+                if focus_manager.is_focused(cid):
                     continue
 
                 idle_seconds = now - last_msg

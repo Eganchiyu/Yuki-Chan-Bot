@@ -31,6 +31,8 @@ def test_is_dialogue_message_excludes_tool_and_system():
     assert is_dialogue_message({"role": "assistant"})
     assert not is_dialogue_message({"role": "tool"})
     assert not is_dialogue_message({"role": "system"})
+    assert not is_dialogue_message({"role": "assistant", "is_tool_thought": True, "focus_work": "phone"})
+    assert not is_dialogue_message({"role": "assistant", "is_tool_thought": True, "phone_focus_work": True})
     assert not is_dialogue_message("不是字典")
 
 
@@ -140,3 +142,48 @@ async def test_pipeline_forces_diary_when_chat_exceeds_threshold(monkeypatch):
     }
     await pipeline.finalize_conversation(context)
     assert len(created) == 1
+
+
+async def test_diary_paused_during_focus_mode(monkeypatch):
+    """聚焦模式开启期间，即使聊天条数超过 DIARY_MAX_LENGTH 或触发空闲摘要，也暂停写日记，退出聚焦后才恢复。"""
+    from core.focus import focus_manager
+    from tests.test_pipeline import _create_mock_pipeline
+
+    focus_manager._states.clear()
+    try:
+        pipeline = _create_mock_pipeline()
+        session = [{"role": "system", "content": "人设"}]
+        for i in range(cfg.DIARY_MAX_LENGTH + 4):
+            session.append({"role": "user" if i % 2 else "assistant", "content": f"聊天{i}"})
+        pipeline.history_manager.append_session_message.return_value = session
+
+        created = []
+        monkeypatch.setattr("asyncio.create_task", lambda coro: created.append(coro) or coro.close())
+
+        # 进入聚焦模式：超长不触发后台写日记，也不清空当前会话
+        focus_manager.enter("12345", "phone", goal="点外卖")
+        context = {
+            "chat_id": "12345",
+            "answer_text": "回复",
+            "answer_raw": "回复",
+            "current_time_str": "2026-11-09 22:00",
+        }
+        await pipeline.finalize_conversation(context)
+        assert created == []
+        pipeline.history_manager.replace_session.assert_not_called()
+
+        # 空闲总结同样在聚焦期间跳过
+        rag = MagicMock()
+        diary_history = MagicMock()
+        diary = EngineDiaryService(rag, diary_history)
+        await diary.summarize_idle_session("12345", session)
+        rag.save_diary.assert_not_called()
+        diary_history.replace_session.assert_not_called()
+
+        # 退出聚焦模式后：再次超过阈值即可正常触发写日记
+        focus_manager.exit("12345")
+        await pipeline.finalize_conversation(context)
+        assert len(created) == 1
+    finally:
+        focus_manager._states.clear()
+

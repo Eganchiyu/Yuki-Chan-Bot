@@ -609,4 +609,6 @@
 - P2：新增 `core/focus/view.py`（`ToolView`），`core/toolchain.py` 与 `core/engine/engine_reply.py` 彻底移除 `phone` 硬编码。
 - P3：新增 `core/engine/turn.py`（`TurnState`）与 `core/engine/turn_hooks.py`（`FocusHook` / `PruneHook` / `FocusTraceHook` / `SnapshotHook`），`chat_with_tools` 瘦身为单一出口骨架（33 行），补齐多出口遥测（S3）与快照 `tool_count`（S6）。
 - P4：启用同批退出写入闸门（修 B1）与 `YukiEngine.__init__` 启动孤儿记录清扫 `focus_manager.sweep_orphans`（修 B5），B1/B5 测试转为通过。
-- P5：新增 `tests/test_focus_contract.py` 参数化契约测试，更新 `docs/focus-mode-paradigm.md` 与 `docs/focus-mode-architecture.md`。全量测试 140 passed。状态：P0–P5 已完成并分阶段提交，P6（`art` 域）待单独设计工具细节。
+- P5：新增 `tests/test_focus_contract.py` 参数化契约测试，更新 `docs/focus-mode-paradigm.md` 与 `docs/focus-mode-architecture.md`。
+- 补充：聚焦模式期间暂停日记总结（`session_pipeline.py::finalize_conversation` 不触发超长摘要、`engine_monitor.py::idle_diary_checker` 与 `engine_diary.py::summarize_idle_session` 跳过聚焦中会话、`history_filter.py::is_dialogue_message` 排除带 `focus_work`/`phone_focus_work` 的阶段思考），并纳入契约测试第 10 项。全量测试 142 passed。状态：P0–P5 已完成并分阶段提交，P6（`art` 域）待单独设计工具细节。
+- 检查了最近新写入的日记（共 15139 条），最近几篇日记（如 15130-15139）均正常以标点符号结尾，无截断问题。

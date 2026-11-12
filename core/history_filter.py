@@ -14,8 +14,12 @@ DIALOGUE_ROLES = ("user", "assistant")
 
 
 def is_dialogue_message(message) -> bool:
-    """是否为聊天消息（排除 system 注入与 tool 结果）。"""
-    return isinstance(message, dict) and message.get("role") in DIALOGUE_ROLES
+    """是否为聊天消息（排除 system 注入、tool 结果及聚焦模式下的工作过程思考）。"""
+    if not isinstance(message, dict) or message.get("role") not in DIALOGUE_ROLES:
+        return False
+    if message.get("focus_work") or message.get("phone_focus_work"):
+        return False
+    return True
 
 
 def dialogue_messages(history) -> list:

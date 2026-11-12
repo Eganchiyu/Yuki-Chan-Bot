@@ -10,6 +10,7 @@ from typing import Any
 
 from config import cfg
 from core.brain import YukiState
+from core.focus import focus_manager
 from core.history_filter import dialogue_length
 from core.recall_cache import recall_cache_store
 from core.reply_format import clean_visible_reply
@@ -882,8 +883,9 @@ class SessionPipeline:
         if self.image_store:
             self.image_store.tick()
 
-        # 只按聊天条数判断是否该写日记：工具调用与工具输出不算对话轮次
-        if dialogue_length(session) > cfg.DIARY_MAX_LENGTH:
+        # 只按聊天条数判断是否该写日记：工具调用与工具输出不算对话轮次；
+        # 聚焦模式期间暂停超长日记总结，防止半途总结工作过程并截断聚焦上下文。
+        if not focus_manager.is_focused(chat_id) and dialogue_length(session) > cfg.DIARY_MAX_LENGTH:
             history_snapshot = session.copy()
             self.history_manager.replace_session(chat_id, [session[0]])
             asyncio.create_task(self._background_summarize(chat_id, history_snapshot))

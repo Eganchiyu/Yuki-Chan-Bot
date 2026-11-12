@@ -374,3 +374,41 @@ async def test_contract_entry_aborted_rolls_back_state(monkeypatch, domain_name:
     await svc.chat_with_tools("c_contract", "开始", sess, "group", list(sess))
 
     assert focus_manager.is_focused("c_contract") is False
+
+
+# ==================== 10. 聚焦期间暂停日记总结 ====================
+
+@pytest.mark.parametrize("domain_name", REGISTERED_DOMAIN_NAMES)
+async def test_contract_diary_summarization_paused_while_focused(monkeypatch, domain_name: str):
+    """契约 10：处于任意聚焦域期间，超长日记与空闲日记均暂停触发，避免半途总结工作过程。"""
+    from config import cfg
+    from core.engine.engine_diary import EngineDiaryService
+    from tests.test_pipeline import _create_mock_pipeline
+
+    pipeline = _create_mock_pipeline()
+    session = [{"role": "system", "content": "sys"}] + [
+        {"role": "user" if i % 2 else "assistant", "content": f"msg-{i}"}
+        for i in range(cfg.DIARY_MAX_LENGTH + 3)
+    ]
+    pipeline.history_manager.append_session_message.return_value = session
+
+    created = []
+    monkeypatch.setattr("asyncio.create_task", lambda coro: created.append(coro) or coro.close())
+
+    focus_manager.enter("c_contract", domain_name, goal="防日记截断测试")
+    await pipeline.finalize_conversation({
+        "chat_id": "c_contract",
+        "answer_text": "回复",
+        "answer_raw": "回复",
+        "current_time_str": "2026-11-09 22:00",
+    })
+    assert created == []
+    pipeline.history_manager.replace_session.assert_not_called()
+
+    diary = EngineDiaryService(
+        SimpleNamespace(save_diary=lambda *a, **kw: (_ for _ in ()).throw(AssertionError("should not save"))),
+        pipeline.history_manager,
+    )
+    await diary.summarize_idle_session("c_contract", session)
+    pipeline.history_manager.replace_session.assert_not_called()
+

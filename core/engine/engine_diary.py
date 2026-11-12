@@ -4,6 +4,7 @@ import json
 import re
 
 from config import cfg
+from core.focus import focus_manager
 from core.history_filter import dialogue_messages
 from core.prompts import get_base_setting, get_summary_prompt
 from utils.llm_client import llm_chat
@@ -57,6 +58,9 @@ class EngineDiaryService:
             return history
 
     async def summarize_idle_session(self, chat_id, session):
-        """摘要单个空闲会话并按会话粒度回写。"""
+        """摘要单个空闲会话并按会话粒度回写（聚焦模式期间跳过）。"""
+        if focus_manager.is_focused(chat_id):
+            logger.debug(f"[Engine] [{chat_id}] 处于聚焦模式中，跳过空闲日记总结")
+            return
         new_session = await self.do_summarize(int(chat_id), session)
         self.history.replace_session(chat_id, new_session)
