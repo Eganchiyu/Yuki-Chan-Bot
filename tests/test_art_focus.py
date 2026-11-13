@@ -161,15 +161,30 @@ async def test_art_asset_crud_with_temp_store(tmp_path, monkeypatch):
 
 
 async def test_art_draw_resolves_multiple_assets_and_aspect_ratio(monkeypatch):
-    """art_draw 支持同时选择多张登记资产图（如 yuki + 主人）并按 aspect_ratio 解析画幅。"""
+    """art_draw 支持同时选择多张登记资产图（如 yuki + 主人）并默认 opaque + high 品质与高保真。"""
     captured = {}
 
-    async def fake_gen(context, prompt, size="1024*1024", image_paths=None, aspect_ratio=None, seed=None):
+    async def fake_gen(
+        context,
+        prompt,
+        size="1024*1024",
+        image_paths=None,
+        aspect_ratio=None,
+        seed=None,
+        quality=None,
+        background=None,
+        input_fidelity=None,
+        output_format=None,
+    ):
         captured["prompt"] = prompt
         captured["size"] = size
         captured["image_paths"] = image_paths
         captured["aspect_ratio"] = aspect_ratio
         captured["seed"] = seed
+        captured["quality"] = quality
+        captured["background"] = background
+        captured["input_fidelity"] = input_fidelity
+        captured["output_format"] = output_format
         return ToolResult(
             success=True,
             content="图像已生成并保存: /tmp/out.png",
@@ -191,16 +206,130 @@ async def test_art_draw_resolves_multiple_assets_and_aspect_ratio(monkeypatch):
     assert res.success is True
     assert captured["size"] == "1024*1536"
     assert captured["seed"] == 42
+    assert captured["quality"] == "high"
+    assert captured["background"] == "opaque"
+    assert captured["input_fidelity"] == "high"
+    assert captured["output_format"] is None
     assert captured["image_paths"] == [
         "output/assets/character/yuki_reference.png",
         "output/assets/character/master_reference.png",
     ]
     assert res.data["used_assets"] == ["yuki", "master"]
+    assert res.data["background"] == "opaque"
+
+    # 仅显式要求透明背景时才切 transparent + png
+    res_trans = await art_draw_tool(
+        ctx,
+        prompt="Chibi Yuki sticker, no background",
+        background="transparent",
+    )
+    assert res_trans.success is True
+    assert captured["background"] == "transparent"
+    assert captured["output_format"] == "png"
+    assert captured["input_fidelity"] is None
 
     # 未知资产名给出清晰提示
     bad_res = await art_draw_tool(ctx, prompt="测试", assets=["不存在的群友"])
     assert bad_res.success is False
     assert bad_res.error == "asset_not_found"
+
+
+async def test_art_start_contains_director_guide_and_art_draw_preview(monkeypatch, tmp_path):
+    """art_start 返回导演指南与默认禁透明规则；art_draw 成品自动附带预览 screenshot。"""
+    ctx_start = _make_ctx("c_guide")
+    start_res = await art_start_tool(ctx_start, goal="画海报")
+    assert "二次元艺术总监生图指南" in start_res.content
+    assert "opaque" in start_res.content
+    assert "严禁擅自生成透明背景" in start_res.content
+
+    out_png = tmp_path / "preview.png"
+    out_png.write_bytes(_TINY_PNG)
+
+    from modules.vision.image_store import ImageStore
+    store = ImageStore(store_dir=str(tmp_path / "img_store"))
+
+    async def fake_gen(context, **kwargs):
+        return ToolResult(
+            success=True,
+            content=f"图像已生成并保存: {out_png}",
+            data={"file_path": str(out_png), "prompt": kwargs["prompt"], "size": "1024x1024"},
+        )
+
+    monkeypatch.setattr("core.tools.tools_media.generate_image_tool", fake_gen)
+    ctx_draw = _make_ctx("c_preview", image_store=store)
+    focus_manager.enter("c_preview", "art", goal="自检测试")
+    res = await art_draw_tool(ctx_draw, prompt="An anime girl at sunset")
+    assert res.success is True
+    assert isinstance(res.data.get("screenshot"), dict)
+    assert res.data["screenshot"]["index"] == "001"
+    assert "已附带成品预览 [img:001]" in res.content
+
+
+async def test_generate_image_openai_gpt_image_params_and_400_fallback(monkeypatch, tmp_path):
+    """gpt-image 模型默认带 quality=high / background=opaque（参考图带 input_fidelity=high），遇 400 自动剥离降级。"""
+    monkeypatch.setattr(cfg.api, "image_gen_api_key", "test-key")
+    monkeypatch.setattr(cfg.api, "image_gen_url", "https://example.invalid/v1")
+    monkeypatch.setattr(cfg.model, "image_gen", "gpt-image-2.6-sunburst")
+
+    import base64
+    import sys
+    import types
+
+    calls = []
+
+    class FakeBadRequest(Exception):
+        def __init__(self, msg):
+            super().__init__(msg)
+            self.status_code = 400
+
+    class FakeImages:
+        def generate(self, **kwargs):
+            calls.append(("generate", dict(kwargs)))
+            # 模拟中转站拒绝 background/output_format 或 response_format，降级到仅保留 quality 后成功
+            if "background" in kwargs:
+                raise FakeBadRequest("unsupported background")
+            return SimpleNamespace(data=[SimpleNamespace(b64_json=base64.b64encode(_TINY_PNG).decode())])
+
+        def edit(self, **kwargs):
+            calls.append(("edit", {k: v for k, v in kwargs.items() if k != "image"}))
+            if "input_fidelity" in kwargs:
+                raise FakeBadRequest("unsupported input_fidelity")
+            return SimpleNamespace(data=[SimpleNamespace(b64_json=base64.b64encode(_TINY_PNG).decode())])
+
+    class FakeOpenAI:
+        def __init__(self, **kwargs):
+            self.images = FakeImages()
+
+    monkeypatch.setitem(sys.modules, "openai", types.SimpleNamespace(OpenAI=FakeOpenAI))
+
+    ctx = _make_ctx("c_openai_fallback")
+    res1 = await tools_media.generate_image_tool(ctx, prompt="anime girl", aspect_ratio="2:3")
+    assert res1.success is True
+    assert calls[0][0] == "generate"
+    assert calls[0][1]["quality"] == "high"
+    assert calls[0][1]["background"] == "opaque"
+    assert calls[1][1]["quality"] == "high"
+    assert "background" not in calls[1][1]
+    if res1.data and res1.data.get("file_path") and os.path.exists(res1.data["file_path"]):
+        os.remove(res1.data["file_path"])
+
+    # 带参考图走 edit，默认带 input_fidelity=high
+    calls.clear()
+    res2 = await tools_media.generate_image_tool(
+        ctx,
+        prompt="keep hair and face",
+        image_paths=["output/assets/character/yuki_reference.png"],
+        aspect_ratio="1:1",
+    )
+    assert res2.success is True
+    assert calls[0][0] == "edit"
+    assert calls[0][1]["input_fidelity"] == "high"
+    assert calls[0][1]["background"] == "opaque"
+    assert calls[1][0] == "edit"
+    assert calls[1][1]["quality"] == "high"
+    assert "input_fidelity" not in calls[1][1]
+    if res2.data and res2.data.get("file_path") and os.path.exists(res2.data["file_path"]):
+        os.remove(res2.data["file_path"])
 
 
 async def test_generate_image_native_400_compatibility_fallback(monkeypatch, tmp_path):

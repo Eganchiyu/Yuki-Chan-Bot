@@ -59,6 +59,39 @@ def _looks_like_path_or_img_tag(val: str) -> bool:
     return False
 
 
+def _register_generated_preview(context, filepath: str) -> tuple[dict | None, str]:
+    """把刚生成的图片注册进会话 image_store，供主模型在下一轮直接视觉自检。"""
+    store = getattr(context, "image_store", None)
+    if store is None or not filepath or not os.path.isfile(filepath):
+        return None, ""
+    try:
+        with open(filepath, "rb") as f:
+            raw = f.read()
+        if not raw:
+            return None, ""
+        ext = os.path.splitext(filepath)[1].lower() or ".png"
+        index = store.register(raw, url="art_draw", ext=ext)
+        attachment = store.attachment(index)
+        if attachment:
+            return attachment, f"[img:{index}]"
+    except Exception as exc:
+        logger.warning(f"[Art] 注册成品预览失败: {exc}")
+    return None, ""
+
+
+_ART_DIRECTOR_GUIDE = (
+    "【二次元艺术总监生图指南（发挥模型全实力）】\n"
+    "1. Prompt 写法（四段式导演指令，画面描述优先用英文，画面内需渲染的中文/日文台词与标题用引号保留原文）：\n"
+    "   - 景别与时代画风锚点：先定机位与细分流派，勿只写 anime style（如 nostalgic early-2000s anime key visual / clean minimalist pastel sketch / glossy idol poster / YouTube VTuber thumbnail）。\n"
+    "   - 主体与精确计数：写清动作、神态、服饰、发饰并尽量给数量词（如 2 cat ears, 1 black choker, exactly 1 floating question mark），显著压低多饰品/崩坏。\n"
+    "   - 光影与色板脚本：指定光源方向、边缘光与色彩基调（如 golden-hour backlighting, warm rim light along hair and shoulders, pastel mauve & pearl white palette）。\n"
+    "   - 版面文字与减法约束：有字时写明字色/排向/气泡位置；极简图结尾加 no extra objects, no detailed background。\n"
+    "2. 背景铁律（极其重要）：默认必须使用 `background=\"opaque\"` 生成完整实底/纯色背景！**严禁擅自生成透明背景**；仅在用户明确要求“透明背景/免抠/透明贴纸”时才传 `background=\"transparent\"`。\n"
+    "3. 角色一致性与换装：用 `assets` 时默认 `input_fidelity=\"high\"` 锁定五官与发饰；换装时在 prompt 明写保留参考图的脸型、发色瞳色与标志性发饰并替换服装；若要跨画风重绘（如精绘转极简 Q 版表情包）可设 `input_fidelity=\"low\"`。\n"
+    "4. 自检与局部精修：生成后若附带了成品预览图，先看一眼构图/文字/手指；满意再 `send_qq_file`，若局部瑕疵可用 `art_draw(image_paths=[该file_path], prompt=\"Keep everything else identical, only fix...\", input_fidelity=\"high\")` 精修。"
+)
+
+
 async def art_start_tool(context, goal: str = "") -> ToolResult:
     """进入艺术创作聚焦模式，立即返回当前已登记的艺术资产列表与创作工具说明。"""
     history = (
@@ -76,9 +109,10 @@ async def art_start_tool(context, goal: str = "") -> ToolResult:
     header = (
         "【已进入艺术创作聚焦模式】已展开 art_draw / art_asset / art_finish 工具，并收起其他无关日常工具。\n"
         "- 画图用 `art_draw`：可通过 `assets=[\"yuki\", \"master\"]` 直接选用下方已登记的角色参考图（支持单张或多张同框），"
-        "也可同时传 `image_paths=[\"[img:001]\"]` 混用群聊临时参考图；生成完后请用 `send_qq_file` 把图片发到会话中。\n"
+        "也可同时传 `image_paths=[\"[img:001]\"]` 混用群聊临时参考图；生成并确认满意后请用 `send_qq_file` 把图片发到会话中。\n"
         "- 资产管理用 `art_asset`：支持登记群友/角色立绘或三视图（`register`）、修改（`update`）、删除（`delete`）或查看列表（`list`）。\n"
-        "- 创作与发图全部完成后，请调用 `art_finish(summary=\"...\")` 收起画板并写一句简短总结。"
+        "- 创作与发图全部完成后，请调用 `art_finish(summary=\"...\")` 收起画板并写一句简短总结。\n\n"
+        f"{_ART_DIRECTOR_GUIDE}"
     )
     content = f"{header}\n\n{overview}"
     return ToolResult(
@@ -103,9 +137,12 @@ async def art_draw_tool(
     aspect_ratio: str = "1:1",
     size: str | None = None,
     seed: int | None = None,
+    quality: str = "high",
+    background: str = "opaque",
+    input_fidelity: str = "high",
     note: str = "",
 ) -> ToolResult:
-    """在艺术创作模式下生成图片，支持选用已登记资产参考图、临时参考图与画幅比例预设。"""
+    """在艺术创作模式下生成图片，支持选用已登记资产参考图、高阶画质/保真度控制与画幅比例预设。"""
     if not prompt or not str(prompt).strip():
         return ToolResult(
             success=False,
@@ -161,14 +198,29 @@ async def art_draw_tool(
     from core.tools.tools_media import generate_image_tool, resolve_image_size
 
     target_size = resolve_image_size(size=size, aspect_ratio=aspect_ratio)
-    gen_res = await generate_image_tool(
-        context,
-        prompt=prompt,
-        size=target_size,
-        image_paths=combined_refs if combined_refs else None,
-        aspect_ratio=aspect_ratio,
-        seed=seed,
-    )
+    bg_mode = "transparent" if str(background or "").strip().lower() == "transparent" else "opaque"
+    qual_mode = str(quality or "high").strip().lower()
+    if qual_mode not in ("low", "medium", "high"):
+        qual_mode = "high"
+    fid_mode = str(input_fidelity or "high").strip().lower()
+    if fid_mode not in ("low", "high"):
+        fid_mode = "high"
+
+    gen_kwargs: dict[str, Any] = {
+        "prompt": prompt,
+        "size": target_size,
+        "image_paths": combined_refs if combined_refs else None,
+        "aspect_ratio": aspect_ratio,
+        "seed": seed,
+        "quality": qual_mode,
+        "background": bg_mode,
+    }
+    if combined_refs:
+        gen_kwargs["input_fidelity"] = fid_mode
+    if bg_mode == "transparent":
+        gen_kwargs["output_format"] = "png"
+
+    gen_res = await generate_image_tool(context, **gen_kwargs)
     if not gen_res.success:
         return ToolResult(
             success=False,
@@ -190,10 +242,17 @@ async def art_draw_tool(
 
     filepath = (gen_res.data or {}).get("file_path", "")
     final_size = (gen_res.data or {}).get("size", target_size)
+    attachment, preview_tag = _register_generated_preview(context, filepath)
     asset_line = f"\n已选用登记资产: {', '.join(used_owners)}" if used_owners else ""
+    preview_line = (
+        f"\n已附带成品预览 {preview_tag}：若构图/文字/人物细节满意请调用 send_qq_file 发送；"
+        "若有明显瑕疵可传入该 file_path 到 image_paths 做一轮局部精修。"
+        if attachment
+        else "\n请调用 send_qq_file 将图片发送给用户；若这幅图是新的角色设定/立绘，也可用 art_asset 登记到资产库。"
+    )
     content = (
-        f"图像已生成并保存: {filepath}（画幅: {final_size}）{asset_line}\n"
-        "请调用 send_qq_file 将图片发送给用户；若这幅图是新的角色设定/立绘，也可用 art_asset 登记到资产库。"
+        f"图像已生成并保存: {filepath}（画幅: {final_size}，背景: {bg_mode}）{asset_line}"
+        f"{preview_line}"
     )
     data = dict(gen_res.data or {})
     data.update({
@@ -201,9 +260,15 @@ async def art_draw_tool(
         "reference_paths": combined_refs,
         "size": final_size,
         "aspect_ratio": aspect_ratio,
+        "background": bg_mode,
+        "quality": qual_mode,
         "note": note or "",
         "no_persist": False,
     })
+    if combined_refs:
+        data["input_fidelity"] = fid_mode
+    if attachment:
+        data["screenshot"] = attachment
     return ToolResult(
         success=True,
         content=content,

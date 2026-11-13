@@ -620,3 +620,8 @@
 - 新增 `core/focus/domains/art.py`：声明并注册 `ART` 聚焦域；常态收起原 `generate_image`，仅暴露极简入口 `art_start`（进入即返回当前已登记资产列表）；聚焦内展开 `art_draw`（支持 `assets` 多资产直选 + `image_paths` 混用 + `aspect_ratio` 画幅比例预设 + `seed`）、`art_asset`、`art_finish`。
 - 扩展 `core/tools/tools_media.py::generate_image_tool`：支持画幅比例预设（`1:1` / `2:3` / `3:2` / `3:4` / `4:3` / `9:16` / `16:9`）与 `seed`，并在上游模型返回 HTTP 400 时自动执行参数兼容性降级回退重试。
 - 测试：`tests/test_focus_contract.py`（`art` + `phone` 双域 14 项契约全绿）与 `tests/test_art_focus.py`（6 项单测全绿），共 20 passed。
+
+## 2026-11-13 优化二次元生图能力与 gpt-image 协议参数榨取
+- `core/tools/tools_media.py`：新增 `_build_openai_image_attempts` 与 `quality` / `background` / `input_fidelity` / `output_format` 支持；`gpt-image-*` 默认开启 `quality="high"`、`background="opaque"`（默认不生成透明背景，仅显式请求 `"transparent"` 时切透明并配 `output_format="png"`），带参考图时默认 `input_fidelity="high"` 锁定五官与发饰；遇 HTTP 400 自动按阶梯剥离不兼容扩展参数与 `response_format` 降级重试，并补齐 `url` 返回兜底下载。
+- `core/focus/domains/art.py` & `core/tools/tools.py`：`art_start` 聚焦模式内展开「二次元艺术总监生图指南」（结构化英文画面导演指令 + 原语言文本引用 + 禁擅自透明铁律 + 换装一致性规则 + 视觉自检局部精修闭环），`art_draw` 暴露 `background`（默认 `opaque`）、`quality`（默认 `high`）、`input_fidelity`（默认 `high`），并将成图注册进 `image_store` 附带 `screenshot` 供主模型下一轮直接视觉自检。
+- 测试：`tests/test_art_focus.py` + `tests/test_focus_contract.py` 22 passed（含 `gpt-image-2.6-sunburst` 400 降级链、默认 `opaque` 与显式 `transparent`、预览图挂载测试）。待重启 `yuki` 容器生效。

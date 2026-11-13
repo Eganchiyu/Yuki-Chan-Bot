@@ -1,11 +1,14 @@
 # core/tools/tools_media.py
 """媒体类工具：文件下载与图像生成。"""
+from __future__ import annotations
+
 import asyncio
 import base64
 import datetime
 import os
 import re
 from html import unescape as html_unescape
+from typing import Any
 from urllib.parse import urlparse
 
 import aiohttp
@@ -322,6 +325,94 @@ def _encode_reference_data_uris(images):
     return uris
 
 
+_VALID_IMAGE_QUALITIES = {"low", "medium", "high", "auto"}
+_VALID_IMAGE_BACKGROUNDS = {"opaque", "transparent", "auto"}
+_VALID_INPUT_FIDELITIES = {"low", "high"}
+_VALID_OUTPUT_FORMATS = {"png", "webp", "jpeg"}
+
+
+def _build_openai_image_attempts(
+    size: str,
+    model: str,
+    has_references: bool,
+    quality: str | None = None,
+    background: str | None = None,
+    input_fidelity: str | None = None,
+    output_format: str | None = None,
+) -> list[tuple[str, bool, dict[str, Any]]]:
+    """构造 OpenAI 兼容图像接口的参数尝试序列（含 400 自动剥离降级链）。"""
+    is_gpt_image = "gpt-image" in (model or "").lower()
+
+    q_val = str(quality or "").strip().lower()
+    if q_val not in _VALID_IMAGE_QUALITIES:
+        q_val = "high" if is_gpt_image else ""
+
+    bg_val = str(background or "").strip().lower()
+    if bg_val not in _VALID_IMAGE_BACKGROUNDS:
+        bg_val = "opaque" if is_gpt_image else ""
+
+    fid_val = str(input_fidelity or "").strip().lower()
+    if not has_references:
+        fid_val = ""
+    elif fid_val not in _VALID_INPUT_FIDELITIES:
+        fid_val = "high" if is_gpt_image else ""
+
+    fmt_val = str(output_format or "").strip().lower()
+    if fmt_val not in _VALID_OUTPUT_FORMATS:
+        fmt_val = "png" if bg_val == "transparent" else ""
+
+    full_extras: dict[str, Any] = {}
+    if q_val:
+        full_extras["quality"] = q_val
+    if bg_val:
+        full_extras["background"] = bg_val
+    if fid_val:
+        full_extras["input_fidelity"] = fid_val
+    if fmt_val:
+        full_extras["output_format"] = fmt_val
+
+    extra_tiers: list[dict[str, Any]] = []
+    if full_extras:
+        extra_tiers.append(full_extras)
+        # 第二档：保留最广泛支持的 quality 与显式 transparent，剥离 input_fidelity / output_format / opaque
+        mid_extras: dict[str, Any] = {}
+        if q_val:
+            mid_extras["quality"] = q_val
+        if bg_val == "transparent":
+            mid_extras["background"] = "transparent"
+        if mid_extras and mid_extras != full_extras:
+            extra_tiers.append(mid_extras)
+        # 第三档：仅保留 quality
+        if q_val and {"quality": q_val} not in extra_tiers:
+            extra_tiers.append({"quality": q_val})
+    extra_tiers.append({})
+
+    attempts: list[tuple[str, bool, dict[str, Any]]] = []
+    seen: set[tuple[str, bool, tuple[tuple[str, Any], ...]]] = set()
+
+    def _add(sz: str, use_rf: bool, ext: dict[str, Any]) -> None:
+        key = (sz, use_rf, tuple(sorted(ext.items())))
+        if key not in seen:
+            seen.add(key)
+            attempts.append((sz, use_rf, dict(ext)))
+
+    for ext in extra_tiers:
+        _add(size, True, ext)
+    # 部分 gpt-image 原生端点本身只返 b64_json 且拒绝传 response_format，去掉它但保留高画幅与高阶参数
+    _add(size, False, full_extras)
+    if q_val:
+        _add(size, False, {"quality": q_val})
+    _add(size, False, {})
+    if size not in ("1024x1024", "auto"):
+        _add("1024x1024", True, {"quality": q_val} if q_val else {})
+        _add("1024x1024", True, {})
+        _add("1024x1024", False, {})
+    if size != "auto":
+        _add("auto", True, {})
+        _add("auto", False, {})
+    return attempts
+
+
 async def generate_image_tool(
     context,
     prompt,
@@ -329,6 +420,10 @@ async def generate_image_tool(
     image_paths=None,
     aspect_ratio=None,
     seed=None,
+    quality=None,
+    background=None,
+    input_fidelity=None,
+    output_format=None,
 ):
     """调用图像生成模型生成图片，保存到 output 目录并返回路径。
 
@@ -484,15 +579,26 @@ async def generate_image_tool(
             )
 
         reference_paths = [info["path"] for info in reference_images]
+        attempts = _build_openai_image_attempts(
+            size=size,
+            model=model,
+            has_references=bool(reference_paths),
+            quality=quality,
+            background=background,
+            input_fidelity=input_fidelity,
+            output_format=output_format,
+        )
+        used_meta: dict[str, Any] = {"size": size}
 
         def _do_generate():
             from openai import OpenAI
             client = OpenAI(api_key=api_key, base_url=base_url)
 
-            def _call(size_value, use_response_format):
+            def _call(size_value, use_response_format, extras):
                 kwargs = {"model": model, "prompt": prompt, "n": 1, "size": size_value}
                 if use_response_format:
                     kwargs["response_format"] = "b64_json"
+                kwargs.update(extras)
                 if not reference_paths:
                     return client.images.generate(**kwargs)
 
@@ -509,18 +615,13 @@ async def generate_image_tool(
                         except OSError:
                             pass
 
-            # 部分模型（如 grok-imagine）不接受特定画幅尺寸或 response_format：
-            # 首个请求保持调用方尺寸，400 时依次降级重试（400 不计费）
-            attempts = [(size, True)]
-            if size not in ("1024x1024", "auto"):
-                attempts.append(("1024x1024", True))
-            if size != "auto":
-                attempts.append(("auto", True))
-            attempts.append(("auto", False))
             last_error = None
-            for size_value, use_response_format in attempts:
+            for size_value, use_response_format, extras in attempts:
                 try:
-                    return _call(size_value, use_response_format)
+                    resp = _call(size_value, use_response_format, extras)
+                    used_meta["size"] = size_value
+                    used_meta.update(extras)
+                    return resp
                 except Exception as e:
                     status = getattr(e, "status_code", None)
                     if status != 400:
@@ -528,7 +629,7 @@ async def generate_image_tool(
                     last_error = e
                     logger.warning(
                         f"[ImageGen] {status} 拒绝 size={size_value} "
-                        f"response_format={use_response_format}，尝试降级重试: {e}"
+                        f"response_format={use_response_format} extras={extras}，尝试降级重试: {e}"
                     )
             raise last_error
 
@@ -539,20 +640,45 @@ async def generate_image_tool(
             return ToolResult(success=False, content=f"图像生成失败: {str(e)}", error=str(e))
 
         image_data = response.data[0]
-        if not (hasattr(image_data, 'b64_json') and image_data.b64_json):
-            return ToolResult(success=False, content="模型未返回图像数据", error="no_image_data")
-
         output_dir = os.path.join(BASE_DIR, 'output')
         os.makedirs(output_dir, exist_ok=True)
-        filename = datetime.datetime.now().strftime('%Y%m%d_%H%M%S') + '.png'
+        fmt_ext = str(used_meta.get("output_format") or "png").lower()
+        if fmt_ext not in ("png", "webp", "jpeg"):
+            fmt_ext = "png"
+        ext_name = "jpg" if fmt_ext == "jpeg" else fmt_ext
+        filename = datetime.datetime.now().strftime('%Y%m%d_%H%M%S') + f'.{ext_name}'
         filepath = os.path.join(output_dir, filename)
-        with open(filepath, 'wb') as f:
-            f.write(base64.b64decode(image_data.b64_json))
 
-        logger.info(f"[ImageGen] 图片已保存: {filepath}")
+        if hasattr(image_data, 'b64_json') and image_data.b64_json:
+            with open(filepath, 'wb') as f:
+                f.write(base64.b64decode(image_data.b64_json))
+        elif hasattr(image_data, 'url') and image_data.url:
+            try:
+                timeout = aiohttp.ClientTimeout(total=60)
+                async with aiohttp.ClientSession(connector=create_tcp_connector(), timeout=timeout) as session:
+                    async with session.get(image_data.url) as resp:
+                        if resp.status != 200:
+                            raise Exception(f"下载图片失败: HTTP {resp.status}")
+                        img_bytes = await resp.read()
+                        with open(filepath, 'wb') as f:
+                            f.write(img_bytes)
+            except Exception as e:
+                logger.error(f"[ImageGen] 下载图片失败: {e}")
+                return ToolResult(success=False, content=f"图片下载失败: {str(e)}", error=str(e))
+        else:
+            return ToolResult(success=False, content="模型未返回图像数据", error="no_image_data")
+
+        size = used_meta.get("size", size)
+        logger.info(f"[ImageGen] 图片已保存: {filepath} (meta={used_meta})")
+
+    result_data = {"file_path": filepath, "prompt": prompt, "size": size}
+    if not use_native:
+        for k in ("quality", "background", "input_fidelity", "output_format"):
+            if k in used_meta:
+                result_data[k] = used_meta[k]
 
     return ToolResult(
         success=True,
         content=f"图像已生成并保存: {filepath}",
-        data={"file_path": filepath, "prompt": prompt, "size": size},
+        data=result_data,
     )
