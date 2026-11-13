@@ -40,8 +40,10 @@ DSH_BIN = os.environ.get(
     "YUKI_DSH_BIN", os.path.join(ROOT, "deploy", "dsh-runtime", "node_modules", ".bin", "dsh")
 )
 PROFILE = os.environ.get("YUKI_MAID_PROFILE", "yuki-maid")
-DEFAULT_TIMEOUT = int(os.environ.get("YUKI_MAID_TIMEOUT", "1800"))
-MAX_TIMEOUT = int(os.environ.get("YUKI_MAID_MAX_TIMEOUT", "3600"))
+# 单任务硬上限（机主 2026-11-12 指定 600s）：容器侧请求带 timeout_s=480，
+# 这里同时压住默认值与最大可申请值，防止绕过容器侧的预算。
+DEFAULT_TIMEOUT = int(os.environ.get("YUKI_MAID_TIMEOUT", "600"))
+MAX_TIMEOUT = int(os.environ.get("YUKI_MAID_MAX_TIMEOUT", "600"))
 POLL_SECONDS = float(os.environ.get("YUKI_MAID_POLL", "2"))
 RUN_LOG = os.path.join(LOGS, "maid_runner.log")
 CREDENTIALS = os.path.expanduser("~/.dsh/.credentials.yaml")

@@ -37,3 +37,17 @@
   disabled: true
 - id: plan-mode
   disabled: true
+
+# 小女仆自己的运行限额（机主 2026-11-12 指定）：
+#   最多 30 轮、读取文件类工具计 0.5 轮、600s 时间上限、
+#   超限即拒绝工具并让模型立刻总结、每轮提示里注入「当前第N轮，剩余M轮」。
+# 实现在同目录 plugins/maid-budget/；改完不用重启容器，下一单任务起进程时即生效。
+- insert:
+    - id: maid-budget
+      name: ./plugins/maid-budget/index.js
+      config:
+        maxRounds: 30
+        readCost: 0.5
+        timeoutSeconds: 600
+        readTools: [read, read_image, glob, grep]
+        warnRounds: 3

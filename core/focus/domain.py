@@ -7,9 +7,9 @@ from typing import Callable
 
 # 聚焦模式下默认保留的群聊基础互动工具
 BASE_KEEP_TOOLS: frozenset[str] = frozenset({
-    "skip",
     "send_master_private",
     "send_qq_file",
+    "search_diary",
 })
 
 

@@ -85,13 +85,14 @@ def _register_generated_preview(context, filepath: str) -> tuple[dict | None, st
 _ART_DIRECTOR_GUIDE = (
     "【二次元艺术总监生图指南（发挥模型全实力）】\n"
     "1. Prompt 写法（四段式导演指令，画面描述优先用英文，画面内需渲染的中文/日文台词与标题用引号保留原文）：\n"
-    "   - 景别与时代画风锚点：先定机位与细分流派，勿只写 anime style（如 nostalgic early-2000s anime key visual / clean minimalist pastel sketch / glossy idol poster / YouTube VTuber thumbnail）。\n"
+    "   - 景别与时代画风锚点：先定机位与细分流派，勿只写 anime style。\n"
     "   - 主体与精确计数：写清动作、神态、服饰、发饰并尽量给数量词（如 2 cat ears, 1 black choker, exactly 1 floating question mark），显著压低多饰品/崩坏。\n"
     "   - 光影与色板脚本：指定光源方向、边缘光与色彩基调（如 golden-hour backlighting, warm rim light along hair and shoulders, pastel mauve & pearl white palette）。\n"
     "   - 版面文字与减法约束：有字时写明字色/排向/气泡位置；极简图结尾加 no extra objects, no detailed background。\n"
-    "2. 背景铁律（极其重要）：默认必须使用 `background=\"opaque\"` 生成完整实底/纯色背景！**严禁擅自生成透明背景**；仅在用户明确要求“透明背景/免抠/透明贴纸”时才传 `background=\"transparent\"`。\n"
+    "2. 背景铁律（极其重要）：默认必须使用 `background=\"opaque\"` 生成完整实底/纯色背景；仅在用户明确要求“透明背景/免抠/透明贴纸”时才传 `background=\"transparent\"`。\n"
     "3. 角色一致性与换装：用 `assets` 时默认 `input_fidelity=\"high\"` 锁定五官与发饰；换装时在 prompt 明写保留参考图的脸型、发色瞳色与标志性发饰并替换服装；若要跨画风重绘（如精绘转极简 Q 版表情包）可设 `input_fidelity=\"low\"`。\n"
-    "4. 自检与局部精修：生成后若附带了成品预览图，先看一眼构图/文字/手指；满意再 `send_qq_file`，若局部瑕疵可用 `art_draw(image_paths=[该file_path], prompt=\"Keep everything else identical, only fix...\", input_fidelity=\"high\")` 精修。"
+    "4. 自检与局部精修：生成后若附带了成品预览图，先看一眼构图/文字/手指；满意再 `send_qq_file`，若局部瑕疵可用 `art_draw(image_paths=[该file_path], prompt=\"Keep everything else identical, only fix...\", input_fidelity=\"high\")` 精修。\n"
+    "需要注意的是，上述的括号内内容仅是示例，实际使用时不要直接照搬括号内的文字，而是根据你想要的画面和风格来写 prompt。"
 )
 
 
@@ -113,9 +114,9 @@ async def art_start_tool(context, goal: str = "") -> ToolResult:
         "【已进入艺术创作聚焦模式】已展开 art_draw / art_gacha / art_asset / art_finish 工具，并收起其他无关日常工具。\n"
         "- 画图用 `art_draw`：可通过 `assets=[\"yuki\", \"master\"]` 直接选用下方已登记的角色参考图（支持单张或多张同框），"
         "也可同时传 `image_paths=[\"[img:001]\"]` 混用群聊临时参考图；生成并确认满意后请用 `send_qq_file` 把图片发到会话中。\n"
-        "- 提示词抽卡用 `art_gacha`：想抽风格盲盒或找创作灵感时，抽一发二次元 Prompt 草稿给你参考与微调（不会直接生图），改满意后再调用 `art_draw`。\n"
+        "- 提示词抽卡用 `art_gacha`：想抽风格盲盒或找创作灵感时，抽一发二次元 Prompt 草稿给你参考与微调（不会直接生图），满意后再调用 `art_draw`。\n"
         "- 资产管理用 `art_asset`：支持登记群友/角色立绘或三视图（`register`）、修改（`update`）、删除（`delete`）或查看列表（`list`）。\n"
-        "- 创作与发图全部完成后，请调用 `art_finish(summary=\"...\")` 收起画板并写一句简短总结。\n\n"
+        "- 创作与发图全部完成后，请调用 `art_finish(summary=\"...\")` 收起画板并写一句简短这段工作的总结。\n\n"
         f"{_ART_DIRECTOR_GUIDE}"
     )
     content = f"{header}\n\n{overview}"

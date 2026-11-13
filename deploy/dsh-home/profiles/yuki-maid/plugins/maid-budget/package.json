@@ -1,0 +1,8 @@
+{
+  "name": "dsh-maid-budget",
+  "version": "1.0.0",
+  "private": true,
+  "description": "小女仆运行预算：轮数上限、读取类工具半轮计费、超限停手总结、每轮注入“当前第N轮，剩余M轮”。",
+  "type": "module",
+  "main": "index.js"
+}

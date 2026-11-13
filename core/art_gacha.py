@@ -269,7 +269,7 @@ class ArtGachaStore:
             "【抽卡 Prompt 草稿（仅供参考，尚未生图）】",
             result.get("prompt", ""),
             "",
-            "提示：这只是抽卡生成的灵感草稿，还没有生成图片。你可以先检查并与群友需求/角色人设核对，自由修改动作、服装、画面文字或氛围后，再调用 `art_draw` 出图（默认 `background=\"opaque\"` 勿用透明底）。",
+            "提示：这只是抽卡生成的灵感草稿，还没有生成图片。你可以自由修改角色、动作、服装、画面文字或氛围后，再调用 `art_draw` 出图（默认 `background=\"opaque\"` 勿用透明底）。",
         ])
         return "\n".join(lines)
 
