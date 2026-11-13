@@ -1,5 +1,11 @@
 # core/tools/__init__.py
 """工具模块门面：拆分后保持 `core.tools` 旧引用路径与公开名称兼容。"""
+from core.focus.domains.art import (
+    art_asset_tool,
+    art_draw_tool,
+    art_finish_tool,
+    art_start_tool,
+)
 from core.phone_focus import phone_finish_tool, phone_start_tool
 from .tools import TOOL_HANDLERS, TOOL_SCHEMAS, TOOL_SPECS
 from .tools_bash import bash_tool
@@ -23,6 +29,10 @@ __all__ = [
     "delegate_to_maid_tool",
     "download_file_tool",
     "generate_image_tool",
+    "art_start_tool",
+    "art_draw_tool",
+    "art_asset_tool",
+    "art_finish_tool",
     "poke_tool",
     "send_master_private_tool",
     "send_qq_file_tool",

@@ -1,5 +1,11 @@
 # core/tools/tools.py
 """工具规格装配：汇总各职责子服务导出的 ToolSpec，并保持旧引用兼容。"""
+from core.focus.domains.art import (
+    art_asset_tool,
+    art_draw_tool,
+    art_finish_tool,
+    art_start_tool,
+)
 from core.phone_focus import phone_finish_tool, phone_start_tool
 from core.toolchain import MAID_GOAL_BREVITY_HINT, ToolSpec
 
@@ -361,38 +367,141 @@ TOOL_SPECS = [
         handler=download_file_tool,
     ),
     ToolSpec(
-        name="generate_image",
+        name="art_start",
         description=(
-            "根据文字描述生成图片。生成后保存到本地 output 目录，返回文件路径。"
-            "可选传入参考图（本地路径或 [img:XXX] 索引），让生成结果参考图中的角色/风格/构图。"
-            "生成完后必须用 send_qq_file 工具把图片发出来。"
-            "prompt中文，简短但包含细节，说明高品质和流畅用墨线条等。"
-            "固定人设参考图（画对应人物时把文件放进 image_paths，以此保持长相、发型、瞳色、发饰和服装一致）："
-            "Yuki（你自己）= output/assets/character/yuki_reference.png，白色长发、蓝瞳、雪花发饰，"
-            "白色披肩+深蓝连衣裙、蓝白荷叶边裙摆、白过膝袜；"
-            "主人（用户）= output/assets/character/master_reference.png，黑色长发、绿瞳、绿色X型发饰，黑绿拼色连帽夹克+白衬衫黑领结、黑色百褶裙、黑色小猫中筒袜配运动鞋；"
-            "画两人同框时两张一起传。"
+            "打开画板进入艺术创作聚焦模式（画图、参考图生图、登记/管理群友立绘参考图资产）。"
+            "调用后立即返回当前已登记的角色参考图资产列表，并解锁 art_draw / art_asset / art_finish 工具。"
         ),
         parameters={
             "type": "object",
             "properties": {
-                "prompt": {"type": "string", "description": "图像描述（使用中文描述）"},
-                "size": {"type": "string", "description": "图片尺寸，如 1024*1024、1024*1536", "default": "1024*1024"},
+                "goal": {
+                    "type": "string",
+                    "description": "这次进入艺术创作模式要画什么或管理什么资产（可选）",
+                },
+            },
+        },
+        handler=art_start_tool,
+    ),
+    ToolSpec(
+        name="art_draw",
+        description=(
+            "在艺术创作模式下生成图片并保存到 output 目录。"
+            "可通过 assets 选择一张或多张已登记的角色/群友立绘资产（如 [\"yuki\"]、[\"yuki\", \"master\"]、[\"池宇健\"]）作为参考图，"
+            "以保持人物长相、发色瞳色、发饰和服装一致；也可同时用 image_paths 传入会话临时图片（如 [\"[img:001]\"]）混用（参考图合计最多4张）。"
+            "prompt 请用中文描述画面细节（人物动作、表情、场景、构图、光影与流畅线条等，建议呼应所用资产的外貌特征）。"
+            "支持 aspect_ratio 画幅比例预设（如单人立绘用 2:3、横版插画用 3:2、方图 1:1），若模型不支持特定画幅或 seed 会自动兼容回退。"
+            "生成完后必须调用 send_qq_file 把图片发出来。"
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "prompt": {
+                    "type": "string",
+                    "description": "画面中文描述（含角色动作、神态、服饰细节、场景光影与高品质线条说明）",
+                },
+                "assets": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "选用的已登记艺术资产 key 或人物名称列表（如 [\"yuki\", \"master\"]），支持单张或多张同框",
+                },
                 "image_paths": {
                     "type": "array",
                     "items": {"type": "string"},
-                    "description": (
-                        "参考图列表（可选，最多4张）。每项是本地图片路径或 [img:XXX] 索引。"
-                        "本地路径需位于 output/workspace/temp_images 或会话图片目录。"
-                        "固定人设参考图：Yuki 本人 output/assets/character/yuki_reference.png，"
-                        "主人 output/assets/character/master_reference.png。"
-                        "传入后走图像编辑接口，让生成结果参考这些图片。"
-                    ),
+                    "description": "额外临时参考图列表（可选，元素为 [img:XXX] 索引或本地图片路径，与 assets 合计最多4张）",
+                },
+                "aspect_ratio": {
+                    "type": "string",
+                    "enum": ["1:1", "2:3", "3:2", "3:4", "4:3", "9:16", "16:9"],
+                    "description": "画幅比例预设：1:1(1024*1024方图)、2:3(1024*1536竖版立绘)、3:2(1536*1024横版插画)、3:4、4:3、9:16、16:9",
+                    "default": "1:1",
+                },
+                "size": {
+                    "type": "string",
+                    "description": "自定义尺寸（如 1024*1024、1024*1536），不填则按 aspect_ratio 自动匹配",
+                },
+                "seed": {
+                    "type": "integer",
+                    "description": "可选随机种子，用于固定构图微调（若当前模型不支持会自动忽略回退）",
+                },
+                "note": {
+                    "type": "string",
+                    "description": "顺手记一句这步画了什么",
                 },
             },
             "required": ["prompt"],
         },
-        handler=generate_image_tool,
+        handler=art_draw_tool,
+    ),
+    ToolSpec(
+        name="art_asset",
+        description=(
+            "艺术资产管理：登记、修改、删除或查看某位群友/角色的立绘或三视图参考图。"
+            "当群友发来立绘/设定图（如 [img:001]）或刚画好满意的人设图时，可用 action=\"register\" 登记到资产库（会自动持久化保存图片），"
+            "并写上简短的语言描述（几个字即可：发色瞳色、长发/短发、发饰、衣着等）。"
+            "后续画该人物时即可在 art_draw 的 assets 中直接选用。"
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": ["list", "register", "update", "delete"],
+                    "description": "list=查看全部资产；register=登记新资产(同名覆盖)；update=修改已有资产；delete=删除资产",
+                    "default": "list",
+                },
+                "key": {
+                    "type": "string",
+                    "description": "资产唯一标识（如 \"yuki\"、\"master\"、\"池宇健\"、\"池宇健_三视图\"）",
+                },
+                "owner": {
+                    "type": "string",
+                    "description": "对应群友昵称或角色名称（如 \"池宇健\"、\"Yuki\"、\"主人\"）",
+                },
+                "reference": {
+                    "type": "string",
+                    "description": "参考图来源（如会话图片索引 \"[img:001]\" 或本地路径 \"output/...\"），登记时会自动复制到资产目录永久保存",
+                },
+                "description": {
+                    "type": "string",
+                    "description": "简短外貌特征描述（几个字即可：发色瞳色、发型、发饰、衣着等）",
+                },
+                "tags": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "资产标签列表，如 [\"三视图\", \"立绘\"]",
+                },
+                "aliases": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "人物别名列表（可选，方便用不同称呼检索）",
+                },
+                "note": {
+                    "type": "string",
+                    "description": "顺手记一句这步做了什么",
+                },
+            },
+        },
+        handler=art_asset_tool,
+    ),
+    ToolSpec(
+        name="art_finish",
+        description=(
+            "结束艺术创作并退出聚焦模式，收起画板并恢复常规工具空间。"
+            "请传入一句简短的 summary 总结刚才画了什么或登记/修改了什么资产，"
+            "它会覆盖创作模式中的操作过程记录保留在上下文里。"
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "summary": {
+                    "type": "string",
+                    "description": "简短总结刚才在艺术创作模式下做了什么与结果（会以 USER 总结的形式写入上下文）",
+                },
+            },
+            "required": ["summary"],
+        },
+        handler=art_finish_tool,
     ),
 ]
 

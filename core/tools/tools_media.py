@@ -156,6 +156,29 @@ _REFERENCE_DIRS = (
     os.path.join(BASE_DIR, "data", "image_store"),
 )
 
+ASPECT_RATIO_SIZES = {
+    "1:1": "1024*1024",
+    "2:3": "1024*1536",
+    "3:2": "1536*1024",
+    "3:4": "960*1280",
+    "4:3": "1280*960",
+    "9:16": "720*1280",
+    "16:9": "1280*720",
+}
+
+
+def resolve_image_size(size=None, aspect_ratio=None) -> str:
+    """将画幅比例预设或自定义尺寸规范化为模型请求的尺寸字符串。"""
+    ratio_key = str(aspect_ratio or "").strip()
+    size_str = str(size or "").strip()
+    if size_str in ASPECT_RATIO_SIZES:
+        return ASPECT_RATIO_SIZES[size_str]
+    if size_str and size_str != "1024*1024" and size_str != "1024x1024":
+        return size_str
+    if ratio_key in ASPECT_RATIO_SIZES:
+        return ASPECT_RATIO_SIZES[ratio_key]
+    return size_str or "1024*1024"
+
 
 def _reference_dir_allowed(path):
     """参考图必须来自会话图片目录或 Yuki 自己的工作目录，避免任意本地文件外发。"""
@@ -299,7 +322,14 @@ def _encode_reference_data_uris(images):
     return uris
 
 
-async def generate_image_tool(context, prompt, size="1024*1024", image_paths=None):
+async def generate_image_tool(
+    context,
+    prompt,
+    size="1024*1024",
+    image_paths=None,
+    aspect_ratio=None,
+    seed=None,
+):
     """调用图像生成模型生成图片，保存到 output 目录并返回路径。
 
     image_paths 可选：参考图列表，元素为 [img:XXX] 索引或本地图片路径，
@@ -327,8 +357,15 @@ async def generate_image_tool(context, prompt, size="1024*1024", image_paths=Non
 
     base_url = cfg.IMAGE_GEN_URL
     model = cfg.IMAGE_GEN_MODEL
+    raw_size = resolve_image_size(size=size, aspect_ratio=aspect_ratio)
     # OpenAI 兼容接口要求 WIDTHxHEIGHT 格式，非 gpt-image 的旧模型可能用 "1024*1024"
-    size = size.replace("*", "x").replace("X", "x")
+    size = raw_size.replace("*", "x").replace("X", "x")
+    seed_val = None
+    if seed is not None and seed != "":
+        try:
+            seed_val = int(seed)
+        except (TypeError, ValueError):
+            seed_val = None
 
     # wan 系列走 DashScope 原生 API，其他走 OpenAI 兼容接口
     use_native = model.startswith("wan")
@@ -356,31 +393,53 @@ async def generate_image_tool(context, prompt, size="1024*1024", image_paths=Non
 
         # DashScope 多模态接口：参考图以 image 条目放在 content 里，文本放最后
         content = [{"image": uri} for uri in reference_data_uris] + [{"text": prompt}]
-        payload = {
-            "model": model,
-            "input": {
-                "messages": [
-                    {"role": "user", "content": content}
-                ]
-            },
-            "parameters": {"size": size, "n": 1},
-        }
+
+        # 构造参数降级链：若模型不支持 seed 或特定画幅尺寸（返回 HTTP 400），自动剥离回退重试
+        param_attempts = []
+        first_params = {"size": size, "n": 1}
+        if seed_val is not None:
+            first_params["seed"] = seed_val
+        param_attempts.append(first_params)
+        if seed_val is not None:
+            param_attempts.append({"size": size, "n": 1})
+        if size not in ("1024x1024", "1024*1024"):
+            param_attempts.append({"size": "1024*1024", "n": 1})
+        param_attempts.append({"n": 1})
 
         async def _do_generate():
             timeout = aiohttp.ClientTimeout(total=120)
+            last_err = None
             async with aiohttp.ClientSession(connector=create_tcp_connector(), timeout=timeout) as session:
-                async with session.post(
-                    api_endpoint,
-                    headers={
-                        "Authorization": f"Bearer {api_key}",
-                        "Content-Type": "application/json",
-                    },
-                    json=payload,
-                ) as resp:
-                    data = await resp.json(content_type=None)
-                    if resp.status != 200:
-                        raise Exception(f"API 返回 {resp.status}: {data}")
-                    return data
+                for idx, params in enumerate(param_attempts):
+                    payload = {
+                        "model": model,
+                        "input": {
+                            "messages": [
+                                {"role": "user", "content": content}
+                            ]
+                        },
+                        "parameters": params,
+                    }
+                    async with session.post(
+                        api_endpoint,
+                        headers={
+                            "Authorization": f"Bearer {api_key}",
+                            "Content-Type": "application/json",
+                        },
+                        json=payload,
+                    ) as resp:
+                        data = await resp.json(content_type=None)
+                        if resp.status == 200:
+                            return data
+                        err = Exception(f"API 返回 {resp.status}: {data}")
+                        if resp.status == 400 and idx + 1 < len(param_attempts):
+                            last_err = err
+                            logger.warning(
+                                f"[ImageGen] 400 拒绝 parameters={params}，尝试兼容降级重试: {data}"
+                            )
+                            continue
+                        raise err
+            raise last_err
 
         try:
             data = await _do_generate()
@@ -450,9 +509,11 @@ async def generate_image_tool(context, prompt, size="1024*1024", image_paths=Non
                         except OSError:
                             pass
 
-            # 部分模型（如 grok-imagine）不接受具体尺寸或 response_format：
+            # 部分模型（如 grok-imagine）不接受特定画幅尺寸或 response_format：
             # 首个请求保持调用方尺寸，400 时依次降级重试（400 不计费）
             attempts = [(size, True)]
+            if size not in ("1024x1024", "auto"):
+                attempts.append(("1024x1024", True))
             if size != "auto":
                 attempts.append(("auto", True))
             attempts.append(("auto", False))
@@ -493,5 +554,5 @@ async def generate_image_tool(context, prompt, size="1024*1024", image_paths=Non
     return ToolResult(
         success=True,
         content=f"图像已生成并保存: {filepath}",
-        data={"file_path": filepath, "prompt": prompt},
+        data={"file_path": filepath, "prompt": prompt, "size": size},
     )

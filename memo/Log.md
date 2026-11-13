@@ -612,3 +612,11 @@
 - P5：新增 `tests/test_focus_contract.py` 参数化契约测试，更新 `docs/focus-mode-paradigm.md` 与 `docs/focus-mode-architecture.md`。
 - 补充：聚焦模式期间暂停日记总结（`session_pipeline.py::finalize_conversation` 不触发超长摘要、`engine_monitor.py::idle_diary_checker` 与 `engine_diary.py::summarize_idle_session` 跳过聚焦中会话、`history_filter.py::is_dialogue_message` 排除带 `focus_work`/`phone_focus_work` 的阶段思考），并纳入契约测试第 10 项。全量测试 142 passed。状态：P0–P5 已完成并分阶段提交，P6（`art` 域）待单独设计工具细节。
 - 检查了最近新写入的日记（共 15139 条），最近几篇日记（如 15130-15139）均正常以标点符号结尾，无截断问题。
+- 修改了 core/engine/engine_diary.py，当主模型生成的日记返回 Filtered 或长度小于 10 字符时，自动切换备用模型重试一次再写入记忆库。
+- 将日记字数过短的阈值从 10 字符上调至 50 字符。
+
+## 2026-11-13 P6 艺术创作聚焦模式（`art`）与艺术资产管理
+- 新增 `core/art_assets.py`（`ArtAssetStore` + `data/art_assets.json`）：支持群友/角色立绘或三视图参考图的登记（`register`）、修改（`update`）、删除（`delete`）与查询（`list`），登记会话图片（如 `[img:001]`）时自动持久化复制到 `output/assets/character/`；内置初始资产 `yuki`（`output/assets/character/yuki_reference.png`）与 `master`（`output/assets/character/master_reference.png`）及简短外貌特征描述。
+- 新增 `core/focus/domains/art.py`：声明并注册 `ART` 聚焦域；常态收起原 `generate_image`，仅暴露极简入口 `art_start`（进入即返回当前已登记资产列表）；聚焦内展开 `art_draw`（支持 `assets` 多资产直选 + `image_paths` 混用 + `aspect_ratio` 画幅比例预设 + `seed`）、`art_asset`、`art_finish`。
+- 扩展 `core/tools/tools_media.py::generate_image_tool`：支持画幅比例预设（`1:1` / `2:3` / `3:2` / `3:4` / `4:3` / `9:16` / `16:9`）与 `seed`，并在上游模型返回 HTTP 400 时自动执行参数兼容性降级回退重试。
+- 测试：`tests/test_focus_contract.py`（`art` + `phone` 双域 14 项契约全绿）与 `tests/test_art_focus.py`（6 项单测全绿），共 20 passed。
