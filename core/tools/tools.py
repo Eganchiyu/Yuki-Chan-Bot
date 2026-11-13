@@ -4,6 +4,7 @@ from core.focus.domains.art import (
     art_asset_tool,
     art_draw_tool,
     art_finish_tool,
+    art_gacha_tool,
     art_start_tool,
 )
 from core.phone_focus import phone_finish_tool, phone_start_tool
@@ -501,6 +502,43 @@ TOOL_SPECS = [
             },
         },
         handler=art_asset_tool,
+    ),
+    ToolSpec(
+        name="art_gacha",
+        description=(
+            "二次元提示词抽卡（盲盒灵感生成器）：抽取一组槽位混搭或 SSR 导演级大模型蓝图 Prompt 草稿给你参考与润色。"
+            "注意：本工具只返回抽到的提示词草稿与推荐画幅/资产，不会直接生成或发送图片；"
+            "你可以根据角色人设与群友要求对抽到的 Prompt 进行修改、换字或精简后，再传给 art_draw 出图。"
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "pool": {
+                    "type": "string",
+                    "enum": ["auto", "slot", "blueprint"],
+                    "description": "卡池模式：auto=随机混搭或SSR蓝图(默认)；slot=槽位盲盒混搭；blueprint=必出SSR导演大片蓝图",
+                    "default": "auto",
+                },
+                "assets": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "可选，绑定已登记的角色资产（如 [\"yuki\"]、[\"yuki\", \"master\"]），会自动在草稿前附带特征锚点提示",
+                },
+                "blueprint_id": {
+                    "type": "string",
+                    "description": "可选，指定抽取某张 SSR 蓝图（如 sunset-rooftop-keyvisual / glossy-idol-poster / minimalist-pastel-chibi / romance-movie-poster / vtuber-stream-thumbnail / martial-dojo-duel）",
+                },
+                "lock": {
+                    "type": "object",
+                    "description": "可选，锁定部分槽位或覆写蓝图变量（如 {\"style\": \"千禧初高精剧场版原画\", \"setting\": \"...\" }）",
+                },
+                "note": {
+                    "type": "string",
+                    "description": "顺手记一句这次抽卡主题",
+                },
+            },
+        },
+        handler=art_gacha_tool,
     ),
     ToolSpec(
         name="art_finish",

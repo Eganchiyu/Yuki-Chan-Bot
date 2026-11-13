@@ -7,6 +7,7 @@ import re
 from typing import Any
 
 from core.art_assets import _clean_ref, art_asset_store
+from core.art_gacha import art_gacha_store
 from core.focus.domain import BASE_KEEP_TOOLS, FocusDomain
 from core.focus.manager import focus_manager, register_domain
 from core.focus.tools import make_focus_finish_handler
@@ -25,6 +26,8 @@ def _art_stub(payload: dict) -> str:
         return f"art_draw{asset_str} -> {data.get('file_path')}"
     if "asset_action" in data:
         return f"art_asset {data.get('asset_action')} {data.get('key', '')}".strip()
+    if "gacha_card" in data:
+        return f"art_gacha [{data.get('rarity', '')}] {data.get('gacha_card', '')}".strip()
     return str(payload.get("content") or "").replace("\n", " ")
 
 
@@ -33,7 +36,7 @@ ART = FocusDomain(
     title="艺术创作",
     entry_tool="art_start",
     exit_tool="art_finish",
-    domain_tools=frozenset({"art_draw", "art_asset"}),
+    domain_tools=frozenset({"art_draw", "art_asset", "art_gacha"}),
     keep_tools=BASE_KEEP_TOOLS,
     summary_prefix="【艺术创作总结】",
     exit_hint="（你已结束本轮艺术创作并收起画板，请直接根据上述创作结果回复用户。）",
@@ -107,9 +110,10 @@ async def art_start_tool(context, goal: str = "") -> ToolResult:
     assets_data = art_asset_store.list()
 
     header = (
-        "【已进入艺术创作聚焦模式】已展开 art_draw / art_asset / art_finish 工具，并收起其他无关日常工具。\n"
+        "【已进入艺术创作聚焦模式】已展开 art_draw / art_gacha / art_asset / art_finish 工具，并收起其他无关日常工具。\n"
         "- 画图用 `art_draw`：可通过 `assets=[\"yuki\", \"master\"]` 直接选用下方已登记的角色参考图（支持单张或多张同框），"
         "也可同时传 `image_paths=[\"[img:001]\"]` 混用群聊临时参考图；生成并确认满意后请用 `send_qq_file` 把图片发到会话中。\n"
+        "- 提示词抽卡用 `art_gacha`：想抽风格盲盒或找创作灵感时，抽一发二次元 Prompt 草稿给你参考与微调（不会直接生图），改满意后再调用 `art_draw`。\n"
         "- 资产管理用 `art_asset`：支持登记群友/角色立绘或三视图（`register`）、修改（`update`）、删除（`delete`）或查看列表（`list`）。\n"
         "- 创作与发图全部完成后，请调用 `art_finish(summary=\"...\")` 收起画板并写一句简短总结。\n\n"
         f"{_ART_DIRECTOR_GUIDE}"
@@ -420,6 +424,85 @@ async def art_asset_tool(
         content=f"不支持的 action: {action}（可选: list / register / update / delete）",
         error="invalid_action",
         name="art_asset",
+    )
+
+
+async def art_gacha_tool(
+    context,
+    pool: str = "auto",
+    assets: list[str] | str | None = None,
+    blueprint_id: str = "",
+    lock: dict[str, str] | str | None = None,
+    note: str = "",
+) -> ToolResult:
+    """提示词抽卡：抽一发二次元 Prompt 灵感草稿返回给模型审阅与修改，不直接生图。"""
+    matched_assets: list[dict[str, Any]] = []
+    if assets:
+        matched_assets, missing = art_asset_store.resolve_many(assets)
+        if missing:
+            available = "、".join(
+                f"{a['key']}({a['owner']})" for a in art_asset_store.list()
+            ) or "暂无已登记资产"
+            return ToolResult(
+                success=False,
+                content=(
+                    f"未找到已登记的艺术资产: {', '.join(missing)}。\n"
+                    f"当前可用资产: {available}。"
+                ),
+                error="asset_not_found",
+                name="art_gacha",
+            )
+
+    lock_dict: dict[str, str] | None = None
+    if isinstance(lock, dict):
+        lock_dict = {str(k): str(v) for k, v in lock.items()}
+    elif isinstance(lock, str) and lock.strip():
+        try:
+            import json
+            parsed = json.loads(lock)
+            if isinstance(parsed, dict):
+                lock_dict = {str(k): str(v) for k, v in parsed.items()}
+        except Exception:
+            lock_dict = None
+
+    try:
+        drawn = art_gacha_store.draw(
+            pool=pool,
+            blueprint_id=blueprint_id,
+            lock=lock_dict,
+            matched_assets=matched_assets,
+        )
+    except ValueError as exc:
+        return ToolResult(
+            success=False,
+            content=str(exc),
+            error="invalid_gacha_param",
+            name="art_gacha",
+        )
+
+    focus_manager.record_step(
+        context.chat_id,
+        f"提示词抽卡 [{drawn.get('rarity')}] {drawn.get('card_name')}",
+        note or drawn.get("card_id", ""),
+        domain=ART.name,
+    )
+
+    content = art_gacha_store.format_result(drawn)
+    return ToolResult(
+        success=True,
+        content=content,
+        data={
+            "gacha_card": drawn.get("card_name", ""),
+            "card_id": drawn.get("card_id", ""),
+            "rarity": drawn.get("rarity", ""),
+            "mode": drawn.get("mode", ""),
+            "aspect_ratio": drawn.get("aspect_ratio", "2:3"),
+            "assets": drawn.get("assets", []),
+            "prompt": drawn.get("prompt", ""),
+            "note": note or "",
+            "no_persist": False,
+        },
+        name="art_gacha",
     )
 
 

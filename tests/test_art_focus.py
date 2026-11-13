@@ -14,6 +14,7 @@ from core.focus.domains.art import (
     art_asset_tool,
     art_draw_tool,
     art_finish_tool,
+    art_gacha_tool,
     art_start_tool,
 )
 from core.toolchain import FunctionRegistry, ToolContext, ToolResult, ToolRuntime
@@ -72,6 +73,7 @@ def test_default_view_hides_generate_image_and_exposes_art_start():
     assert "generate_image" not in default_view.visible
     assert "art_start" in default_view.visible
     assert "art_draw" not in default_view.visible
+    assert "art_gacha" not in default_view.visible
     assert "art_asset" not in default_view.visible
     assert "art_finish" not in default_view.visible
 
@@ -79,6 +81,7 @@ def test_default_view_hides_generate_image_and_exposes_art_start():
     focused_view = ToolView.resolve(reg, focus_manager, "c_art")
     assert focused_view.visible == {
         "art_draw",
+        "art_gacha",
         "art_asset",
         "art_finish",
         "skip",
@@ -330,6 +333,64 @@ async def test_generate_image_openai_gpt_image_params_and_400_fallback(monkeypat
     assert "input_fidelity" not in calls[1][1]
     if res2.data and res2.data.get("file_path") and os.path.exists(res2.data["file_path"]):
         os.remove(res2.data["file_path"])
+
+
+async def test_art_gacha_draws_prompt_draft_without_generating_image(monkeypatch):
+    """art_gacha 只返回可编辑的抽卡提示词草稿，绝不直接触发生图。"""
+    called = False
+
+    async def forbid_gen(*args, **kwargs):
+        nonlocal called
+        called = True
+        raise AssertionError("art_gacha should not call generate_image_tool directly")
+
+    monkeypatch.setattr("core.tools.tools_media.generate_image_tool", forbid_gen)
+    ctx = _make_ctx("c_gacha")
+    focus_manager.enter("c_gacha", "art", goal="盲盒抽卡")
+
+    # 1. 槽位混搭 + lock + 绑定 yuki 资产
+    res_slot = await art_gacha_tool(
+        ctx,
+        pool="slot",
+        assets=["yuki"],
+        lock={"style": "千禧初高精剧场版原画", "setting": "at a snowy train station"},
+        note="冬日车站盲盒",
+    )
+    assert res_slot.success is True
+    assert called is False
+    assert res_slot.data["mode"] == "slot"
+    assert res_slot.data["assets"] == ["yuki"]
+    assert "Yuki" in res_slot.data["prompt"]
+    assert "at a snowy train station" in res_slot.data["prompt"]
+    assert "early-2000s high-end anime key visual" in res_slot.data["prompt"]
+    assert "尚未生图" in res_slot.content
+    assert "art_draw" in res_slot.content
+
+    # 2. SSR 蓝图抽卡 + 变量覆写
+    res_bp = await art_gacha_tool(
+        ctx,
+        pool="blueprint",
+        blueprint_id="vtuber-stream-thumbnail",
+        assets=["yuki"],
+        lock={"line 1": "深夜", "line 2": "杂谈"},
+    )
+    assert res_bp.success is True
+    assert called is False
+    assert res_bp.data["rarity"] == "SSR"
+    assert res_bp.data["aspect_ratio"] == "16:9"
+    assert "深夜" in res_bp.data["prompt"] and "杂谈" in res_bp.data["prompt"]
+
+    # 3. 多人资产自动匹配双人蓝图
+    res_multi = await art_gacha_tool(ctx, pool="blueprint", assets=["yuki", "master"])
+    assert res_multi.success is True
+    assert res_multi.data["card_id"] == "martial-dojo-duel"
+
+    # 4. 未知资产 / 未知蓝图清晰报错
+    bad_asset = await art_gacha_tool(ctx, assets=["不存在的角色"])
+    assert bad_asset.success is False and bad_asset.error == "asset_not_found"
+
+    bad_bp = await art_gacha_tool(ctx, blueprint_id="non-existent-bp")
+    assert bad_bp.success is False and bad_bp.error == "invalid_gacha_param"
 
 
 async def test_generate_image_native_400_compatibility_fallback(monkeypatch, tmp_path):

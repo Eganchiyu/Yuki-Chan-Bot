@@ -625,3 +625,8 @@
 - `core/tools/tools_media.py`：新增 `_build_openai_image_attempts` 与 `quality` / `background` / `input_fidelity` / `output_format` 支持；`gpt-image-*` 默认开启 `quality="high"`、`background="opaque"`（默认不生成透明背景，仅显式请求 `"transparent"` 时切透明并配 `output_format="png"`），带参考图时默认 `input_fidelity="high"` 锁定五官与发饰；遇 HTTP 400 自动按阶梯剥离不兼容扩展参数与 `response_format` 降级重试，并补齐 `url` 返回兜底下载。
 - `core/focus/domains/art.py` & `core/tools/tools.py`：`art_start` 聚焦模式内展开「二次元艺术总监生图指南」（结构化英文画面导演指令 + 原语言文本引用 + 禁擅自透明铁律 + 换装一致性规则 + 视觉自检局部精修闭环），`art_draw` 暴露 `background`（默认 `opaque`）、`quality`（默认 `high`）、`input_fidelity`（默认 `high`），并将成图注册进 `image_store` 附带 `screenshot` 供主模型下一轮直接视觉自检。
 - 测试：`tests/test_art_focus.py` + `tests/test_focus_contract.py` 22 passed（含 `gpt-image-2.6-sunburst` 400 降级链、默认 `opaque` 与显式 `transparent`、预览图挂载测试）。待重启 `yuki` 容器生效。
+
+## 2026-11-13 新增二次元提示词抽卡（`art_gacha`）
+- 新增 `data/art_gacha_pools.json` 与 `core/art_gacha.py`（`ArtGachaStore`）：参考 `anime-prompt-kit` 的结构化槽位拆分思路，构建 6 大风格/穿搭/动作/场景/光影/构图槽位池（R/SR 混搭，支持 `lock` 锁定任意字段）与 6 套 SSR 导演级 `{argument}` 大片蓝图池（天台夕阳原画、偶像应援海报、极简淡彩、恋爱电影海报、VTuber 直播封面、木质道场双人对决）。
+- 接入 `art` 聚焦模式：`core/focus/domains/art.py`、`core/tools/tools.py`、`core/tools/__init__.py`、`core/focus/domains/__init__.py` 注册 `art_gacha` 工具（常态隐藏，聚焦后展开）；抽卡时绑定 `assets` 自动注入外貌/发饰一致性锚点，但**绝不直接生图或上传**，只返回可编辑 Prompt 草稿、推荐 `aspect_ratio` 与修改指引，供 Yuki 审阅润色后再调用 `art_draw`。
+- 测试：`tests/test_art_focus.py` + `tests/test_focus_contract.py` 23 passed。待重启 `yuki` 容器生效。

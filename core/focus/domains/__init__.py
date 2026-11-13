@@ -5,6 +5,7 @@ from core.focus.domains.art import (
     art_asset_tool,
     art_draw_tool,
     art_finish_tool,
+    art_gacha_tool,
     art_start_tool,
 )
 from core.focus.domains.phone import PHONE, phone_finish_tool, phone_start_tool
@@ -16,6 +17,7 @@ __all__ = [
     "ART",
     "art_start_tool",
     "art_draw_tool",
+    "art_gacha_tool",
     "art_asset_tool",
     "art_finish_tool",
 ]
