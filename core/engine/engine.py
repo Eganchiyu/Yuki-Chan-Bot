@@ -32,6 +32,7 @@ class YukiEngine:
             max_rounds=int(getattr(getattr(cfg, "tools", None), "max_rounds", 8) or 8),
         )
         self.napcat_online = True
+        self.autonomous = None      # 主循环装配 AutonomousCoordinator 后挂上
 
         self.diary_service = EngineDiaryService(self.rag, self.history)
         self.reply_service = EngineReplyService(
@@ -51,6 +52,7 @@ class YukiEngine:
             self.diary_service,
             get_napcat_online=lambda: getattr(self, "napcat_online", True),
             get_process_callback=lambda: self.process_callback,
+            get_autonomous=lambda: getattr(self, "autonomous", None),
         )
         focus_manager.sweep_orphans(self.history)
 

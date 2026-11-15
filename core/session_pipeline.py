@@ -14,7 +14,7 @@ from core.focus import focus_manager
 from core.history_filter import dialogue_length
 from core.recall_cache import recall_cache_store
 from core.reply_format import clean_visible_reply
-from core.reply_watch import auto_subscribe, is_human_incoming, resolve
+from core.reply_watch import auto_subscribe, is_human_incoming, resolve, subscribe
 from core.toolchain import SKIP_REPLY_MARKER
 from modules.debug.context_snapshot import PIPELINE_STAGES, context_snapshot_store
 from modules.vision.prefetch import prefetch_images, resolve_image
@@ -866,6 +866,20 @@ class SessionPipeline:
             return None
 
         chat_id = str(context["chat_id"])
+
+        # 心情高涨：10~15s 短窗口被动判断，群里还安静就主动再说几句（Phase 4）
+        high_event = self._high_spirits_event_builder(chat_id)
+        if high_event is not None:
+            window = max(1.0, float(cfg.autonomous.high_spirits_followup_window))
+            try:
+                return subscribe(
+                    chat_id, context["mode"], callback,
+                    timeout_seconds=window, min_timeout_seconds=window,
+                    event_builder=high_event,
+                )
+            except Exception as exc:
+                logger.warning(f"[Pipeline] 心情高涨订阅失败: {exc}")
+
         energy = float(getattr(self.yuki, "energy", {}).get(chat_id, 0.0))
         activity = float(getattr(self.yuki, "group_activity", {}).get(chat_id, 0.0))
         try:
@@ -883,6 +897,38 @@ class SessionPipeline:
             activity_ratio=min(activity / 5.0, 1.0),
             recent_times=list(self._recent_msg_times.get(chat_id, [])),
         )
+
+    def _high_spirits_event_builder(self, chat_id: str):
+        """心情高涨时构造「再主动说几句」的被动事件；不在高涨状态返回 None。"""
+        active = getattr(self.yuki, "high_spirits_active", None)
+        turns_left = getattr(self.yuki, "high_spirits_turns_left", None)
+        if not callable(active) or not callable(turns_left):
+            return None
+        try:
+            if not active(chat_id) or turns_left(chat_id) <= 0:
+                return None
+        except Exception:
+            return None
+
+        def _builder(watch):
+            left = self.yuki.consume_high_spirits_turn(chat_id)
+            logger.info(f"[Pipeline] {chat_id} 心情高涨被动窗口到期，主动再说几句（剩余 {left} 轮）")
+            return {
+                "content": (
+                    "【心情高涨】你刚刚在独处时光里自己捣鼓出了很有意思的东西，"
+                    "现在心情高涨、很有分享欲，想再接着多说几句。"
+                    "自然地聊聊你刚做的东西、分享一点细节或感想就好，"
+                    "如果做了图片或文件也可以发给大家看看；"
+                    "注意保持平时聊天的自然节奏，不要像汇报工作。"
+                ),
+                "raw_text": "",
+                "name": "系统",
+                "time": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "source": "yuki.high_spirits",
+                "is_reply_watch_event": True,
+            }
+
+        return _builder
 
     async def finalize_conversation(self, context):
         """保存回复上下文，并在历史过长时触发总结。"""

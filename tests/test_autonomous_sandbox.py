@@ -433,3 +433,195 @@ async def test_workshop_subfocus_keeps_work_finish(sandbox_data, monkeypatch):
         assert "write_work_diary" in visible
     finally:
         focus_manager.abort("1057020972")
+
+
+# ==================== P6：补台 / 心情高涨 / 自动触发 ====================
+
+def _msgs(n, name="月白"):
+    return [{"name": name, "content": f"第{i}条消息", "source": "napcat.message",
+             "user_id": 100 + i, "time": f"2026-11-15 14:{i:02d}"} for i in range(n)]
+
+
+async def test_catchup_digest_direct_vs_llm(sandbox_data, monkeypatch):
+    from modules.autonomous import catchup as cp
+
+    # ≤12 条：代码直拼，零 LLM
+    called = []
+    async def fake_llm_chat(messages, model=None, **kwargs):
+        called.append(messages)
+        return "摘要"
+
+    monkeypatch.setattr(cp, "llm_chat", fake_llm_chat)
+    monkeypatch.setattr(cfg.autonomous, "catchup_summarize_threshold", 12)
+    direct = await cp.build_digest(_msgs(5))
+    assert "14:00 月白: 第0条消息" in direct
+    assert called == []
+
+    # >12 条：走 sub-LLM 压到 ≤200 字
+    long_summary = "他" * 500
+    async def long_llm(messages, model=None, **kwargs):
+        called.append(messages)
+        return long_summary
+
+    monkeypatch.setattr(cp, "llm_chat", long_llm)
+    digest = await cp.build_digest(_msgs(20))
+    assert called and len(digest) <= 240
+    assert digest.endswith("…")
+
+    # LLM 失败：回落直拼最近 20 条
+    async def boom(messages, model=None, **kwargs):
+        raise RuntimeError("network down")
+
+    monkeypatch.setattr(cp, "llm_chat", boom)
+    fallback = await cp.build_digest(_msgs(20))
+    assert "14:19 月白" in fallback
+
+
+async def test_catchup_event_skips_system_messages(sandbox_data, monkeypatch):
+    from modules.autonomous import catchup as cp
+
+    pipeline = FakePipeline()
+    pipeline.yuki.pop_buffer = MagicMock(return_value=[
+        {"name": "系统", "content": "【等待超时】", "is_reply_watch_event": True,
+         "source": "yuki.reply_watch"},
+        {"name": "月白", "content": "在吗", "source": "napcat.message", "user_id": 1},
+    ])
+    event = await cp.build_catchup_event(pipeline, "1057020972")
+    assert event and event["is_catchup"] is True
+    assert "月白" in event["content"] and "等待超时" not in event["content"]
+
+
+async def test_catchup_no_messages_returns_none(sandbox_data):
+    from modules.autonomous import catchup as cp
+
+    pipeline = FakePipeline()
+    pipeline.yuki.pop_buffer = MagicMock(return_value=[])
+    assert await cp.build_catchup_event(pipeline, "1") is None
+
+
+async def test_high_spirits_boosts_reply_desire():
+    from core.brain import YukiState
+    from core.engine.engine_decision import EngineDecisionService
+
+    import datetime as _dt
+
+    yuki = YukiState()
+    yuki.energy["1"] = 70.0
+    yuki.last_update["1"] = _dt.datetime.now()
+    yuki.group_activity["1"] = 0.0
+    service = EngineDecisionService(yuki)
+
+    baseline = await service.decide_to_reply(
+        [{"role": "system", "content": "s"}, {"role": "user", "content": "嗯"}],
+        [{"raw_text": "随便说说", "is_bot": False}], "1",
+    )
+    yuki.energy["1"] = 70.0
+    yuki.last_update["1"] = _dt.datetime.now()
+    yuki.group_activity["1"] = 0.0
+    yuki.mark_high_spirits("1")
+    boosted = await service.decide_to_reply(
+        [{"role": "system", "content": "s"}, {"role": "user", "content": "嗯"}],
+        [{"raw_text": "随便说说", "is_bot": False}], "1",
+    )
+    assert baseline is False and boosted is True
+
+
+async def test_high_spirits_followup_window_uses_short_timeout(monkeypatch):
+    from core import reply_watch
+
+    reply_watch.reset_reply_watch()
+    events = []
+    watch = reply_watch.subscribe(
+        "1", "group", AsyncMock(), timeout_seconds=12, min_timeout_seconds=12,
+        event_builder=lambda w: {"content": "想再说几句", "source": "yuki.high_spirits",
+                                 "is_reply_watch_event": True},
+    )
+    assert watch["timeout_seconds"] == 12
+    reply_watch.reset_reply_watch()
+
+
+def test_daily_work_memory_ttl_and_archive(sandbox_data, monkeypatch):
+    store = sandbox_data.daily_store
+    store.ttl_hours = 18
+    store.add(summary="写完第一章", status="可接续", session_id="sess_1",
+              artifacts=["workspace/a.md"], now=1_800_000_000)
+    assert "写完第一章" in store.text(now=1_800_000_000)
+    assert store.text(now=1_800_000_000 + 19 * 3600) == ""     # 过期不再常驻
+
+    # 次日 04:00 后归档到 daily_work_memory_archive/<date>.json
+    store2 = storage.DailyWorkMemoryStore(str(sandbox_data.root / "dwm2.json"),
+                                          str(sandbox_data.root / "arch"),
+                                          ttl_hours=1000)
+    import datetime as _dt
+    day1 = _dt.datetime(2026, 11, 15, 12, 0).timestamp()
+    store2.add(summary="昨天做的事", status="完成", now=day1)
+    day2 = _dt.datetime(2026, 11, 16, 5, 0).timestamp()
+    assert store2.archive_if_due(now=day2) is True
+    assert store2.text(now=day2) == ""
+    assert (sandbox_data.root / "arch" / "2026-11-15.json").exists()
+
+
+async def test_auto_trigger_requires_whitelist_and_quota(sandbox_data, monkeypatch):
+    gid = str(cfg.TARGET_GROUPS[0]) if cfg.TARGET_GROUPS else "1057020972"
+    monkeypatch.setattr(cfg.autonomous, "enabled", True)
+    monkeypatch.setattr(cfg.autonomous, "auto_trigger_enabled", True)
+    monkeypatch.setattr(cfg.autonomous, "enabled_groups", [])
+    monkeypatch.setattr(cfg.autonomous, "min_group_idle_minutes", 0)
+    monkeypatch.setattr(cfg.autonomous, "min_energy", 0.0)
+    monkeypatch.setattr(cfg.autonomous, "quiet_hours", [])
+    monkeypatch.setattr(cfg.autonomous, "cooldown_minutes", 0)
+    monkeypatch.setattr(cfg.autonomous, "daily_max_runs", 1)
+
+    pipeline = FakePipeline()
+    coordinator = AutonomousCoordinator(pipeline)
+    pipeline.yuki.last_message_time[gid] = 0.0
+    pipeline.yuki.energy[gid] = 100.0
+
+    # 白名单为空：不触发
+    assert await coordinator.auto_trigger_check() is None
+
+    monkeypatch.setattr(cfg.autonomous, "enabled_groups", [gid])
+    started = []
+
+    async def fake_start_run(chat_id, **kwargs):
+        started.append((chat_id, kwargs))
+        return {"ok": True}
+
+    coordinator.start_run = fake_start_run
+    assert (await coordinator.auto_trigger_check()) is not None
+    assert started and started[0][0] == gid and started[0][1]["trigger"] == "auto"
+    # 日配额 1 次，第二条不再触发
+    assert await coordinator.auto_trigger_check() is None
+    assert sandbox_data.state_store.auto_runs_today() == 1
+
+
+async def test_auto_trigger_respects_runtime_override_and_target_groups(sandbox_data, monkeypatch):
+    gid = str(cfg.TARGET_GROUPS[0]) if cfg.TARGET_GROUPS else "1057020972"
+    monkeypatch.setattr(cfg.autonomous, "enabled", True)
+    monkeypatch.setattr(cfg.autonomous, "enabled_groups", [gid])
+
+    pipeline = FakePipeline()
+    coordinator = AutonomousCoordinator(pipeline)
+    assert coordinator.is_group_enabled(gid) is True
+
+    sandbox_data.state_store.set_group_override(gid, False)
+    assert coordinator.is_group_enabled(gid) is False
+    # 覆盖落盘后重建 coordinator（模拟重启）仍是关
+    reloaded = storage.AutonomousStateStore(sandbox_data.state_store.path)
+    assert reloaded.get_group_override(gid) is False
+    assert str(gid) not in coordinator.enabled_group_ids()
+
+
+async def test_sweep_stale_runs_marks_session_paused(sandbox_data, monkeypatch):
+    sandbox_data.session_store.save({
+        "session_id": "sess_stale_01", "title": "旧任务", "kind": "creative",
+        "status": "active", "work_log": "写到一半", "chat_id": "1",
+    })
+    sandbox_data.state_store.set_active_mode("1", "workshop", "run-old", session_id="sess_stale_01")
+
+    pipeline = FakePipeline()
+    coordinator = AutonomousCoordinator(pipeline)
+    assert coordinator.sweep_stale_runs() == 1
+    record = sandbox_data.session_store.load("sess_stale_01")
+    assert record["status"] == "paused" and "自动暂停" in record["work_log"]
+    assert sandbox_data.state_store.get_active_mode() == {}

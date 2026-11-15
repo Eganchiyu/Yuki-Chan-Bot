@@ -326,6 +326,7 @@ if __name__ == "__main__":
         components["engine"].process_callback = main_process
         init_data_dir()
         session_pipeline.autonomous = AutonomousCoordinator(session_pipeline, router=mode_router)
+        components["engine"].autonomous = session_pipeline.autonomous
         if not is_dry_run():
             session_pipeline.autonomous.sweep_stale_runs()
         start_health_probe(components)

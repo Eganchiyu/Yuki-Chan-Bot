@@ -686,3 +686,12 @@
 - `core/phone_driver.py` 加全局 `ADB_LOCK`，所有 adb 子命令串行，防残留协程抢设备。
 - `SandboxDeps` 增 `image_attach`（复用 `EngineReplyService._attach_tool_screenshots`），工坊里手机截图仍能进多模态上下文。
 - 测试新增 6 项（零工具熔断/预算裁剪/512 截断/续作读日志/内部事件/子聚焦保留 work_finish）；全量 213 passed。
+
+## 2026-11-15 自主沙盒 P6（补台 + 心情高涨 + 冷场自动触发）
+- `modules/autonomous/catchup.py`：从 `yuki.message_buffer` 取冻结期消息，过滤定时器/补台/小女仆注入；≤`catchup_summarize_threshold`(12) 代码直拼、更多走 sub-LLM ≤200 字、失败回落最近 20 条直拼；超 80 条只留最近 80 条并标注省略；生成 `is_catchup` 事件由管线的 `enqueue_message` 走一次强制回复。
+- `core/brain.py`：`high_spirits_until` / `high_spirits_remaining_turns`（按 chat_id）+ `mark_high_spirits/high_spirits_active/high_spirits_turns_left/consume_high_spirits_turn`。
+- `core/engine/engine_decision.py`：高涨时欲望 `+bonus*100`（默认 +45），并把低精力拒绝分支留 15% 底线。
+- `core/reply_watch.py`：`subscribe/auto_subscribe` 新增可选 `min_timeout_seconds` 与 `event_builder`（默认行为不变）。
+- `core/session_pipeline.py`：回复后若处于高涨且还有配额 → 注册 12s 短窗口被动回音，窗口到期自动注入「想再说几句」并扣配额；`core/prompts.py` 注入心情高涨引导。
+- `core/engine/engine_monitor.py`：`idle_diary_checker` 每 30s 调 `auto_trigger_check()`，自主轮进行中跳过日记巡检与破冰；`YukiEngine.autonomous` 由 `main.py` 装配。
+- 测试新增 9 项（补台直拼/摘要/回落、系统消息过滤、高涨加成与短窗口、L4 TTL+归档、自动触发白名单/配额/运行时覆盖、sweep_stale_runs）；全量 222 passed。

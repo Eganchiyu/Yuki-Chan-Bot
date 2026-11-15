@@ -2,6 +2,7 @@
 import asyncio
 import datetime
 import math
+import time
 from collections import defaultdict
 
 from config import cfg
@@ -99,6 +100,39 @@ class YukiState:
         # chat_id: float (0.0 ~ 10.0, 10 代表极度刷屏)
 
         self.group_activity = {}
+
+        # --- 新增：自主轮回群后的「心情高涨」社交反哺状态（按 chat_id 记账）---
+        self.high_spirits_until = {}          # chat_id -> 截止时间戳
+        self.high_spirits_remaining_turns = {}  # chat_id -> 剩余主动连发配额
+
+    def mark_high_spirits(self, chat_id, turns=None, minutes=None):
+        """自主轮结束回到群聊：拉高回复欲望并给几轮主动分享配额。"""
+        cid = str(chat_id)
+        turns = int(turns if turns is not None else getattr(cfg.autonomous, "high_spirits_turns", 3) or 3)
+        minutes = float(
+            minutes if minutes is not None else getattr(cfg.autonomous, "high_spirits_minutes", 25) or 25
+        )
+        self.high_spirits_until[cid] = time.time() + max(0.0, minutes) * 60
+        self.high_spirits_remaining_turns[cid] = max(0, turns)
+        logger.info(f"[Brain] {cid} 进入心情高涨：剩余 {turns} 轮，持续 {minutes:.0f} 分钟")
+
+    def high_spirits_active(self, chat_id) -> bool:
+        cid = str(chat_id)
+        until = float(self.high_spirits_until.get(cid, 0.0) or 0.0)
+        return bool(until) and time.time() < until
+
+    def high_spirits_turns_left(self, chat_id) -> int:
+        if not self.high_spirits_active(chat_id):
+            return 0
+        return max(0, int(self.high_spirits_remaining_turns.get(str(chat_id), 0) or 0))
+
+    def consume_high_spirits_turn(self, chat_id) -> int:
+        cid = str(chat_id)
+        left = max(0, self.high_spirits_turns_left(cid) - 1)
+        self.high_spirits_remaining_turns[cid] = left
+        if left == 0:
+            self.high_spirits_until[cid] = 0.0
+        return left
 
     async def boost_activity(self, chat_id, sensitivity = cfg.SENSITIVITY) -> None:
         """

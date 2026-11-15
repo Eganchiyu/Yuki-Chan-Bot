@@ -15,12 +15,24 @@ logger = get_logger("engine")
 class EngineMonitorService:
     """负责引擎后台巡检任务。"""
 
-    def __init__(self, yuki, history, diary_service, get_napcat_online: Callable[[], bool], get_process_callback):
+    def __init__(self, yuki, history, diary_service, get_napcat_online: Callable[[], bool],
+                 get_process_callback, get_autonomous: Callable[[], object] | None = None):
         self.yuki = yuki
         self.history = history
         self.diary_service = diary_service
         self.get_napcat_online = get_napcat_online
         self.get_process_callback = get_process_callback
+        self.get_autonomous = get_autonomous or (lambda: None)
+
+    def _autonomous_busy(self) -> bool:
+        """非聊天模式进行中：冻结期不写日记、不触发破冰。"""
+        coordinator = self.get_autonomous()
+        if coordinator is None:
+            return False
+        try:
+            return bool(coordinator.is_running())
+        except Exception:
+            return False
 
     async def idle_diary_checker(self):
         """后台任务，每30秒检查一次空闲群聊。"""
@@ -30,6 +42,16 @@ class EngineMonitorService:
                 continue
             now = time.time()
             logger.debug("[Engine] 后台空闲检查开始")
+            if self._autonomous_busy():
+                logger.debug("[Engine] 自主轮进行中，跳过日记巡检")
+                continue
+            # 冷场自动触发自主轮（白名单 + 精力/深夜/冷却/日配额判定都在 coordinator 内）
+            coordinator = self.get_autonomous()
+            if coordinator is not None:
+                try:
+                    await coordinator.auto_trigger_check()
+                except Exception as exc:
+                    logger.warning(f"[Engine] 自主轮自动触发检查失败: {exc}")
             history_dict = self.history.load()
             for cid, last_msg in list(self.yuki.last_message_time.items()):
                 if cid in self.yuki.writing_diary:
@@ -60,6 +82,9 @@ class EngineMonitorService:
         while True:
             await asyncio.sleep(random.randint(600, 1800))
             if not self.get_napcat_online():
+                continue
+            if self._autonomous_busy():
+                logger.debug("[Engine] 自主轮进行中，跳过破冰巡检")
                 continue
             target_list = [str(gid) for gid in cfg.TARGET_GROUPS]
             logger.debug(f"[Engine] 已加载 {len(target_list)} 个目标群组")

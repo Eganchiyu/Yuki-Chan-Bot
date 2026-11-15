@@ -243,6 +243,23 @@ async def build_chat_context(yuki, chat_id: str, combined_text: str, history_dic
             ),
         })
 
+    # 2.7 心情高涨：刚结束独处、做出东西后回到群里的分享欲引导
+    high_active = getattr(yuki, "high_spirits_active", None)
+    if callable(high_active):
+        try:
+            is_high = bool(high_active(chat_id))
+        except Exception:
+            is_high = False
+        if is_high:
+            combined_API_message.append({
+                "role": "system",
+                "content": (
+                    "【心情高涨】你刚从一个人的独处时光里回来，心情很好、很有分享欲。"
+                    "如果话题合适，可以自然地聊聊你刚做的事、分享一点细节或感想；"
+                    "注意保持平时聊天的自然节奏，不要像汇报工作，也不用每次都提。"
+                ),
+            })
+
     # 3. 补充工具链约束：工具调用期间不要把过程性思考混入最终回复
     combined_API_message.append({"role": "system", "content": "如果需要查询日记、发送本地文件或委托小女仆等任务，请优先调用可用工具。"})
 

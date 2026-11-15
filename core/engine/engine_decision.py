@@ -9,6 +9,19 @@ RAG_HORMONE_GAIN = 80.0
 REPLY_THRESHOLD = 50.0
 
 
+def _high_spirits_active(yuki, chat_id) -> bool:
+    """自主轮回群后的心情高涨判定（brain 未升级时视为 False）。"""
+    check = getattr(yuki, "high_spirits_active", None)
+    if not callable(check):
+        return False
+    try:
+        return bool(check(chat_id)) and (
+            not hasattr(yuki, "high_spirits_turns_left") or yuki.high_spirits_turns_left(chat_id) > 0
+        )
+    except Exception:
+        return False
+
+
 class EngineDecisionService:
     """负责群聊回复意愿判定。"""
 
@@ -74,14 +87,23 @@ class EngineDecisionService:
             logger.info(f"[Decision] 精力充沛({current_e:.1f})，强制开启活跃模式")
             return True
 
+        high_spirits = _high_spirits_active(self.yuki, cid)
         if current_e < cfg.MIN_ACTIVE_ENERGY and not is_master:
-            logger.info(f"[Decision] 精力枯竭({current_e:.1f})且无哥哥大人在场，拒绝回复")
-            return False
+            # 心情高涨时留一条底（约 15% 精力）就仍然开口，绕过低活跃抑制
+            floor = max(1.0, float(cfg.MAX_ENERGY) * 0.15)
+            if not (high_spirits and current_e >= floor):
+                logger.info(f"[Decision] 精力枯竭({current_e:.1f})且无哥哥大人在场，拒绝回复")
+                return False
 
         reply_score = 0.0
         reply_score += current_e * 0.4
         reply_score += desire * 0.2
         reply_score += new_hormone * 0.2
+
+        if high_spirits:
+            bonus = float(getattr(cfg.autonomous, "high_spirits_desire_bonus", 0.45) or 0.45)
+            reply_score += bonus * 100
+            logger.debug(f"[Decision] 心情高涨加成 +{bonus * 100:.0f}")
 
         if question_mark:
             reply_score += 10
@@ -95,7 +117,8 @@ class EngineDecisionService:
 
         logger.info(
             f"[Decision] 模糊地带 {reply_score:.1f}/{threshold:.0f} -> 发言:{will_reply}"
-            f" (精力{current_e:.1f} 激素{new_hormone:.1f} 欲{desire:.1f} 主人:{is_master})"
+            f" (精力{current_e:.1f} 激素{new_hormone:.1f} 欲{desire:.1f} 主人:{is_master}"
+            f"{' 心情高涨' if high_spirits else ''})"
         )
         logger.debug(
             f"[Decision] 模糊地带明细 | 精力:{current_e:.1f} 激素:{new_hormone:.1f} 欲:{desire:.1f} "

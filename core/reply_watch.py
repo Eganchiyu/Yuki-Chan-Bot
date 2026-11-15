@@ -64,14 +64,20 @@ def is_human_incoming(message_obj) -> bool:
     return True
 
 
-def subscribe(chat_id, mode, callback, timeout_seconds=60):
-    """登记（或覆盖）一个会话的回复订阅，返回对模型可见的状态。"""
+def subscribe(chat_id, mode, callback, timeout_seconds=60, min_timeout_seconds=None,
+              event_builder=None):
+    """登记（或覆盖）一个会话的回复订阅，返回对模型可见的状态。
+
+    `min_timeout_seconds` 允许调用方压低 30s 下限（心情高涨的 10~15s 窗口用），
+    默认仍是 `MIN_TIMEOUT_SECONDS`，不影响既有行为。
+    """
     if callback is None:
         raise ValueError("missing_callback")
 
     chat_id = str(chat_id)
+    floor = MIN_TIMEOUT_SECONDS if min_timeout_seconds is None else max(1.0, float(min_timeout_seconds))
     try:
-        timeout = max(float(timeout_seconds), float(MIN_TIMEOUT_SECONDS))
+        timeout = max(float(timeout_seconds), float(floor))
     except (TypeError, ValueError):
         raise ValueError("invalid_timeout")
     if timeout <= 0:
@@ -85,6 +91,7 @@ def subscribe(chat_id, mode, callback, timeout_seconds=60):
         "timeout_seconds": timeout,
         "followups": 0,
         "status": "waiting",
+        "event_builder": event_builder,
     }
     _watches[chat_id] = watch
     _schedule(chat_id)
@@ -153,6 +160,14 @@ async def _fire_later(chat_id, delay):
         "source": EVENT_SOURCE,
         "is_reply_watch_event": True,
     }
+    builder = watch.get("event_builder")
+    if callable(builder):
+        try:
+            custom = builder(watch)
+            if isinstance(custom, dict):
+                event = custom
+        except Exception as exc:
+            logger.warning(f"[ReplyWatch] 自定义事件构造失败: {exc}")
     logger.info(f"[ReplyWatch] 到点提醒 chat_id={chat_id} 第 {watch['followups']}/{MAX_FOLLOWUPS} 次")
     asyncio.create_task(_dispatch(watch["callback"], chat_id, watch["mode"], event))
 
@@ -213,7 +228,8 @@ def estimate_wait_seconds(timestamps) -> float:
 
 
 def auto_subscribe(chat_id, mode, callback, text, energy_ratio=0.0, bioclock_ratio=0.5,
-                   activity_ratio=0.0, recent_times=None) -> dict | None:
+                   activity_ratio=0.0, recent_times=None, min_timeout_seconds=None,
+                   event_builder=None) -> dict | None:
     """回复发出后自动判定是否该等她一句回应，返回订阅状态或 None。"""
     if not ENABLED or not _visible_text(text) or callback is None:
         return None
@@ -227,7 +243,8 @@ def auto_subscribe(chat_id, mode, callback, text, energy_ratio=0.0, bioclock_rat
         return None
 
     wait = estimate_wait_seconds(recent_times)
-    watch = subscribe(chat_id, mode, callback, timeout_seconds=wait)
+    watch = subscribe(chat_id, mode, callback, timeout_seconds=wait,
+                      min_timeout_seconds=min_timeout_seconds, event_builder=event_builder)
     logger.info(
         f"[ReplyWatch] 自动订阅 chat_id={chat_id} score={score:.2f} rolled={rolled:.2f} wait={watch['timeout_seconds']:.0f}s"
     )
