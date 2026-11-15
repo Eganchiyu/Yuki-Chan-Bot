@@ -753,3 +753,10 @@
 - 文档：`docs/autonomous-architecture.md` §3.3/§3.4/§3.5 + 配置表、`docs/toolchain-usage.md` 工具表与归档说明同步。
 - 测试：`test_tool_hands` 删 7 项 bash 用例并加「bash 不在注册表」断言；`test_autonomous_sandbox` 桩改走 `search_diary`，新增检索窗口用例（窗口内 5 个工具、越窗只剩 inner_vote 且工具结果为「未展开」）；`test_diary_filter` 工具名改 `search_diary`。全量 `pytest tests -q` **223 passed / 0 failed**；`YUKI_DRY_RUN=1 python main.py` 通过。
 - 状态：代码已落地，线上容器仍是旧进程，需重启 `yuki` 容器生效。
+
+## 2026-11-15 工具轮正文静默 + art_draw 异步化
+- 工具轮正文静默：`EngineReplyService.send_tool_thought` → `capture_tool_thought`（不再 `sender.send`），`_emit_thought` 改为同步取文本；历史仍写 `is_tool_thought=True`（`sent_realtime=False`），下游日志为 `[ToolChain] 工具轮文本已静默`。`delegate_to_maid` 的「💻」装饰随之消失。最终回复被清洗为空时的「工作中......」按机主要求保留。
+- art_draw 异步：新增 `core/art_gen_jobs.py`（`ArtGenJobStore` + `art_gen_store`）。`art_draw` 只做参数/资产解析后 `submit()` 立即返回 `{art_job: queued, job_id}`；后台任务调用 `generate_image_tool`，成功后自动 `send_qq_file`(image) 发到当前会话、把成品注册进 image_store 作为预览附件，写一条 `is_art_report=True` 的 user 汇报（含 `[img:XXX]`）并用 `process_callback(force_reply=True)` 唤起一次回复；失败同样注入「【画图失败】」汇报。同会话允许多张并行，`art_gen_store.active()` 可查在跑的；`wait(job_id)` 供测试与排障。
+- 配套：`history_filter.is_art_report` 不计入聊天轮次；`art_start` 指南第 4 条与 `art_draw` 工具描述改成异步口径（不要空等、不要重复 send_qq_file）；`_art_stub` 支持任务号。
+- 测试：`tests/test_art_focus.py` 适配（提交后 `await art_gen_store.wait()` 校验参数、自动发图与汇报注入、force_reply 触发）；`tests/test_reply_format.py` 断言工具轮正文 `sender.sent == []` 且历史 `sent_realtime=False`。全量 `pytest tests -q` **225 passed**，`deploy/verify.sh` ALL_GATES_PASSED。
+- 状态：改动已提交（df4f1e9）；容器需重启生效。
