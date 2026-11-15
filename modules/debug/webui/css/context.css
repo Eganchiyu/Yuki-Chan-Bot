@@ -1,0 +1,469 @@
+    /* ==================== TAB 1: CONTEXT STUDIO ==================== */
+    .context-grid {
+      display: grid;
+      grid-template-columns: 330px minmax(0, 1fr) 360px;
+      gap: 14px;
+      align-items: start;
+    }
+    .panel-card {
+      padding: 16px;
+      min-width: 0;
+    }
+    .card-title {
+      margin: 0 0 12px;
+      font-size: 15px;
+      font-weight: 800;
+      color: var(--text);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+    }
+    .card-title-left {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+    }
+
+    /* 搜索与筛选栏 */
+    .search-input {
+      width: 100%;
+      padding: 9px 12px;
+      border-radius: 12px;
+      border: 1px solid var(--line);
+      background: rgba(255, 255, 255, 0.92);
+      color: var(--text);
+      font-size: 12.5px;
+      outline: none;
+      transition: border-color 0.2s, box-shadow 0.2s;
+    }
+    .search-input:focus {
+      border-color: var(--pink);
+      box-shadow: 0 0 0 3px rgba(255, 71, 133, 0.15);
+    }
+    .filter-chips {
+      display: flex;
+      gap: 5px;
+      flex-wrap: wrap;
+      margin: 9px 0 11px;
+    }
+    .chip {
+      padding: 4px 9px;
+      border-radius: 999px;
+      font-size: 11.5px;
+      font-weight: 600;
+      border: 1px solid var(--line);
+      background: rgba(255, 255, 255, 0.75);
+      color: var(--text-sec);
+      cursor: pointer;
+      transition: all 0.18s ease;
+    }
+    .chip:hover { border-color: var(--pink); color: var(--berry); }
+    .chip.active {
+      background: var(--grad-primary);
+      color: #fff;
+      border-color: transparent;
+      box-shadow: 0 3px 10px rgba(255, 71, 133, 0.25);
+    }
+
+    /* 左侧会话列表 */
+    .session-list {
+      display: grid;
+      gap: 9px;
+      max-height: calc(100vh - 280px);
+      overflow-y: auto;
+      padding-right: 3px;
+    }
+    .sess-card {
+      padding: 11px 13px;
+      border-radius: 16px;
+      border: 1px solid var(--line);
+      background: rgba(255, 255, 255, 0.78);
+      cursor: pointer;
+      transition: all 0.22s var(--ease-spring);
+      position: relative;
+      overflow: hidden;
+    }
+    .sess-card:hover {
+      border-color: var(--pink-soft);
+      transform: translateX(3px);
+      background: #fff;
+    }
+    .sess-card.active {
+      border-color: var(--pink);
+      background: linear-gradient(135deg, rgba(255, 255, 255, 0.98), rgba(255, 232, 243, 0.92));
+      box-shadow: 0 8px 22px -6px rgba(255, 71, 133, 0.25), inset 3.5px 0 0 var(--pink);
+    }
+    .sess-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 6px;
+      margin-bottom: 5px;
+    }
+    .sess-chat {
+      font-weight: 800;
+      font-size: 13px;
+      color: var(--text);
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+    }
+    .sess-in {
+      font-size: 12px;
+      color: var(--text-sec);
+      line-height: 1.45;
+      display: -webkit-box;
+      -webkit-line-clamp: 2;
+      -webkit-box-orient: vertical;
+      overflow: hidden;
+      word-break: break-all;
+    }
+    .sess-out {
+      margin-top: 5px;
+      padding: 4px 8px;
+      border-radius: 8px;
+      background: rgba(255, 71, 133, 0.08);
+      color: var(--berry);
+      font-size: 11.5px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .sess-meta {
+      margin-top: 6px;
+      display: flex;
+      gap: 6px;
+      flex-wrap: wrap;
+      font-size: 11px;
+      color: var(--muted);
+    }
+
+    /* 糖果色徽章 */
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      padding: 2px 8px;
+      border-radius: 999px;
+      font-size: 11px;
+      font-weight: 700;
+      white-space: nowrap;
+    }
+    .badge.replied, .badge.running {
+      background: var(--mint-pale);
+      color: #047857;
+      border: 1px solid #a7f3d0;
+    }
+    .badge.dived, .badge.finished {
+      background: var(--purple-pale);
+      color: #6d28d9;
+      border: 1px solid #ddd6fe;
+    }
+    .badge.skip, .badge.time {
+      background: var(--amber-pale);
+      color: #b45309;
+      border: 1px solid #fde68a;
+    }
+    .badge.err {
+      background: var(--coral-pale);
+      color: #be123c;
+      border: 1px solid #fecdd3;
+    }
+    .badge.pink {
+      background: var(--pink-pale);
+      color: var(--berry);
+      border: 1px solid rgba(255, 71, 133, 0.3);
+    }
+    .badge.cyan {
+      background: var(--cyan-pale);
+      color: #0369a1;
+      border: 1px solid #bae6fd;
+    }
+
+    /* 中栏：本轮对话速览卡 (Turn Hero Summary Card) */
+    .turn-hero {
+      padding: 16px;
+      border-radius: 20px;
+      background: linear-gradient(135deg, rgba(255, 255, 255, 0.95), rgba(255, 236, 245, 0.88));
+      border: 1px solid rgba(255, 71, 133, 0.28);
+      box-shadow: var(--shadow-sm);
+      margin-bottom: 14px;
+    }
+    .turn-bubbles {
+      display: grid;
+      grid-template-columns: 1fr auto 1fr;
+      gap: 12px;
+      align-items: stretch;
+    }
+    .turn-box {
+      padding: 12px 14px;
+      border-radius: 16px;
+      background: #fff;
+      border: 1px solid var(--line);
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      min-width: 0;
+    }
+    .turn-box.out-box {
+      background: linear-gradient(135deg, #fff9fc 0%, #fff0f7 100%);
+      border-color: rgba(255, 71, 133, 0.35);
+    }
+    .turn-box-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 6px;
+      font-size: 12px;
+      font-weight: 700;
+      color: var(--text-sec);
+      margin-bottom: 6px;
+    }
+    .turn-box-body {
+      font-size: 13.5px;
+      line-height: 1.6;
+      color: var(--text);
+      word-break: break-word;
+      max-height: 120px;
+      overflow-y: auto;
+      white-space: pre-wrap;
+    }
+    .turn-bridge {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 5px;
+      padding: 0 4px;
+      min-width: 110px;
+    }
+    .meme-tag {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      padding: 2px 8px;
+      margin: 0 3px;
+      border-radius: 99px;
+      background: var(--grad-primary);
+      color: #fff;
+      font-size: 11.5px;
+      font-weight: 700;
+    }
+
+    /* 8阶段管线瀑布条 */
+    .pipeline-strip {
+      display: grid;
+      grid-template-columns: repeat(8, minmax(0, 1fr));
+      gap: 6px;
+      margin-top: 12px;
+    }
+    .stage-node {
+      padding: 8px 9px;
+      border-radius: 12px;
+      border: 1px solid var(--line);
+      background: rgba(255, 255, 255, 0.72);
+      font-size: 11.5px;
+      transition: all 0.2s ease;
+      position: relative;
+      overflow: hidden;
+    }
+    .stage-node.done {
+      border-color: rgba(16, 185, 129, 0.42);
+      background: rgba(236, 253, 245, 0.85);
+    }
+    .stage-node.active {
+      border-color: var(--pink);
+      background: var(--pink-pale);
+    }
+    .stage-node.error {
+      border-color: var(--coral);
+      background: var(--coral-pale);
+    }
+    .stage-node .st-idx {
+      font-size: 10px;
+      font-weight: 700;
+      color: var(--muted);
+    }
+    .stage-node .st-name {
+      font-weight: 700;
+      color: var(--text);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      margin: 2px 0;
+    }
+    .stage-node .st-time {
+      font-size: 11px;
+      font-weight: 700;
+      color: var(--berry);
+    }
+
+    /* 工具调用链面板 */
+    .tool-trace-box {
+      margin-bottom: 14px;
+      padding: 12px 14px;
+      border-radius: 16px;
+      background: rgba(254, 243, 199, 0.55);
+      border: 1px solid #fde68a;
+    }
+    .tool-round-item {
+      padding: 8px 10px;
+      border-radius: 11px;
+      background: rgba(255, 255, 255, 0.88);
+      border: 1px solid rgba(245, 158, 11, 0.25);
+      font-size: 12px;
+      margin-top: 7px;
+    }
+
+    /* LLM Messages 气泡流 */
+    .msg-toolbar {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+      margin-bottom: 10px;
+    }
+    .messages-stream {
+      display: grid;
+      gap: 9px;
+      max-height: calc(100vh - 380px);
+      overflow-y: auto;
+      padding-right: 4px;
+    }
+    details.msg-card {
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      background: rgba(255, 255, 255, 0.88);
+      overflow: hidden;
+      transition: border-color 0.2s, box-shadow 0.2s;
+    }
+    details.msg-card[open] {
+      box-shadow: 0 6px 18px rgba(236, 72, 153, 0.08);
+    }
+    details.msg-card.role-system {
+      background: linear-gradient(135deg, rgba(243, 232, 255, 0.55), rgba(255, 255, 255, 0.9));
+      border-color: rgba(155, 93, 229, 0.28);
+    }
+    details.msg-card.role-user {
+      background: linear-gradient(135deg, rgba(224, 247, 252, 0.55), rgba(255, 255, 255, 0.94));
+      border-color: rgba(0, 180, 216, 0.30);
+    }
+    details.msg-card.role-assistant {
+      background: linear-gradient(135deg, rgba(255, 224, 237, 0.60), rgba(255, 255, 255, 0.95));
+      border-color: rgba(255, 71, 133, 0.34);
+    }
+    details.msg-card.role-tool {
+      background: linear-gradient(135deg, rgba(254, 243, 199, 0.55), rgba(255, 255, 255, 0.92));
+      border-color: rgba(245, 158, 11, 0.32);
+    }
+    details.msg-card summary {
+      cursor: pointer;
+      padding: 10px 14px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      list-style: none;
+      user-select: none;
+    }
+    details.msg-card summary::-webkit-details-marker { display: none; }
+    .msg-sum-left {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      min-width: 0;
+      flex: 1;
+    }
+    .msg-snippet {
+      font-size: 12px;
+      color: var(--text-sec);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    details.msg-card[open] .msg-snippet { display: none; }
+    .role-pill {
+      padding: 3px 9px;
+      border-radius: 999px;
+      font-size: 11px;
+      font-weight: 800;
+      text-transform: uppercase;
+      letter-spacing: 0.03em;
+      flex-shrink: 0;
+    }
+    .role-pill.system { background: var(--purple-pale); color: #6d28d9; }
+    .role-pill.user { background: var(--cyan-pale); color: #0369a1; }
+    .role-pill.assistant { background: var(--pink-pale); color: var(--berry); }
+    .role-pill.tool { background: var(--amber-pale); color: #b45309; }
+
+    .msg-content {
+      padding: 10px 14px 14px;
+      border-top: 1px dashed rgba(255, 110, 168, 0.2);
+      font-size: 13px;
+      line-height: 1.65;
+      white-space: pre-wrap;
+      word-break: break-word;
+      color: var(--text);
+      max-height: 440px;
+      overflow-y: auto;
+      font-family: "PingFang SC", "Microsoft YaHei", ui-monospace, SFMono-Regular, Menlo, monospace;
+    }
+
+    /* 右栏：Token 分布与 RAG 记忆 */
+    .right-stack {
+      display: grid;
+      gap: 14px;
+    }
+    .token-role-row {
+      display: grid;
+      grid-template-columns: 72px 1fr 68px;
+      align-items: center;
+      gap: 8px;
+      font-size: 12px;
+      margin-top: 7px;
+    }
+    .progress-track {
+      height: 8px;
+      border-radius: 99px;
+      background: rgba(255, 194, 219, 0.35);
+      overflow: hidden;
+    }
+    .progress-fill {
+      height: 100%;
+      border-radius: 99px;
+      transition: width 0.45s var(--ease-spring);
+    }
+    .diary-card {
+      padding: 11px 12px;
+      border-radius: 14px;
+      border: 1px solid var(--line);
+      background: rgba(255, 255, 255, 0.85);
+      font-size: 12.5px;
+      line-height: 1.55;
+      color: var(--text);
+      margin-bottom: 8px;
+    }
+    .diary-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 5px;
+      font-size: 11px;
+      color: var(--muted);
+    }
+    .json-pre {
+      white-space: pre-wrap;
+      word-break: break-word;
+      max-height: 260px;
+      overflow: auto;
+      font-size: 11.5px;
+      line-height: 1.5;
+      color: var(--text-sec);
+      background: rgba(255, 240, 247, 0.75);
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      padding: 10px;
+      font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+    }

@@ -1,0 +1,69 @@
+    /* ==================== TAB 2: ANALYTICS & BRAIN ==================== */
+    .kpi-grid {
+      display: grid;
+      grid-template-columns: repeat(6, minmax(0, 1fr));
+      gap: 12px;
+      margin-bottom: 14px;
+    }
+    .kpi-card {
+      padding: 15px 16px;
+      position: relative;
+      overflow: hidden;
+    }
+    .kpi-card .kpi-label {
+      font-size: 12px;
+      font-weight: 700;
+      color: var(--text-sec);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .kpi-card .kpi-val {
+      font-size: 26px;
+      font-weight: 900;
+      margin: 6px 0 4px;
+      background: var(--grad-primary);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+    .kpi-card .kpi-sub {
+      font-size: 11.5px;
+      color: var(--muted);
+    }
+
+    .analytics-row-2 {
+      display: grid;
+      grid-template-columns: 1.35fr 1fr;
+      gap: 14px;
+      margin-bottom: 14px;
+    }
+    .analytics-row-3 {
+      display: grid;
+      grid-template-columns: 1fr 1.15fr 1fr;
+      gap: 14px;
+    }
+    .group-gauge-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
+      gap: 10px;
+      max-height: 290px;
+      overflow-y: auto;
+    }
+    .group-gauge-card {
+      padding: 12px;
+      border-radius: 16px;
+      background: rgba(255, 255, 255, 0.88);
+      border: 1px solid var(--line);
+    }
+    .waterfall-row {
+      display: grid;
+      grid-template-columns: 115px 1fr 78px;
+      align-items: center;
+      gap: 10px;
+      font-size: 12px;
+      margin-bottom: 9px;
+    }
+    .svg-chart-wrap {
+      width: 100%;
+      overflow: hidden;
+    }

@@ -724,3 +724,11 @@
 - 代码注释里对旧文档的引用改指 `docs/autonomous-architecture.md`（base/pipeline/notebook/storage/catchup/tools/sandbox_loop）。
 - `docs/architecture.md` 目录树补 `core/modes/` 与 `modules/autonomous/`，速查表补两行。
 - 按机主要求本次未再跑全量测试（上次 229 passed，改动仅注释与文档）。
+
+## 2026-11-15 WebUI：自主轮工作台 + 前端拆分
+- 定位：Debug WebUI 在 `modules/debug/webui_server.py`（端口 8777），原先整页 HTML 内嵌在同一个 Python 字符串里（2500+ 行）。
+- 拆分：前端资源移到 `modules/debug/webui/`——`index.html` + `css/{base,context,analytics,phone,autonomous}.css` + `js/{core,context,analytics,phone,autonomous,boot}.js`；`webui_server.py` 只保留静态服务与 API 路由（新增 `/static/<path>`，限制在 webui 目录内，`..` 穿越返回 403）。`/`、`/analytics`、`/phone`、`/autonomous` 都返回同一个 SPA 入口，由前端按 pathname 激活 Tab。
+- 新增第 4 个 Tab「🧠 自主轮沙盒」（`/autonomous`）：运行态（模式光球 + Phase 1/2/3 步进器 + 墙钟上限）、今日配额/冷却/工坊工具预算四只环形仪表、唯一体性占用与冻结补台队列、群级准入看板（逐群给原因，标出运行时覆盖/白名单/非目标群）、逐轮记录回放（run 清单 + 结局筛选 + 事件类型筛选，渲染交锋原文/压力旁白/投票/复盘三向/工具调用与结果/收尾产物）、L2 工作日记、L3 工作会话、L4 今日工作记忆、L5 小本本双区、指令速查（点击复制）与边界说明。
+- 后端：`inspect.py` 快照增补 `groups`（准入逐群解释）、`freeze.pending_catchups`、`tuning`、`run.progress`（从 transcript 汇总步数/投票/工具数/当前 phase）、`last_run_at_ts`/`started_ts`（前端算冷却）；新增 `autonomous_transcripts(limit)` / `autonomous_transcript(run_id)` 与路由 `GET /api/autonomous/runs`、`GET /api/autonomous/runs/<run_id>`（run_id 白名单正则防穿越）。工坊工具数是累计值，聚合取 max 而非求和。
+- 验证：`pytest tests -q` 229 passed；容器内起 8899 临时实例实测 `/`、`/static/*`、三个 autonomous API、`/static/../` 403、合成 transcript 回放 13 事件全部正常。
+- 待机主操作：线上容器进程仍持有旧模块，需重启容器（或走 `deploy/supervisor.py`）后 8777 才是新界面。

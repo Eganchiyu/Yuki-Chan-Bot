@@ -1,0 +1,506 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Yuki Sweet-Cyber Console 🌸</title>
+  <link rel="stylesheet" href="/static/css/base.css" />
+  <link rel="stylesheet" href="/static/css/context.css" />
+  <link rel="stylesheet" href="/static/css/analytics.css" />
+  <link rel="stylesheet" href="/static/css/phone.css" />
+  <link rel="stylesheet" href="/static/css/autonomous.css" />
+</head>
+<body>
+<canvas id="sakuraCanvas"></canvas>
+
+<main class="app-shell">
+  <!-- 顶部主控台导航 -->
+  <header class="glass top-nav">
+    <div class="brand-wrap">
+      <div class="mascot-avatar" onclick="openHelpPoster()" title="点击查看 Yuki 观察手册 🌸">
+        <div class="mascot-avatar-inner" id="yukiAvatarBox">🌸</div>
+        <i class="mascot-online-dot" id="onlineDot"></i>
+      </div>
+      <div>
+        <div class="brand-title">
+          <h1>Yuki Sweet-Cyber Console</h1>
+          <span class="cyber-tag">SAKURA PULSE v2.5 ✨</span>
+        </div>
+        <div class="brand-sub" id="status">
+          <span>(｡•̀ᴗ-)✧ 正在连接 Yuki 核心脑波...</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- 三大工作台丝滑切换 -->
+    <nav class="tab-switcher" role="tablist">
+      <button class="tab-btn active" id="tabBtn-context" onclick="switchTab('context')">
+        <span>💬 对话 &amp; 上下文工作台</span>
+        <span class="tab-count" id="navSnapCount">0</span>
+      </button>
+      <button class="tab-btn" id="tabBtn-analytics" onclick="switchTab('analytics')">
+        <span>📊 遥测分析 &amp; 脑波大屏</span>
+        <span class="tab-count" id="navReplyRate">--%</span>
+      </button>
+      <button class="tab-btn" id="tabBtn-phone" onclick="switchTab('phone')">
+        <span>📱 手机灵动监控台</span>
+        <span class="tab-count" id="navPhoneCount">0</span>
+      </button>
+      <button class="tab-btn" id="tabBtn-autonomous" onclick="switchTab('autonomous')">
+        <span>🧠 自主轮沙盒</span>
+        <span class="tab-count" id="navAutoState">待机</span>
+      </button>
+    </nav>
+
+    <div class="top-actions">
+      <button class="btn" onclick="refreshEverything(true)">🔄 立即刷新</button>
+      <button class="btn soft-active" id="pauseBtn" onclick="togglePause()">⚡ 自动同步: 开启</button>
+      <button class="btn" id="petalBtn" onclick="togglePetals()">🌸 樱花粒子</button>
+      <button class="btn" onclick="openHelpPoster()">📖 观察手册</button>
+    </div>
+  </header>
+
+  <!-- 顶部 Yuki 实时生理与精力状态舱 -->
+  <section class="glass brain-ribbon" id="brainRibbon">
+    <div class="ribbon-left" id="ribbonBioclock">
+      <span class="status-pill"><i class="dot pink"></i>生物钟加载中...</span>
+    </div>
+    <div class="group-mini-pills" id="ribbonGroups"></div>
+  </section>
+
+  <!-- ==================== TAB 1: 对话 & 上下文工作台 ==================== -->
+  <section class="tab-pane active" id="pane-context">
+    <div class="context-grid">
+      <!-- 左栏：智能会话流 -->
+      <aside class="glass panel-card">
+        <div class="card-title">
+          <span class="card-title-left">🗂️ 最近对话快照</span>
+          <span class="muted" id="filteredSnapCount">0 条</span>
+        </div>
+        <input type="search" id="sessSearch" class="search-input" placeholder="🔍 搜索群号 / 消息 / 回复内容..." oninput="renderSessions()" />
+        <div class="filter-chips">
+          <button class="chip active" data-filter="all" onclick="setSessFilter('all', this)">全部</button>
+          <button class="chip" data-filter="replied" onclick="setSessFilter('replied', this)">💬 已回复</button>
+          <button class="chip" data-filter="dived" onclick="setSessFilter('dived', this)">🫧 潜水/Skip</button>
+          <button class="chip" data-filter="tools" onclick="setSessFilter('tools', this)">🔧 含工具</button>
+          <button class="chip" data-filter="group" onclick="setSessFilter('group', this)">👥 群聊</button>
+          <button class="chip" data-filter="private" onclick="setSessFilter('private', this)">💌 私聊</button>
+        </div>
+        <div id="sessions" class="session-list">
+          <div class="empty">暂无 snapshot</div>
+        </div>
+      </aside>
+
+      <!-- 中栏：本轮对话速览 + 管线瀑布 + 上下文气泡流 -->
+      <section class="glass panel-card">
+        <div class="turn-hero" id="turnHeroCard">
+          <div class="card-title" style="margin-bottom:10px">
+            <span class="card-title-left" id="turnHeroTitle">🎀 本轮收发速览</span>
+            <div style="display:flex;gap:6px;flex-wrap:wrap">
+              <button class="btn btn-sm" onclick="copySnapshot()">📋 复制整包 JSON</button>
+              <button class="btn btn-sm" onclick="downloadSnapshot()">💾 导出 Snapshot</button>
+            </div>
+          </div>
+
+          <div class="turn-bubbles">
+            <div class="turn-box">
+              <div class="turn-box-head">
+                <span id="turnSenderLabel">📥 收到用户消息</span>
+                <button class="btn btn-sm" onclick="copyField('combined_text')">复制</button>
+              </div>
+              <div class="turn-box-body" id="turnIncomingBox">等待选择会话...</div>
+            </div>
+
+            <div class="turn-bridge" id="turnDecisionBridge">
+              <span class="badge pink">等待中</span>
+            </div>
+
+            <div class="turn-box out-box">
+              <div class="turn-box-head">
+                <span>📤 Yuki 最终回复</span>
+                <button class="btn btn-sm" onclick="copyField('answer_text')">复制</button>
+              </div>
+              <div class="turn-box-body" id="turnAnswerBox">等待生成...</div>
+            </div>
+          </div>
+
+          <!-- 8 阶段管线实时瀑布 -->
+          <div id="timeline" class="pipeline-strip"></div>
+        </div>
+
+        <!-- 工具调用链追踪 (有工具调用时显示) -->
+        <div id="toolTraceWrap" class="tool-trace-box" style="display:none"></div>
+
+        <!-- 完整构建上下文 Messages -->
+        <div class="msg-toolbar">
+          <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+            <b style="font-size:14.5px">🧠 完整构建上下文 (Built Messages)</b>
+            <div class="filter-chips" style="margin:0">
+              <button class="chip active" onclick="setMsgRoleFilter('all', this)">全部</button>
+              <button class="chip" onclick="setMsgRoleFilter('system', this)">System</button>
+              <button class="chip" onclick="setMsgRoleFilter('user', this)">User</button>
+              <button class="chip" onclick="setMsgRoleFilter('assistant', this)">Assistant</button>
+              <button class="chip" onclick="setMsgRoleFilter('tool', this)">Tool</button>
+            </div>
+          </div>
+          <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
+            <input type="search" id="msgSearchInput" class="search-input" style="width:170px;padding:5px 10px" placeholder="搜索上下文正文..." oninput="renderMessagesList()" />
+            <button class="btn btn-sm" onclick="toggleAllMessages(true)">展开全部</button>
+            <button class="btn btn-sm" onclick="toggleAllMessages(false)">折叠全部</button>
+          </div>
+        </div>
+        <div id="messages" class="messages-stream empty">暂无 snapshot</div>
+      </section>
+
+      <!-- 右栏：Token 构成 & RAG 记忆召回 & JSON -->
+      <aside class="right-stack">
+        <div class="glass panel-card">
+          <div class="card-title">
+            <span class="card-title-left">🪙 Token 角色构成分析</span>
+            <span class="badge pink" id="totalTokenBadge">0 tok</span>
+          </div>
+          <div id="tokenBreakdownBox"></div>
+        </div>
+
+        <div class="glass panel-card">
+          <div class="card-title">
+            <span class="card-title-left">📚 RAG 记忆日记召回</span>
+            <span class="badge cyan" id="ragCountBadge">0 条</span>
+          </div>
+          <div id="memories" style="max-height:340px;overflow-y:auto;padding-right:2px"></div>
+        </div>
+
+        <div class="glass panel-card">
+          <details>
+            <summary style="cursor:pointer;font-weight:800;font-size:13.5px;display:flex;justify-content:space-between;align-items:center">
+              <span>🧩 原始 Snapshot JSON</span>
+              <span class="muted">点击展开</span>
+            </summary>
+            <div style="margin-top:10px">
+              <div id="snapshotJson" class="json-pre">{}</div>
+            </div>
+          </details>
+        </div>
+      </aside>
+    </div>
+  </section>
+
+  <!-- ==================== TAB 2: 遥测分析 & 脑波监控 ==================== -->
+  <section class="tab-pane" id="pane-analytics">
+    <div class="kpi-grid" id="analyticsKpiGrid"></div>
+
+    <div class="analytics-row-2">
+      <div class="glass panel-card">
+        <div class="card-title">
+          <span class="card-title-left">🌙 Yuki 24 小时生物钟平滑律动曲线 (Bioclock Curve)</span>
+          <span class="badge pink" id="bioclockPhaseBadge">加载中</span>
+        </div>
+        <div id="bioclockChartBox" class="svg-chart-wrap"></div>
+      </div>
+
+      <div class="glass panel-card">
+        <div class="card-title">
+          <span class="card-title-left">🔋 群聊精力池 · 刷屏热度 · 说话欲望实时矩阵</span>
+          <span class="muted">Cost=4 / 恢复=0.8/min</span>
+        </div>
+        <div id="groupGaugeGrid" class="group-gauge-grid"></div>
+      </div>
+    </div>
+
+    <div class="analytics-row-3">
+      <div class="glass panel-card">
+        <div class="card-title">
+          <span class="card-title-left">⏱️ 管线 8 阶段平均耗时瀑布</span>
+          <span class="muted" id="stageTotalAvgLabel">Avg -- ms</span>
+        </div>
+        <div id="stageWaterfallBox"></div>
+      </div>
+
+      <div class="glass panel-card">
+        <div class="card-title">
+          <span class="card-title-left">📈 最近 24 轮 Token 角色堆叠趋势 (点击柱子跳转)</span>
+          <span class="muted">System / User / Assistant / Tool</span>
+        </div>
+        <div id="tokenTrendChartBox" class="svg-chart-wrap"></div>
+      </div>
+
+      <div class="glass panel-card">
+        <div class="card-title">
+          <span class="card-title-left">🎯 回复决策分布 &amp; 工具调用 Top 榜</span>
+          <span class="muted" id="toolTotalCallsLabel">0 次工具调用</span>
+        </div>
+        <div id="decisionAndToolsBox"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ==================== TAB 3: 手机实时监控 & 轨迹回放 ==================== -->
+  <section class="tab-pane" id="pane-phone">
+    <div class="glass panel-card" style="margin-bottom:14px;padding:12px 18px">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap">
+        <div id="statusPills" style="display:flex;gap:8px;flex-wrap:wrap;align-items:center"></div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          <button id="followBtn" class="btn soft-active" onclick="toggleFollow()">🎯 自动跟随最新步</button>
+          <button id="liveBtn" class="btn soft-active" onclick="toggleLive()">🟢 实时画面流: 开启</button>
+          <button class="btn" onclick="refreshLiveImage(true)">📸 立即抓屏</button>
+          <button class="btn" onclick="refreshPhoneData()">🔄 刷新轨迹</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="phone-grid">
+      <!-- 左栏：历史轨迹会话 + 步骤列表 -->
+      <aside class="glass panel-card" style="display:grid;gap:14px">
+        <div>
+          <div class="card-title">
+            <span class="card-title-left">🗂️ 手机操作轨迹列表</span>
+            <span class="muted" id="sessCount">0 条</span>
+          </div>
+          <div id="sessionList" class="list-box"><div class="empty">暂无手机操作轨迹</div></div>
+        </div>
+        <div>
+          <div class="card-title">
+            <span class="card-title-left">⏱️ 步骤时间轴 (支持 ← / →)</span>
+            <span style="display:flex;gap:4px">
+              <button class="btn btn-sm" onclick="stepDelta(-1)">◀ 上一步</button>
+              <button class="btn btn-sm" onclick="stepDelta(1)">下一步 ▶</button>
+            </span>
+          </div>
+          <div id="stepList" class="step-list-box"><div class="empty">请选择轨迹会话</div></div>
+        </div>
+      </aside>
+
+      <!-- 中栏：双机位粉色拟物手机壳 -->
+      <section class="glass panel-card">
+        <div class="phone-screens">
+          <div class="phone-bezel">
+            <div class="phone-notch"><i></i><span style="width:28px;height:4px;border-radius:9px;background:rgba(255,71,133,.35)"></span></div>
+            <div class="phone-screen-head">
+              <b>📡 当前手机实时画面 (Live)</b>
+              <span class="badge time" id="liveMeta">等待抓拍...</span>
+            </div>
+            <div class="img-wrap">
+              <img id="liveImg" alt="当前手机实时画面" onclick="openModal(this.src)" />
+            </div>
+            <div class="timing-bar">
+              <span class="timing-chip" id="liveHint">每 1.2s 自动从 ADB 拉取当前屏幕</span>
+            </div>
+          </div>
+
+          <div class="phone-bezel">
+            <div class="phone-notch"><i></i><span style="width:28px;height:4px;border-radius:99px;background:rgba(255,71,133,.35)"></span></div>
+            <div class="phone-screen-head">
+              <b id="stepScreenTitle">👁️ Yuki 看到的画面</b>
+              <span style="display:flex;gap:6px;align-items:center">
+                <button id="viewModeBtn" class="btn btn-sm" onclick="toggleStepImgMode()">切换: 红框标注图</button>
+                <span class="badge pink" id="stepElapsedBadge">- ms</span>
+              </span>
+            </div>
+            <div class="img-wrap">
+              <img id="yukiImg" alt="Yuki 看到的画面" onclick="openModal(this.src)" />
+            </div>
+            <div id="stepTimingSegBar" class="timing-seg-bar"></div>
+            <div class="timing-bar" id="stepTimingBar">
+              <span class="timing-chip">选择左侧步骤查看当步耗时分解</span>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- 右栏：Yuki 收发原文本 & 控件树过滤 -->
+      <aside class="glass panel-card text-panel">
+        <div class="box">
+          <h3>
+            <span>📥 Yuki 收到的用户触发原文本</span>
+            <button class="btn btn-sm" onclick="copyText('userIncomingText')">复制</button>
+          </h3>
+          <div id="userIncomingText" class="pre">暂无</div>
+        </div>
+
+        <div class="box">
+          <h3>
+            <span>📤 Yuki 当步思考 / 调用 + 最终回复</span>
+            <button class="btn btn-sm" onclick="copyText('yukiReplyText')">复制</button>
+          </h3>
+          <div id="yukiReplyText" class="pre">暂无</div>
+        </div>
+
+        <div class="box">
+          <h3>
+            <span>🌲 当步回传给 Yuki 的控件树 / 工具结果</span>
+            <div style="display:flex;gap:5px;align-items:center">
+              <input type="search" id="treeSearchInput" class="search-input" style="width:125px;padding:3px 8px;font-size:11.5px" placeholder="过滤控件词..." oninput="renderTreeText()" />
+              <button class="btn btn-sm" onclick="copyText('toolResultText')">复制</button>
+            </div>
+          </h3>
+          <div id="toolResultText" class="pre" style="max-height:290px">暂无</div>
+        </div>
+      </aside>
+    </div>
+  </section>
+
+  <!-- ==================== TAB 4: 自主轮沙盒 ==================== -->
+  <section class="tab-pane" id="pane-autonomous">
+    <div class="glass panel-card auto-toolbar">
+      <div class="auto-toolbar-pills" id="autoToolbarPills">
+        <span class="status-pill">(｡•̀ᴗ-)✧ 正在读取自主轮状态...</span>
+      </div>
+      <div class="auto-toolbar-actions">
+        <button class="btn" onclick="refreshAutonomous(true)">🔄 刷新自主轮</button>
+        <button class="btn soft-active" id="autoLiveBtn" onclick="toggleAutoLive()">🛰️ 实时跟随: 开启</button>
+        <button class="btn" onclick="replaySelectedRun()">📜 重放当前</button>
+      </div>
+    </div>
+
+    <div class="auto-hero">
+      <!-- 当前运行态 -->
+      <div class="glass panel-card auto-run-card">
+        <div class="card-title">
+          <span class="card-title-left">🧠 当前自主轮运行态</span>
+          <span class="badge pink" id="autoRunBadge">待机</span>
+        </div>
+        <div id="autoRunBody">
+          <div class="auto-empty">正在读取路由状态...</div>
+        </div>
+      </div>
+
+      <!-- 配额 / 冷却 / 墙钟 -->
+      <div class="glass panel-card">
+        <div class="card-title">
+          <span class="card-title-left">📊 配额 · 冷却 · 墙钟</span>
+          <span class="muted">实时换算</span>
+        </div>
+        <div class="auto-gauge-grid" id="autoGaugeGrid"></div>
+      </div>
+
+      <!-- 唯一体性 -->
+      <div class="glass panel-card">
+        <div class="card-title">
+          <span class="card-title-left">🔒 唯一体性 · 冻结与补台</span>
+          <span class="badge cyan" id="autoFreezeBadge">空闲</span>
+        </div>
+        <div class="auto-freeze-banner" id="autoFreezeBanner">等待快照...</div>
+        <div class="auto-frozen-list" id="autoFrozenBox"></div>
+      </div>
+    </div>
+
+    <!-- 群级准入 -->
+    <div class="glass panel-card" style="margin-bottom:14px">
+      <div class="card-title">
+        <span class="card-title-left">🚦 群级准入看板</span>
+        <span class="muted">目标群 &gt; 运行时覆盖 &gt; 总开关 + 白名单</span>
+      </div>
+      <div class="auto-gate-grid" id="autoGateGrid"></div>
+    </div>
+
+    <!-- 逐轮回放 -->
+    <div class="auto-replay-grid">
+      <aside class="glass panel-card">
+        <div class="card-title">
+          <span class="card-title-left">🎬 逐轮记录</span>
+          <span class="muted" id="autoRunCount">0 次</span>
+        </div>
+        <input type="search" id="autoRunSearch" class="search-input" placeholder="🔍 搜索 run_id / 群名 / 结局..." oninput="renderAutoRunList()" />
+        <div class="filter-chips">
+          <button class="chip active" data-outcome="all" onclick="setAutoOutcome('all', this)">全部</button>
+          <button class="chip" data-outcome="completed" onclick="setAutoOutcome('completed', this)">✅ 完成</button>
+          <button class="chip" data-outcome="stalled" onclick="setAutoOutcome('stalled', this)">⏸️ 中断</button>
+          <button class="chip" data-outcome="quiet" onclick="setAutoOutcome('quiet', this)">🌫️ 零痕迹</button>
+          <button class="chip" data-outcome="error" onclick="setAutoOutcome('error', this)">⚠️ 异常</button>
+        </div>
+        <div id="autoRunList" class="auto-run-list">
+          <div class="auto-empty">加载中...</div>
+        </div>
+      </aside>
+
+      <section class="glass panel-card">
+        <div class="card-title">
+          <span class="card-title-left" id="autoReplayTitle">📜 逐轮回放</span>
+          <span class="badge" id="autoReplayMeta">未选择</span>
+        </div>
+        <div class="filter-chips" id="autoKindChips">
+          <button class="chip active" data-kind="all" onclick="setAutoKind('all', this)">全部事件</button>
+          <button class="chip" data-kind="debate" onclick="setAutoKind('debate', this)">⚔️ 交锋</button>
+          <button class="chip" data-kind="vote" onclick="setAutoKind('vote', this)">🗳️ 投票</button>
+          <button class="chip" data-kind="reflection" onclick="setAutoKind('reflection', this)">🪞 复盘</button>
+          <button class="chip" data-kind="workshop" onclick="setAutoKind('workshop', this)">🛠️ 工坊</button>
+          <button class="chip" data-kind="lifecycle" onclick="setAutoKind('lifecycle', this)">🚩 起止</button>
+        </div>
+        <div class="auto-replay-stream" id="autoReplayStream">
+          <div class="auto-empty">从左侧选一次运行，回放她独处时的完整过程</div>
+        </div>
+      </section>
+    </div>
+
+    <!-- 五层记忆（L2–L5） -->
+    <div class="auto-memory-grid">
+      <div class="glass panel-card">
+        <div class="card-title">
+          <span class="auto-layer-head"><span class="auto-layer-badge l2">L2</span>工作日记</span>
+          <span class="muted" id="autoDiaryCount">0 条</span>
+        </div>
+        <div class="auto-scroll" id="autoDiaryList"></div>
+      </div>
+      <div class="glass panel-card">
+        <div class="card-title">
+          <span class="auto-layer-head"><span class="auto-layer-badge l3">L3</span>工作会话</span>
+          <span class="muted" id="autoSessCount">0 个</span>
+        </div>
+        <div class="auto-scroll" id="autoSessList"></div>
+      </div>
+      <div class="glass panel-card">
+        <div class="card-title">
+          <span class="auto-layer-head"><span class="auto-layer-badge l4">L4</span>今日工作记忆</span>
+          <span class="muted" id="autoDailyMeta">—</span>
+        </div>
+        <div id="autoDailyMemory"></div>
+      </div>
+      <div class="glass panel-card">
+        <div class="card-title">
+          <span class="auto-layer-head"><span class="auto-layer-badge l5">L5</span>小本本双区</span>
+          <span class="muted">daily / plans</span>
+        </div>
+        <div id="autoNotebook" style="display:grid;gap:8px"></div>
+      </div>
+    </div>
+
+    <!-- 指令与边界 -->
+    <div class="auto-tail-grid">
+      <div class="glass panel-card">
+        <div class="card-title">
+          <span class="card-title-left">⌨️ 指令速查（master 限定，点击复制）</span>
+          <span class="muted">QQ 群内发送</span>
+        </div>
+        <div class="auto-cmd-grid" id="autoCmdGrid"></div>
+        <div class="auto-flow" id="autoFlow"></div>
+      </div>
+      <div class="glass panel-card">
+        <div class="card-title">
+          <span class="card-title-left">🧷 边界与已知限制</span>
+        </div>
+        <ul class="auto-limit-list">
+          <li><b>零痕迹出口</b>：do_nothing / abandon / 中断不写 chat_history 与 L1–L5，只留日志与逐轮记录。</li>
+          <li><b>沙盒不发群消息</b>：发送全被 SilentSender 拦进 outbox，产物靠 work_finish 的 artifacts 记账。</li>
+          <li><b>唯一体性是全局的</b>：一个群独处时其它群（含主人私聊）一律冻结，只补台。</li>
+          <li><b>debate 不接内部事件</b>：小女仆汇报只在 workshop 消费。</li>
+          <li><b>墙钟超时</b>会把 L3 会话标 paused，工作日志可能是兜底拼的，需要人看一眼。</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+</main>
+
+<!-- 图片放大预览 Modal -->
+<div id="imgModal" class="modal" onclick="this.style.display='none'">
+  <img id="modalImg" src="" alt="preview" />
+</div>
+
+<div id="toast">✨ 已复制到剪贴板</div>
+<script src="/static/js/core.js"></script>
+<script src="/static/js/context.js"></script>
+<script src="/static/js/analytics.js"></script>
+<script src="/static/js/phone.js"></script>
+<script src="/static/js/autonomous.js"></script>
+<script src="/static/js/boot.js"></script>
+</body>
+</html>

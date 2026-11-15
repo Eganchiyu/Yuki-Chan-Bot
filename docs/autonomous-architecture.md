@@ -276,7 +276,7 @@ chat ────────► debate ──投票 start_work──► reflect
 | `mode_impl.py` | 129 | `DebateMode` / `WorkshopMode`（`Mode` 实现）、`make_mode_factory` |
 | `prompts.py` | 187 | 共有独处底色、念头 A/B 引导、压力旁白、复盘提示词、工坊提示词（只读复用 `core.prompts.get_base_setting()`） |
 | `catchup.py` | 136 | `build_digest`、`build_catchup_event`、时间/人名格式化 |
-| `inspect.py` | 138 | WebUI 快照 `autonomous_snapshot()` |
+| `inspect.py` | 350 | WebUI 快照 `autonomous_snapshot()`（含准入看板 `groups`、冻结/补台、配置基线）+ 逐轮记录 `autonomous_transcripts()` / `autonomous_transcript()` |
 | `transcript.py` | 147 | `RunTranscript`：逐轮记录到 `logs/autonomous/<run_id>.jsonl` |
 | `__init__.py` | 36 | 导出 storage 单例与惰性 `AutonomousCoordinator` |
 
@@ -371,11 +371,15 @@ chat ────────► debate ──投票 start_work──► reflect
 观测：
 
 ```bash
-curl -s http://127.0.0.1:8777/api/autonomous | jq          # 模式/阶段/冻结/配额/L2-L5 快照
+curl -s http://127.0.0.1:8777/api/autonomous | jq          # 模式/阶段/冻结/配额/准入/L2-L5 快照
+curl -s http://127.0.0.1:8777/api/autonomous/runs | jq     # 逐轮记录清单（结局/步数/投票/工具数）
+curl -s http://127.0.0.1:8777/api/autonomous/runs/<run_id> | jq   # 单次完整事件流
 tail -f logs/yuki.log | grep -E "\[(Autonomous|Modes|Debate|Workshop|Catchup|Switch)\]"
 ls logs/autonomous/ && jq -c . logs/autonomous/<run_id>.jsonl | head
 cat data/autonomous_state.json && cat data/daily_work_memory.json
 ```
+
+**WebUI 自主轮工作台**：浏览器打开 `http://127.0.0.1:8777/autonomous`（Debug WebUI 第 4 个 Tab）。一屏可见：当前运行态（模式光球 + Phase 1/2/3 步进器 + 墙钟）、今日配额 / 冷却 / 工坊工具预算环形仪表、唯一体性占用与冻结补台队列、群级准入看板（逐群给出「为什么能/不能跑」）、逐轮记录回放（按事件类型过滤，含交锋原文、压力旁白、投票、工具调用与结果）、五层记忆 L2–L5、指令速查与边界说明。前端资源已从 `webui_server.py` 拆到 `modules/debug/webui/`（`index.html` + `css/*.css` + `js/*.js`），由 `/static/` 路由只读服务。
 
 ---
 

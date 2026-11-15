@@ -98,6 +98,9 @@ Yuki 是基于 NapCat（OneBot 11 正向 WebSocket）的 QQ AI 助手。线上�
 │   ├── github_monitor/          # GitHub 仓库事件轮询与 Push 卡片渲染 (默认关闭)
 │   ├── qzone/                   # QQ 空间说说发布与动态监控 (监控默认关闭)
 │   └── debug/                   # ContextSnapshotStore 与只读 WebUI (端口 8777)
+│       ├── webui/               #   前端资源：index.html + css/ + js/（/static/ 只读服务）
+│       ├── webui_server.py      #   静态服务 + /api 路由（status/analytics/autonomous/phone）
+│       └── context_snapshot.py  #   上下文快照采集
 │
 ├── network/
 │   └── napcat.py                # NapCatGateway：WS 连接、常驻 reader 帧路由、OneBot API 调用、CQ 码解析
@@ -178,4 +181,5 @@ Yuki 是基于 NapCat（OneBot 11 正向 WebSocket）的 QQ AI 助手。线上�
 | 自主轮触发/准入/状态机、模式路由与冻结补台 | `modules/autonomous/coordinator.py`、`core/modes/router.py`、`docs/autonomous-architecture.md` |
 | 双念头交锋 / 自主执行工坊 / 五层记忆 | `modules/autonomous/inner_debate.py`、`workshop.py`、`storage.py` |
 | 宿主自改守护、独立模型审查、5 道校验门、网络看门狗 | `deploy/supervisor.py`、`reviewer.py`、`verify.sh`、`netwatch.py` |
+| Debug WebUI 前端（Tab 结构、样式、各面板 JS） | `modules/debug/webui/index.html`、`css/`、`js/`（自主轮面板见 `js/autonomous.js`） |
 | 已下线功能（Live2D、NCM、聚焦模式、旧内置女仆循环等） | `_archive/README.md` 及对应子目录 |
