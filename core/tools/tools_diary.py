@@ -13,5 +13,11 @@ async def search_diary_tool(context, date_str=None, keyword=None):
     logger.info(
         f"[ToolCall][search_diary] chat_id={context.chat_id} date_str={date_str} keyword={keyword}"
     )
-    result = await asyncio.to_thread(search_diary_fast, date_str, keyword)
+    result = await asyncio.to_thread(
+        search_diary_fast,
+        date_str,
+        keyword,
+        context.chat_id,
+        getattr(context, "mode", None),
+    )
     return ToolResult(success=True, content=result)

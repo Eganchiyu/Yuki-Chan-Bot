@@ -150,8 +150,54 @@ def test_search_diary_fast_uses_where_document(monkeypatch):
 
     assert "主人过生日" in by_date and "今天写代码" in by_date
     assert "Nothing Special" in by_kw
-    assert "没有找到" in missing
+    assert "没有相关记录" in missing
     assert calls and all("where_document" in c for c in calls)
+
+
+def _patch_diary_collection(monkeypatch, docs):
+    """docs: [(doc, metadata), ...] 注入 search_diary_fast 使用的假 collection。"""
+    entries = [(f"id{i}", d, m, 0.5) for i, (d, m) in enumerate(docs)]
+    collection = _FakeCollection(entries)
+    monkeypatch.setattr(
+        chromadb,
+        "PersistentClient",
+        type("C", (), {"__init__": lambda self, path=None: None, "get_collection": lambda self, name: collection}),
+    )
+    return collection
+
+
+def test_search_diary_fast_labels_and_soft_ratio(monkeypatch):
+    """本群/别的群标注 + 软比例（本群占多数、别的群少量），本群 0 命中时说明。"""
+    docs = [(f"【日记(2026-05-2{i} 10:00)】：本群聊了同一件事 {i}", {"chat_id": "10001"}) for i in range(10)]
+    docs += [(f"【日记(2026-06-0{i} 10:00)】：别的群也聊了同一件事 {i}", {"chat_id": "20002"}) for i in range(10)]
+    _patch_diary_collection(monkeypatch, docs)
+
+    out = maid_tools.search_diary_fast(keyword="同一件事", chat_id="10001", chat_mode="group")
+    local_lines = [l for l in out.splitlines() if "[本群] " in l]
+    other_lines = [l for l in out.splitlines() if "[群:20002] " in l]
+    assert len(local_lines) == maid_tools.DIARY_LOCAL_QUOTA
+    assert len(other_lines) == maid_tools.DIARY_OTHER_QUOTA
+
+    # 别的群记录很少时，名额软性让给本群
+    few_other = [(f"【日记(2026-05-2{i} 10:00)】：同一件事 {i}", {"chat_id": "10001"}) for i in range(6)]
+    few_other += [("【日记(2026-06-01 10:00)】：同一件事", {"chat_id": "20002"})]
+    _patch_diary_collection(monkeypatch, few_other)
+    out2 = maid_tools.search_diary_fast(keyword="同一件事", chat_id="10001", chat_mode="group")
+    assert len([l for l in out2.splitlines() if "[本群] " in l]) == 6
+    assert len([l for l in out2.splitlines() if "[群:20002] " in l]) == 1
+
+
+def test_search_diary_fast_no_local_or_no_records(monkeypatch):
+    """本群没有相关记录 → 只用别的群并说明；全无 → 没有相关记录。"""
+    docs = [("【日记(2026-06-01 10:00)】：别的群聊了潜水", {"chat_id": "20002"})]
+    _patch_diary_collection(monkeypatch, docs)
+    out = maid_tools.search_diary_fast(keyword="潜水", chat_id="10001", chat_mode="group")
+    assert "本群没有相关记录" in out
+    assert "[群:20002] " in out
+
+    _patch_diary_collection(monkeypatch, docs)
+    empty = maid_tools.search_diary_fast(keyword="完全无关的词", chat_id="10001", chat_mode="group")
+    assert empty.strip() == "没有相关记录。"
 
 
 # ==================== 跨轮召回缓存 (RecallCacheStore) & 小本本 (NotebookStore) ====================
