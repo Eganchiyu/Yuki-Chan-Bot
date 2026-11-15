@@ -283,8 +283,8 @@ CONCLUDE_REFLECTION_SPEC = ToolSpec(
     name="conclude_reflection",
     description=(
         "复盘落盘：决定这次独处思考的最终去向。"
-        "abandon=算了，什么都不做，安静回群；memo_only=只写一篇思考备忘录取进日记库；"
-        "start_work=写好备忘录后进入自己的工坊动手做。"
+        "abandon=什么都不做，保持这样就好啦，然后安静回群；memo_only=写一篇随笔感想记录到备忘录里；"
+        "start_work=有想要做的事情，写好备忘录后进入自己的工坊动手做。"
     ),
     parameters={
         "type": "object",

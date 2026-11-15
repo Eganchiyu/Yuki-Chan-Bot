@@ -89,7 +89,7 @@ async def build_digest(messages: list[dict], *, chat_id="") -> str:
             ],
             model=(cfg.autonomous.digest_model or None),
             temperature=0.3,
-            max_tokens=400,
+            max_tokens=4096,
         )
     except Exception as exc:
         logger.warning(f"[Catchup] 摘要模型失败，回落直拼: {exc}")
@@ -121,9 +121,9 @@ async def build_catchup_event(pipeline, chat_id) -> dict | None:
         return None
 
     content = (
-        f"【你刚才在「{group_label}」的独处时间里，群里发生了什么】\n"
+        f"【你翻了一下在你独处时间里的群聊消息，大概是这样的】\n"
         f"{digest}\n"
-        "（这些是你不在的时候发生的事，可以自然接话，也可以只挑一句感兴趣的问。）"
+        "（这些是你不在的时候发生的事，可以自然接话，也可以问问群友（或bot）刚才发生了什么有趣的事）"
     )
     logger.info(f"[Catchup] {cid} 补台 {len(real)} 条消息（{len(digest)} 字）")
     return {

@@ -34,7 +34,7 @@ WORKSHOP_PINNED = set(WORKSHOP_SANDBOX_TOOLS)
 ZERO_TOOL_NUDGE = (
     "你这一轮想做的事情完成了吗？想要回到群里吗？"
     "如果已经完成（或者打算先暂停留到下次再接续），请调用 work_finish 写下不超过 512 字的工作日志"
-    "并列出产物路径；如果还没做完，请继续调用工具推进。"
+    "，最好包含产物路径（如果有的话）；如果还没做完，请继续调用工具推进。"
 )
 BUDGET_REMINDER_TEMPLATE = (
     "\n\n[系统提醒：本轮自主工具调用已达 {used}/{limit} 次上限，请尽快整理当前进度并调用 work_finish 保存工作日志]"
