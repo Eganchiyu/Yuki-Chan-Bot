@@ -1,7 +1,7 @@
 # modules/autonomous/tools.py
 """沙盒专属工具：投票、复盘落盘、工作会话读写、工坊收尾。
 
-这些工具**不注册进主 registry**（见 docs/autonomous-sandbox-plan.md §2.1），
+这些工具**不注册进主 registry**（见 docs/autonomous-architecture.md §1、§3.5），
 只在沙盒自建的 registry 里出现，因此不会污染群聊模式的工具空间。
 """
 from __future__ import annotations

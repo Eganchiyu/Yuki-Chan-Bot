@@ -39,7 +39,7 @@ def _is_group_id(cid: str) -> bool:
 class ModeAwarePipeline(SessionPipeline):
     """SessionPipeline 的子类：入站统一先问路由，非聊天模式只入缓冲。
 
-    约束（docs/autonomous-sandbox-plan.md §3.4）：router 空闲时 `route()` 必然返回
+    约束（docs/autonomous-architecture.md §3.6）：router 空闲时 `route()` 必然返回
     `ROUTE_CHAT`，此时调用序列与父类完全一致，不额外建任务、不加锁。
     """
 

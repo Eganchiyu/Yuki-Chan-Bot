@@ -1,7 +1,7 @@
 # core/modes/base.py
 """模式层基类：模式能力声明 + 生命周期钩子。
 
-范式（docs/autonomous-sandbox-plan.md §3）：
+范式（docs/autonomous-architecture.md §1）：
 - 每群同一时刻只有一种模式；`chat` 模式仍是原来的 `SessionPipeline`。
 - 非聊天模式（debate / workshop）有自己的主循环，不发消息、不写群历史。
 - `focus`(phone/art) 不是模式，而是模式内的子状态。

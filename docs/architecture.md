@@ -58,6 +58,10 @@ Yuki 是基于 NapCat（OneBot 11 正向 WebSocket）的 QQ AI 助手。线上�
 │   │   ├── tools_rich.py        #   parse_rich_message (合并转发/小程序/JSON/XML 分页展开)
 │   │   ├── tools_media.py       #   download_file / generate_image (含固定人设参考图)
 │   │   └── tools_common.py      #   路径解析、昵称解析等工具共用函数
+│   ├── modes/                   # 模式层：每群单一模式 + 全局单活跃非聊天模式
+│   │   ├── base.py              #   Mode 基类 + ModeCapabilities 能力声明
+│   │   ├── router.py            #   ModeRouter：模式状态机/唯一体性/冻结与补台派发
+│   │   └── pipeline.py          #   ModeAwarePipeline：enqueue_message 唯一路由点
 │   └── maid/                    # 小女仆子代理系统 (Harness 后端)
 │       ├── maid.py              #   门面导出
 │       ├── maid_worker.py       #   消费 maid_task_queue，完成后写回历史并触发汇报回复
@@ -80,6 +84,17 @@ Yuki 是基于 NapCat（OneBot 11 正向 WebSocket）的 QQ AI 助手。线上�
 │   │   ├── image_store.py       #   近期图片短索引 [img:XXX] 与唯一附件 ID 映射
 │   │   └── cache.py             #   表情包识别缓存 (data/meme_cache.json)
 │   ├── shot_memory/             # 群聊截屏留念：live_buffer.py / renderer.py / store.py
+│   ├── autonomous/              # 自主轮沙盒（debate / workshop 两种非聊天模式）
+│   │   ├── coordinator.py       #   准入/调度/复盘/补台/冷场自动触发
+│   │   ├── inner_debate.py      #   Phase 1 双念头交锋（≤32 轮 + 双向投票）
+│   │   ├── workshop.py          #   Phase 3 自主执行工坊（≤60 步）
+│   │   ├── sandbox_loop.py      #   SilentSender / AdaptorHistory / 独立工具循环
+│   │   ├── storage.py           #   L1~L4 落盘 + 运行状态 + 日记采样
+│   │   ├── tools.py             #   inner_vote / conclude_reflection / work_finish 等
+│   │   ├── catchup.py           #   回群补台摘要
+│   │   ├── prompts.py           #   各阶段提示词（只读复用基础人设）
+│   │   ├── transcript.py        #   逐轮记录 logs/autonomous/<run_id>.jsonl
+│   │   └── inspect.py           #   WebUI /api/autonomous 快照
 │   ├── github_monitor/          # GitHub 仓库事件轮询与 Push 卡片渲染 (默认关闭)
 │   ├── qzone/                   # QQ 空间说说发布与动态监控 (监控默认关闭)
 │   └── debug/                   # ContextSnapshotStore 与只读 WebUI (端口 8777)
@@ -160,5 +175,7 @@ Yuki 是基于 NapCat（OneBot 11 正向 WebSocket）的 QQ AI 助手。线上�
 | LLM 请求、主备熔断、空回复重试、`thinking_effort`、DNS 池 | `utils/llm_client.py`、`utils/http_client.py` |
 | 小女仆任务派发、DSH 事件解析、重启后补报 | `core/maid/maid_harness.py`、`maid_worker.py`、`maid_resume.py` |
 | 小女仆人设、行为准则与自改文件协议 | `deploy/dsh-home/AGENTS.md`、`core/maid/maid_charter.py` |
+| 自主轮触发/准入/状态机、模式路由与冻结补台 | `modules/autonomous/coordinator.py`、`core/modes/router.py`、`docs/autonomous-architecture.md` |
+| 双念头交锋 / 自主执行工坊 / 五层记忆 | `modules/autonomous/inner_debate.py`、`workshop.py`、`storage.py` |
 | 宿主自改守护、独立模型审查、5 道校验门、网络看门狗 | `deploy/supervisor.py`、`reviewer.py`、`verify.sh`、`netwatch.py` |
 | 已下线功能（Live2D、NCM、聚焦模式、旧内置女仆循环等） | `_archive/README.md` 及对应子目录 |

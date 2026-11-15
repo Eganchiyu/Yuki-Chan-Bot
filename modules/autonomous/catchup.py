@@ -1,7 +1,7 @@
 # modules/autonomous/catchup.py
 """回群补台：把「你独处期间群里发生了什么」整理成一条系统注入消息。
 
-按量自动切（docs/autonomous-sandbox-plan.md §4.2）：
+按量自动切（docs/autonomous-architecture.md §3.7）：
 - ≤ catchup_summarize_threshold 条：代码直拼，零 LLM；
 - 更多：第三方 LLM 压成 ≤200 字（失败回落直拼最近 20 条）。
 """

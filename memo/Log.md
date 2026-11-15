@@ -717,3 +717,10 @@
   2. `_set_group_active` 增 `[Switch] <gid> 群应答开关 -> 开/休眠` 日志（以后能查到是谁关的）；
   3. `handle_catchup` 遇休眠群跳过注入（否则补台事件会被管线 pop 掉，冻结期消息白丢），消息留在缓冲区等 `/开启` 后随下一条消息处理。
 - 测试新增 2 项；全量 229 passed。
+
+## 2026-11-15 文档整合：自主轮单一事实源
+- 新增 `docs/autonomous-architecture.md`：范式与两模式能力表、触发逻辑（三条途径 + 准入优先级 + 自动触发全部前置条件）、一次 run 的完整运行链路（debate→复盘→workshop→收尾）、状态机（模式/阶段/L3 状态/零痕迹出口/冻结补台）、文件路径地图（模式层 553 行 + 沙盒层 3.2k 行 + 改动清单 + 数据文件 + 测试）、配置表、指令与观测、已知限制。
+- 按机主要求删除历史稿件 `docs/Autonomous Sandbox.md`（愿景/需求原声）与 `docs/autonomous-sandbox-plan.md`（施工规划 + 落地记录），内容已并入新文档，git 历史可查。
+- 代码注释里对旧文档的引用改指 `docs/autonomous-architecture.md`（base/pipeline/notebook/storage/catchup/tools/sandbox_loop）。
+- `docs/architecture.md` 目录树补 `core/modes/` 与 `modules/autonomous/`，速查表补两行。
+- 按机主要求本次未再跑全量测试（上次 229 passed，改动仅注释与文档）。

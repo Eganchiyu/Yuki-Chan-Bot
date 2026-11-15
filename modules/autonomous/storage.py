@@ -34,7 +34,7 @@ DAILY_MEMORY_PATH = os.path.join(DATA_DIR, "daily_work_memory.json")
 DAILY_MEMORY_ARCHIVE_DIR = os.path.join(DATA_DIR, "daily_work_memory_archive")
 GROUP_NAMES_PATH = os.path.join(DATA_DIR, "group_names.json")
 
-# 容量约束（对应设计文档 §7）
+# 容量约束（对应 docs/autonomous-architecture.md §5.4）
 WORK_LOG_MAX_CHARS = 512
 DAILY_MEMORY_MAX_CHARS = 1000
 WORK_DIARY_MIN_CHARS = 150

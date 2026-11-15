@@ -1,7 +1,7 @@
 # core/notebook.py
 """小本本：Yuki 自己长期维护的私密笔记。
 
-双区结构（docs/autonomous-sandbox-plan.md §6 L5）：
+双区结构（docs/autonomous-architecture.md §5.4 L5）：
 - `daily`（≤350 字）：日常群聊潜意识随记，由 `update_notebook` 维护；
 - `plans`（≤160 字）：长期规划路标，只放最活跃的 1~2 条自主轮任务指针。
 

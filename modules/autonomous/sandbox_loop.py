@@ -1,7 +1,7 @@
 # modules/autonomous/sandbox_loop.py
 """沙盒循环底座：静默发送器、内存历史适配器、独立 LLM 工具循环。
 
-三条铁律（docs/autonomous-sandbox-plan.md §2）：
+三条铁律（docs/autonomous-architecture.md §1、§3）：
 1. 非聊天模式不写真实会话历史 —— 走 `AdaptorHistory`（只读写内存流）；
 2. 不往群里发消息 —— 走 `SilentSender`（记录到 outbox 便于观察，不触网）；
 3. 工具视图自己算 —— 沙盒工具不注册进主 registry，`work_finish` 恒在可见集。
