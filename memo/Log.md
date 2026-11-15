@@ -695,3 +695,10 @@
 - `core/session_pipeline.py`：回复后若处于高涨且还有配额 → 注册 12s 短窗口被动回音，窗口到期自动注入「想再说几句」并扣配额；`core/prompts.py` 注入心情高涨引导。
 - `core/engine/engine_monitor.py`：`idle_diary_checker` 每 30s 调 `auto_trigger_check()`，自主轮进行中跳过日记巡检与破冰；`YukiEngine.autonomous` 由 `main.py` 装配。
 - 测试新增 9 项（补台直拼/摘要/回落、系统消息过滤、高涨加成与短窗口、L4 TTL+归档、自动触发白名单/配额/运行时覆盖、sweep_stale_runs）；全量 222 passed。
+
+## 2026-11-15 自主沙盒 P7（观测与收尾）
+- 新增 `modules/autonomous/inspect.py` + WebUI `GET /api/autonomous`：模式/阶段/墙钟、冻结群与缺席条数、日配额与冷却、L2/L3/L4/L5 快照、群运行时开关。
+- `deploy/verify.sh`：为 `output/`、`temp_images/`、`workspace/` 加 tmpfs（`output/assets` 另挂只读），修正两个原先依赖可写代码树的 art 测试（`custom_asset_dir` 改 tmp_path）。
+- `docs/autonomous-sandbox-plan.md` 追加「十三、实现落地记录」：文件职责、3 处与规划不同的口径、指令与上线开关、验证与残余风险。
+- 全量：`pytest tests -q` 223 passed；`deploy/verify.sh` 5 门 ALL_GATES_PASSED。
+- 状态：P0–P7 代码已落地，默认 `autonomous.enabled=false` 不影响线上；等待机主决定是否重启容器生效并跑人工验收（5 次 /深思）。

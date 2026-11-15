@@ -33,6 +33,10 @@ run_gate() {
         --tmpfs "$ROOT/yuki_memory":rw,size=256m \
         --tmpfs "$ROOT/memory":rw,size=64m \
         --tmpfs "$ROOT/logs":rw,size=64m \
+        --tmpfs "$ROOT/output":rw,size=128m \
+        -v "$ROOT/output/assets:$ROOT/output/assets:ro" \
+        --tmpfs "$ROOT/temp_images":rw,size=64m \
+        --tmpfs "$ROOT/workspace":rw,size=64m \
         --tmpfs /tmp:rw,size=256m \
         -e PYTHONPYCACHEPREFIX=/tmp/pycache \
         -e YUKI_DRY_RUN=1 \

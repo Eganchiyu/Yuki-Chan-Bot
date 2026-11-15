@@ -109,7 +109,8 @@ async def test_art_asset_crud_with_temp_store(tmp_path, monkeypatch):
     with open(src_img, "wb") as f:
         f.write(_TINY_PNG)
 
-    custom_asset_dir = os.path.join(tools_media.BASE_DIR, "output", "assets", "character", "_pytest_tmp")
+    # 落盘目录放临时目录：校验容器里代码树与 output/ 都是只读的
+    custom_asset_dir = str(tmp_path / "assets" / "character" / "_pytest_tmp")
     store = ArtAssetStore(
         json_path=str(tmp_path / "art_assets.json"),
         asset_dir=custom_asset_dir,
@@ -133,8 +134,8 @@ async def test_art_asset_crud_with_temp_store(tmp_path, monkeypatch):
         assert reg_res.success is True
         saved_asset = store.get("池宇健")
         assert saved_asset is not None
-        assert saved_asset["reference"].startswith("output/assets/character/_pytest_tmp/")
-        assert os.path.isfile(os.path.join(tools_media.BASE_DIR, saved_asset["reference"]))
+        assert os.path.dirname(saved_asset["reference"]) == custom_asset_dir
+        assert os.path.isfile(saved_asset["reference"])
 
         # 2. 修改描述
         upd_res = await art_asset_tool(

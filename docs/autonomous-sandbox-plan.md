@@ -492,3 +492,63 @@ WebUI `/api/autonomous`；把 §2 的 7 处修正合并回 `docs/autonomous-sand
 16. `test_diary_search_group_ratio_and_fallback`（7:3、本群 0 命中、全空三档）。
 17. `test_group_gate_whitelist`：白名单空 → 不触发且 `/深思` 拒绝；白名单含 A → 只 A 触发；
     `/自主轮 关` 的运行时覆盖优先于配置，且落盘后重启仍生效。
+
+---
+
+## 十三、实现落地记录（P0–P7 已完成）
+
+> 本节记录 v1 落地时的**实际口径**，与上文规划如有差异以此为准。代码入口：`core/modes/`（模式层）、`modules/autonomous/`（沙盒）。
+
+### 13.1 文件与职责
+
+| 文件 | 落地内容 |
+| --- | --- |
+| `core/modes/base.py` | `ModeCapabilities`（can_send / writes_chat_history / accepts_human_input / allow_sub_focus / triggers_diary / accepts_inner_event）+ `Mode` 基类（`run` / `on_input` / `on_inner_event` / `request_stop`） |
+| `core/modes/router.py` | 每群 `ModeState`、`_global_run` 唯一体性、`ROUTE_CHAT/MODE/FROZEN` 三态路由、冻结登记（`FrozenChat.messages`）、`deliver_inner_event`、`force_release`、`dispatch_catchups` |
+| `core/modes/pipeline.py` | `ModeAwarePipeline`：`enqueue_message` 唯一路由点；router 空闲时原样 `super()`；非 chat 模式只入缓冲；内部事件（小女仆汇报，含"只写历史不传 message_obj"的情形）投主循环；`handle_catchup` |
+| `modules/autonomous/sandbox_loop.py` | `SilentSender`（发送全部落 outbox，绝不触网）、`AdaptorHistory`（只读写内存流）、`SandboxLoop`（自算工具视图 `focus_view() | pinned`）、`SandboxDeps` |
+| `modules/autonomous/inner_debate.py` | 双念头交锋：≤`debate_max_rounds`、连续两步 agree+verdict 一致才收敛、三段式压力旁白、每 `debate_compress_every` 步压锚点卡（sub-LLM 失败回落代码截断）、满轮 `undecided` 交本尊 |
+| `modules/autonomous/workshop.py` | ≤`workshop_max_tool_calls`；提前 5 次在工具结果尾部附预算提醒；耗尽后 tools 只留 `work_finish`；零工具追问 ≤`zero_tool_max_retries` 后熔断并写 paused 兜底日志；小女仆汇报在每轮开头并入上下文 |
+| `modules/autonomous/coordinator.py` | 群级准入门禁（白名单 ∩ TARGET_GROUPS，运行时覆盖优先）、debate→reflect→workshop→chat、墙钟上限、`sweep_stale_runs`、`auto_trigger_check`、回群补台/心情高涨/破冰 |
+| `modules/autonomous/storage.py` | L1 memo（`MemoryRAG.save_memory(extra_metadata.type=autonomous_memo)`）、L2 `work_diary.jsonl`、L3 `work_sessions/`、L4 `daily_work_memory.json`、`autonomous_state.json`、`group_names.json`、`DiarySeedSampler` |
+| `modules/autonomous/tools.py` | 6 个沙盒工具（`inner_vote` / `conclude_reflection` / `list_recent_work_sessions` / `inspect_work_session` / `write_work_diary` / `work_finish`），只注册在沙盒自建 registry |
+| `modules/autonomous/catchup.py` | 冻结期消息 → 摘要（≤12 条直拼 / 更多 sub-LLM ≤200 字 / 失败回落最近 20 条）→ `is_catchup` 事件 |
+| `modules/autonomous/inspect.py` | WebUI `/api/autonomous` 快照（模式/阶段、配额、五层记忆摘要） |
+
+### 13.2 与规划不同的三处
+
+1. **补台注入走缓冲区**，不是直接写 `chat_history` + `process_callback`：冻结期间的消息由 `catchup.py` 从 `yuki.message_buffer` 取出并生成一条 `is_catchup` 合成消息，再交给父类 `enqueue_message` 正常跑一次回复。好处是不用处理"历史里已有一份、缓冲区又有一份"的重复上下文。
+2. **心情高涨的被动窗口复用 `reply_watch`**，但通过新增的 `min_timeout_seconds` + `event_builder` 注入自定义事件（`source=yuki.high_spirits`），而不是让 `reply_watch` 认识"高涨"概念。
+3. **`high_spirits_until` / `high_spirits_remaining_turns` 按 chat_id 记账**（dict），不再是单标量——同一时刻可能有多个群，全局标量会互相踩。
+
+### 13.3 现在能用的指令（主人限定）
+
+| 指令 | 作用 |
+| --- | --- |
+| `/深思` | 在当前群手动进入一次自主轮（白名单未开时会被拒并提示 `/自主轮 开`） |
+| `/自主轮 开` / `/自主轮 关` | 运行时开关（写 `data/autonomous_state.json` 的 `group_overrides`，优先级高于配置，重启后仍生效） |
+| `/工坊状态` | 当前模式/阶段、暂停中的工作会话与 512 字日志头、今日配额、上次结束时间 |
+| `/强制放行` | 逃生阀：请求当前模式尽快收尾，立刻恢复群聊 |
+
+### 13.4 上线开关（默认全关）
+
+```yaml
+autonomous:
+  enabled: false          # 总开关
+  enabled_groups: []      # 白名单；空 = 一个群都不开
+  auto_trigger_enabled: false
+```
+
+`/深思` 与自动触发共用同一个准入函数 `AutonomousCoordinator.is_group_enabled()`：
+
+```
+cfg.autonomous.enabled
+  and gid ∈ TARGET_GROUPS（若配置了）
+  and (运行时覆盖 or gid ∈ enabled_groups)
+```
+
+### 13.5 验证与残余风险
+
+- 离线：`tests/test_mode_router.py`（11 项）+ `tests/test_autonomous_sandbox.py`（25 项），`docker exec yuki python -m pytest tests -q` → 223 passed。
+- 校验门：`deploy/verify.sh` 5 门全绿（顺带把 `output/`、`temp_images/`、`workspace/` 改为 tmpfs，`output/assets` 只读挂载，修正两个原先依赖可写代码树的 art 测试）。
+- 残余风险：真实模型下的"防吹捧"效果、`work_finish` 是否会稳定调用、phone 子聚焦在沙盒里的稳定性，需要连续跑几次 `/深思` 才能验证（P2/P4 验收里的 5 次人工验收项）。

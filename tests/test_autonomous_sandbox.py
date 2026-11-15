@@ -72,6 +72,12 @@ def sandbox_data(tmp_path, monkeypatch):
     diary_store = storage.WorkDiaryStore(stores.diary.path)
     daily_store = storage.DailyWorkMemoryStore(stores.daily.path, stores.daily.archive_dir)
 
+    from core.notebook import NotebookStore
+
+    notebook_store = NotebookStore(str(tmp_path / "notebook.json"))
+    monkeypatch.setattr("core.notebook.notebook_store", notebook_store)
+    monkeypatch.setattr("modules.autonomous.coordinator.notebook_store", notebook_store, raising=False)
+
     monkeypatch.setattr("modules.autonomous.tools.work_session_store", session_store)
     monkeypatch.setattr("modules.autonomous.tools.work_diary_store", diary_store)
     monkeypatch.setattr("modules.autonomous.tools.daily_memory_store", daily_store)
@@ -625,3 +631,58 @@ async def test_sweep_stale_runs_marks_session_paused(sandbox_data, monkeypatch):
     record = sandbox_data.session_store.load("sess_stale_01")
     assert record["status"] == "paused" and "自动暂停" in record["work_log"]
     assert sandbox_data.state_store.get_active_mode() == {}
+
+
+# ==================== 全链路：debate → 复盘 → 工坊 ====================
+
+async def test_full_run_start_work_enters_workshop(sandbox_data, monkeypatch):
+    _enable_autonomous(monkeypatch)
+    gid = str(cfg.TARGET_GROUPS[0]) if cfg.TARGET_GROUPS else "1057020972"
+    monkeypatch.setattr(cfg.autonomous, "debate_max_rounds", 6)
+    monkeypatch.setattr(cfg.autonomous, "workshop_max_tool_calls", 5)
+
+    script = [
+        vote("start_work", note="想写一篇《雪夜电台》"),
+        vote("start_work", note="先写第一章"),
+        {"content": "好，那我先动手。", "tool_calls": [tool_call(
+            "conclude_reflection", action="start_work", title="雪夜电台",
+            memo_content="想把上周聊的深夜电台写成短篇。",
+            work_diary_entry="今晚先写第一章。",
+            notebook_pointer="[sess] 雪夜电台第一章待写",
+        )]},
+        {"content": "先建个目录", "tool_calls": [tool_call("bash", command="mkdir -p workspace/novels")]},
+        {"content": "写完第一章", "tool_calls": [tool_call(
+            "work_finish", status="paused",
+            work_log="写了《雪夜电台》第一章约1800字，存在 workspace/novels/snow_radio_ch1.md，下次写第二章。",
+            artifacts=["workspace/novels/snow_radio_ch1.md"],
+        )]},
+    ]
+    llm = ScriptedLLM(script)
+    monkeypatch.setattr("modules.autonomous.sandbox_loop.llm_chat_raw", llm)
+
+    memo_calls = []
+    monkeypatch.setattr(
+        "modules.autonomous.coordinator.save_autonomous_memo",
+        lambda reflection, chat_id, session_id, kind="memo": memo_calls.append(reflection) or "mem_x",
+    )
+
+    pipeline = FakePipeline()
+    coordinator = AutonomousCoordinator(pipeline)
+    result = await coordinator._run(gid, trigger="manual", goal="", mode_arg="group",
+                                   notify_master=False)
+    assert result["outcome"] == "start_work"
+
+    sessions = sandbox_data.session_store.list()
+    assert sessions and sessions[0]["status"] == "paused"
+    record = sandbox_data.session_store.load(sessions[0]["session_id"])
+    assert record["artifacts"] == ["workspace/novels/snow_radio_ch1.md"]
+    assert "第二章" in record["work_log"]
+    assert memo_calls and memo_calls[0]["title"] == "雪夜电台"
+    assert "雪夜电台" in sandbox_data.daily_store.text() or record["work_log"][:8] in sandbox_data.daily_store.text()
+    assert pipeline.mode_router.is_idle()
+    pipeline.sender.send.assert_not_called()
+
+    from core.notebook import notebook_store
+
+    assert "雪夜电台" in notebook_store.load_zone("plans")
+    assert notebook_store.load_zone("daily") == ""      # 测试不碰真实小本本日常区

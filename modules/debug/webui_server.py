@@ -2616,6 +2616,14 @@ class ContextDebugRequestHandler(BaseHTTPRequestHandler):
                 self._send_json(context_snapshot_store.analytics())
             elif path == "/api/yuki/state":
                 self._send_json(context_snapshot_store.yuki_runtime_state())
+            elif path == "/api/autonomous":
+                limit = int((query.get("limit") or [10])[0])
+                try:
+                    from modules.autonomous.inspect import autonomous_snapshot
+
+                    self._send_json(autonomous_snapshot(limit=limit))
+                except Exception as exc:
+                    self._send_json({"ok": False, "error": str(exc)}, 500)
             elif path == "/api/snapshots":
                 limit = int((query.get("limit") or [50])[0])
                 chat_id = (query.get("chat_id") or [None])[0]
