@@ -761,3 +761,14 @@
 - 测试：`tests/test_art_focus.py` 适配（提交后 `await art_gen_store.wait()` 校验参数、自动发图与汇报注入、force_reply 触发）；`tests/test_reply_format.py` 断言工具轮正文 `sender.sent == []` 且历史 `sent_realtime=False`。全量 `pytest tests -q` **225 passed**，`deploy/verify.sh` ALL_GATES_PASSED。
 - 状态：改动已提交（df4f1e9）；容器需重启生效。
 - 追加（01f6362）：`【画图失败】` 汇报现在包含「原因」（上游异常压成一行、400 字截断）、「错误码」（`ToolResult.error`）与按码给出的「怎么办」提示（`_failure_hint`：缺 Key / 缺 prompt / 参考图失效或过期 / 资产名不对 / 模型不支持参考图 / 读图失败 / 模型没吐图 / 兜底换说法重试）。测试新增 `test_art_draw_failure_report_explains_reason`，全量 **231 passed**。
+
+## 2026-11-15 小女仆并行 + 强制叫停
+- 新增 `core/maid/maid_runtime.py`：`MaidRuntime` 会话内编号（#1 #2…）、并行登记、`request_cancel()`。
+- `maid_worker` 改为每任务一个协程，最多 `MAID_MAX_CONCURRENT`（env `YUKI_MAID_CONCURRENCY`，默认 3）并行；`maid_current_tasks` / `maid_active_chats` 仍按会话维护以兼容 /查询、重启通知。
+- 新工具 `stop_maid`（不带参=本会话全部；`task_id` 编号或 `keyword`）：取消容器侧协程 + 写 `tasks/dsh/<id>/cancel.request`；被叫停任务不写历史、不汇报，并打 `reported.ok` 让补报巡检跳过；harness 被取消时兜底补写取消标记。
+- `deploy/maid_runner.py`：单并发 → 并发池（`YUKI_MAID_CONCURRENCY`，默认 3）；启动前见 cancel.request 直接落 cancelled 不拉起 dsh；运行中每 0.5s 查标记并 SIGKILL 进程组（事件读取改读线程 + 队列）。
+- `build_chat_context`：本会话有任务在跑时，最后一条 user 消息前置 `【任务进行中】#1「…」…要叫停就用 stop_maid`。
+- 测试：`tests/test_maid.py` +5（并行、叫停不汇报、登记/匹配、工具、上下文注入），容器内全量 `pytest tests -q` = 231 passed。
+- 离线演练 runner：3 任务真并发完成、启动前取消跳过、运行中取消 2.0s 内 SIGKILL 且无残留进程。
+- 状态：代码已提交（3c4e9a3）。**待机主**：`sudo systemctl restart yuki-maid-runner`（宿主侧改动生效）+ 重启容器（Yuki 进程加载新代码），本次会话内无 sudo 密码未执行。
+- 备注：工作树里另有上个 session 未提交的「心情高涨连发护栏」改动（config.py / engine_decision.py / reply_watch.py / session_pipeline.py / autonomous/* / brain.py / prompts.py / test_pipeline.py），本次未触碰、未提交。
