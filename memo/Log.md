@@ -665,3 +665,10 @@
 - `core/session_pipeline.py` 抽出 `_buffer_incoming()` 供模式层复用；`IncomingMessage` 增 `is_catchup`/`is_maid_report`/`is_system_injected`；`prepare_message_batch` 识别补台强制回复；`history_filter` 不再把补台/小女仆汇报算聊天轮次。
 - `main.py` 换用 `ModeAwarePipeline`（`main_process` 未改）。
 - 测试：新增 `tests/test_mode_router.py`（11 项）；全量 `197 passed`。
+
+## 2026-11-15 自主沙盒 P2（debate 模式内核 + /深思）
+- 新增 `modules/autonomous/{sandbox_loop,prompts,tools,inner_debate,mode_impl,coordinator}.py`：`SilentSender`（不发群）、`AdaptorHistory`（只写内存流）、`SandboxLoop`（独立 LLM 工具循环 + 自算工具视图 `focus_view()|pinned`）、`SandboxState`（投票/复盘/工作日志）、6 个沙盒工具（`inner_vote`/`conclude_reflection`/`list_recent_work_sessions`/`inspect_work_session`/`write_work_diary`/`work_finish`）。
+- debate：≤32 轮、连续两步 agree+verdict 一致才收敛、三段式压力旁白、每 N 步压锚点卡（sub-LLM 失败回落代码截断）、满轮转 `undecided` 交本尊复盘。
+- coordinator：群级准入门禁（白名单∩TARGET_GROUPS，运行时覆盖优先）、debate→reflect→(workshop)→chat、墙钟上限强制收尾、退出统一 `router.exit`+`focus_manager.abort`+补台派发+心情高涨标记，`sweep_stale_runs` 清理重启残留。
+- `main.py` 装配 coordinator 并 `init_data_dir()`；`listen_main.py` 新增 `/深思` `/工坊状态` `/强制放行` `/自主轮 开|关`（master 限定，私聊可用状态与放行）。
+- 测试：`tests/test_autonomous_sandbox.py` 9 项（投票收敛/轮数上限/压缩/强制停止/准入/do_nothing 零痕迹/memo_only 落盘/chat_history 零污染）；全量 206 passed。

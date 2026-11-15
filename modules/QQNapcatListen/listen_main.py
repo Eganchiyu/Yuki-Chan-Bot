@@ -387,6 +387,86 @@ def handle_force_close_command(gateway, pipeline, group_id, gid_str, raw_msg) ->
     return True
 
 
+AUTONOMOUS_COMMANDS = ("/深思", "/工坊状态", "/强制放行", "/自主轮")
+
+
+def _autonomous(pipeline):
+    return getattr(pipeline, "autonomous", None)
+
+
+def handle_autonomous_command(pipeline, gateway, chat_id, gid_str, user_id, raw_msg,
+                              send_mode: str = "group") -> bool:
+    """处理 /深思、/工坊状态、/强制放行、/自主轮 开|关（主人限定）。"""
+    msg_clean = raw_msg.strip()
+    head = msg_clean.split()[0] if msg_clean else ""
+    if head not in AUTONOMOUS_COMMANDS:
+        return False
+
+    coordinator = _autonomous(pipeline)
+    if coordinator is None:
+        asyncio.create_task(gateway.send(chat_id, "自主轮还没装好哦～", mode=send_mode))
+        return True
+
+    if not cfg.is_master_qq(user_id):
+        asyncio.create_task(
+            gateway.send(chat_id, "只有哥哥大人才能安排我一个人的时间哦！", mode=send_mode)
+        )
+        return True
+
+    if head == "/工坊状态":
+        text = coordinator.status_text(gid_str)
+        asyncio.create_task(gateway.send(chat_id, text, mode=send_mode))
+        logger.info(f"[Autonomous] {gid_str} 状态查询 by {user_id}")
+        return True
+
+    if head == "/强制放行":
+        result = coordinator.force_release(gid_str)
+        text = (
+            "好，我马上回来～" if result.get("ok")
+            else "现在没有在独处哦，群里照常。"
+        )
+        asyncio.create_task(gateway.send(chat_id, text, mode=send_mode))
+        logger.warning(f"[Autonomous] {gid_str} 强制放行 by {user_id}: {result}")
+        return True
+
+    if head == "/自主轮":
+        parts = msg_clean.split()
+        action = parts[1] if len(parts) > 1 else ""
+        if action not in {"开", "关"}:
+            asyncio.create_task(
+                gateway.send(chat_id, "用法：/自主轮 开 或 /自主轮 关", mode=send_mode)
+            )
+            return True
+        from modules.autonomous.storage import state_store
+
+        state_store.set_group_override(gid_str, action == "开")
+        if action == "关":
+            coordinator.force_release(gid_str)
+            text = "这个群的自主轮关掉啦，以后不会自己跑去独处了。"
+        else:
+            text = "好，这个群以后我可以自己去待一会儿想事情啦～"
+        asyncio.create_task(gateway.send(chat_id, text, mode=send_mode))
+        logger.warning(f"[Autonomous] {gid_str} 运行时开关 -> {action} by {user_id}")
+        return True
+
+    # /深思
+    async def _start_deep_think():
+        result = await coordinator.start_run(gid_str, trigger="manual", mode_arg="group")
+        if result.get("ok"):
+            await gateway.send(
+                chat_id,
+                "嗯…我去一个人的地方待一会儿，翻翻日记想想事情。这段时间群里我先不说话，"
+                "想完了会把想到的东西拿回来给你看。",
+                mode=send_mode,
+            )
+        else:
+            await gateway.send(chat_id, str(result.get("reason") or "现在不太方便"), mode=send_mode)
+
+    asyncio.create_task(_start_deep_think())
+    logger.warning(f"[Autonomous] {gid_str} /深思 by {user_id}")
+    return True
+
+
 def handle_group_switch(pipeline, gateway, group_id, gid_str, user_id, raw_msg):
     """处理群聊开关/重启/刷新/切换指令，返回 True 表示已拦截。"""
     msg_clean = raw_msg.strip()
@@ -424,6 +504,10 @@ def handle_group_switch(pipeline, gateway, group_id, gid_str, user_id, raw_msg):
 def handle_private_command(gateway, pipeline, user_id, raw_msg) -> bool:
     """私聊侧指令：/刷新、/切换、/查询（/开启 /关闭 /重启 仍只在群里生效）。"""
     msg_clean = raw_msg.strip()
+    if msg_clean in {"/工坊状态", "/强制放行"}:
+        return handle_autonomous_command(
+            pipeline, gateway, user_id, "", user_id, msg_clean, send_mode="private"
+        )
     if msg_clean not in {"/刷新", "/切换", "/查询", "/状态", "/status"}:
         return False
 
@@ -560,6 +644,10 @@ async def napcat_listen(gateway, pipeline, mode: str = "mixed"):
                     if handle_status_command(gateway, pipeline, group_id, gid_str, user_id, raw_msg):
                         continue
                     if handle_force_close_command(gateway, pipeline, group_id, gid_str, raw_msg):
+                        continue
+                    if handle_autonomous_command(
+                        pipeline, gateway, group_id, gid_str, user_id, raw_msg
+                    ):
                         continue
                     if handle_group_switch(pipeline, gateway, group_id, gid_str, user_id, raw_msg):
                         continue

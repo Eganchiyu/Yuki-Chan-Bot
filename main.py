@@ -12,6 +12,8 @@ from core.engine.engine import YukiEngine
 from core.history_manager import HistoryManager
 from core.prompts import sync_system_prompts
 from core.modes import ModeAwarePipeline, router as mode_router
+from modules.autonomous import init_data_dir
+from modules.autonomous.coordinator import AutonomousCoordinator
 from init import load_group_state
 from modules.QQNapcatListen.listen_main import napcat_listen
 from modules.vision.processor import MemeProcessor
@@ -322,6 +324,10 @@ if __name__ == "__main__":
         components = initialize_components()
         session_pipeline = ModeAwarePipeline(components, group_active_state, mode_router)
         components["engine"].process_callback = main_process
+        init_data_dir()
+        session_pipeline.autonomous = AutonomousCoordinator(session_pipeline, router=mode_router)
+        if not is_dry_run():
+            session_pipeline.autonomous.sweep_stale_runs()
         start_health_probe(components)
         if not is_dry_run():
             start_context_debug_webui_if_enabled()
