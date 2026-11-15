@@ -760,3 +760,4 @@
 - 配套：`history_filter.is_art_report` 不计入聊天轮次；`art_start` 指南第 4 条与 `art_draw` 工具描述改成异步口径（不要空等、不要重复 send_qq_file）；`_art_stub` 支持任务号。
 - 测试：`tests/test_art_focus.py` 适配（提交后 `await art_gen_store.wait()` 校验参数、自动发图与汇报注入、force_reply 触发）；`tests/test_reply_format.py` 断言工具轮正文 `sender.sent == []` 且历史 `sent_realtime=False`。全量 `pytest tests -q` **225 passed**，`deploy/verify.sh` ALL_GATES_PASSED。
 - 状态：改动已提交（df4f1e9）；容器需重启生效。
+- 追加（01f6362）：`【画图失败】` 汇报现在包含「原因」（上游异常压成一行、400 字截断）、「错误码」（`ToolResult.error`）与按码给出的「怎么办」提示（`_failure_hint`：缺 Key / 缺 prompt / 参考图失效或过期 / 资产名不对 / 模型不支持参考图 / 读图失败 / 模型没吐图 / 兜底换说法重试）。测试新增 `test_art_draw_failure_report_explains_reason`，全量 **231 passed**。
