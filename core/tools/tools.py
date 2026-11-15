@@ -241,12 +241,22 @@ TOOL_SPECS = [
         name="update_notebook",
         description=(
             "用来更新小本本。你会在情绪高涨、想更新信念、记录重要的人或事，或者想写下长期目标时使用。你可以使用符合自己风格的第一人称口吻来书写。"
-            "每次调用会覆盖小本本原有内容（最多512字符），**要保留的内容请一起写进去。**"
+            "小本本分两个区：日常随记区（zone=daily，最多350字）与长期规划路标区（zone=plans，最多160字，只放最活跃的1~2条任务指针）。"
+            "每次调用只覆盖所写分区，**该区要保留的内容请一起写进去。**"
         ),
         parameters={
             "type": "object",
             "properties": {
-                "content": {"type": "string", "description": "小本本的完整内容（最多512字符）"},
+                "content": {
+                    "type": "string",
+                    "description": "该分区的完整内容（日常随记区最多350字符，长期规划区最多160字符）",
+                },
+                "zone": {
+                    "type": "string",
+                    "enum": ["daily", "plans"],
+                    "description": "daily=日常随记区（默认）；plans=长期规划路标区（只放最活跃的 1~2 条任务指针）",
+                    "default": "daily",
+                },
             },
             "required": ["content"],
         },

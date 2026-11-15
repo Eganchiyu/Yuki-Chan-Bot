@@ -464,6 +464,12 @@ class GroupNameCache:
             return str(cached)
         return DEFAULT_GROUP_NAME_FALLBACK.format(gid=gid)
 
+    def label(self, chat_id) -> str:
+        """给日记归属标注用：有群名用群名，没有就用群号。"""
+        gid = str(chat_id)
+        cached = self._load().get(gid)
+        return str(cached) if cached else gid
+
     def remember(self, chat_id, name: str) -> None:
         gid, value = str(chat_id), str(name or "").strip()
         if not gid or not value:

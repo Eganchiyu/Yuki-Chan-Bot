@@ -1,5 +1,13 @@
 # core/notebook.py
-"""小本本：Yuki 自己长期维护的私密笔记，最多 512 字。"""
+"""小本本：Yuki 自己长期维护的私密笔记。
+
+双区结构（docs/autonomous-sandbox-plan.md §6 L5）：
+- `daily`（≤350 字）：日常群聊潜意识随记，由 `update_notebook` 维护；
+- `plans`（≤160 字）：长期规划路标，只放最活跃的 1~2 条自主轮任务指针。
+
+旧格式只有 `content` 一个字段，读取时回落为 `daily`，写入时同步维护 `content`
+保持向后兼容（旧代码仍可 `load()` 拿到整本）。
+"""
 import json
 import os
 import threading
@@ -10,7 +18,14 @@ from utils.logger import get_logger
 logger = get_logger("notebook")
 
 NOTEBOOK_MAX_CHARS = 512
+NOTEBOOK_DAILY_MAX_CHARS = 350
+NOTEBOOK_PLANS_MAX_CHARS = 160
 DEFAULT_NOTEBOOK_PATH = os.path.join(BASE_DIR, "data", "notebook.json")
+
+ZONE_LIMITS = {
+    "daily": NOTEBOOK_DAILY_MAX_CHARS,
+    "plans": NOTEBOOK_PLANS_MAX_CHARS,
+}
 
 
 class NotebookStore:
@@ -20,34 +35,98 @@ class NotebookStore:
         self.path = os.path.abspath(path)
         self._lock = threading.Lock()
 
-    def load(self) -> str:
-        """读取小本本内容，文件不存在或损坏时返回空字符串。"""
+    # ------------------------------------------------------------ 读
+    def _load_raw(self) -> dict:
         if not os.path.exists(self.path):
-            return ""
+            return {}
         with self._lock:
             try:
                 with open(self.path, "r", encoding="utf-8") as f:
                     data = json.load(f)
             except Exception as e:
                 logger.warning(f"[Notebook] 读取失败: {e}")
-                return ""
-        content = data.get("content") if isinstance(data, dict) else data
-        return str(content or "")[:NOTEBOOK_MAX_CHARS]
+                return {}
+        if isinstance(data, dict):
+            return data
+        return {"content": data} if isinstance(data, str) else {}
 
-    def save(self, content: str) -> str:
-        """覆盖写入小本本，超长部分截断到 512 字，返回实际保存的内容。"""
-        content = str(content or "").strip()
-        truncated = len(content) > NOTEBOOK_MAX_CHARS
-        content = content[:NOTEBOOK_MAX_CHARS]
+    def load_zones(self) -> dict:
+        """返回 {"daily": str, "plans": str}，旧格式自动回落。"""
+        data = self._load_raw()
+        legacy = str(data.get("content") or "")
+        daily = data.get("daily")
+        plans = data.get("plans")
+        if daily is None:
+            daily = legacy
+        return {
+            "daily": str(daily or "")[:NOTEBOOK_DAILY_MAX_CHARS],
+            "plans": str(plans or "")[:NOTEBOOK_PLANS_MAX_CHARS],
+        }
+
+    def load_zone(self, zone: str = "daily") -> str:
+        zone = zone if zone in ZONE_LIMITS else "daily"
+        return self.load_zones()[zone]
+
+    def load(self) -> str:
+        """兼容旧接口：返回整本小本本的可见文本（日常随记 + 长期路标）。"""
+        return self.render()
+
+    def render(self) -> str:
+        """整本可见文本（≤512 字）；空间不够时优先保住长期规划区。"""
+        zones = self.load_zones()
+        daily, plans = zones["daily"], zones["plans"]
+        if not plans:
+            return daily[:NOTEBOOK_MAX_CHARS]
+        tail = f"\n【长期规划】{plans}"
+        budget = NOTEBOOK_MAX_CHARS - len(tail)
+        if budget > 0:
+            return daily[:budget] + tail
+        return tail[:NOTEBOOK_MAX_CHARS]
+
+    # ------------------------------------------------------------ 写
+    def _write(self, zones: dict) -> None:
         os.makedirs(os.path.dirname(self.path), exist_ok=True)
+        daily = str(zones.get("daily") or "")[:NOTEBOOK_DAILY_MAX_CHARS]
+        plans = str(zones.get("plans") or "")[:NOTEBOOK_PLANS_MAX_CHARS]
+        payload = {
+            "version": 2,
+            "daily": daily,
+            "plans": plans,
+            # 旧字段保留整本可见文本，避免旧代码/旧数据读到空
+            "content": "\n".join(p for p in [
+                daily,
+                f"【长期规划】{plans}" if plans else "",
+            ] if p)[:NOTEBOOK_MAX_CHARS],
+        }
         temp_file = f"{self.path}.tmp"
         with self._lock:
             with open(temp_file, "w", encoding="utf-8") as f:
-                json.dump({"content": content}, f, ensure_ascii=False, indent=2)
+                json.dump(payload, f, ensure_ascii=False, indent=2)
             os.replace(temp_file, self.path)
+
+    def save(self, content: str) -> str:
+        """覆盖写入「日常随记区」（兼容旧接口），长期路标区保持不变。"""
+        content = str(content or "").strip()
+        truncated = len(content) > NOTEBOOK_DAILY_MAX_CHARS
+        zones = self.load_zones()
+        zones["daily"] = content[:NOTEBOOK_DAILY_MAX_CHARS]
+        self._write(zones)
         if truncated:
-            logger.info(f"[Notebook] 内容超长已截断到 {NOTEBOOK_MAX_CHARS} 字")
-        return content
+            logger.info(f"[Notebook] 日常随记超长已截断到 {NOTEBOOK_DAILY_MAX_CHARS} 字")
+        return zones["daily"]
+
+    def save_zone(self, zone: str, content: str) -> str:
+        """覆盖写入指定分区，返回实际保存的内容。"""
+        zone = zone if zone in ZONE_LIMITS else "daily"
+        limit = ZONE_LIMITS[zone]
+        content = str(content or "").strip()
+        truncated = len(content) > limit
+        zones = self.load_zones()
+        zones[zone] = content[:limit]
+        self._write(zones)
+        if truncated:
+            logger.info(f"[Notebook] {zone} 区超长已截断到 {limit} 字")
+        return zones[zone]
 
 
 notebook_store = NotebookStore()

@@ -672,3 +672,10 @@
 - coordinator：群级准入门禁（白名单∩TARGET_GROUPS，运行时覆盖优先）、debate→reflect→(workshop)→chat、墙钟上限强制收尾、退出统一 `router.exit`+`focus_manager.abort`+补台派发+心情高涨标记，`sweep_stale_runs` 清理重启残留。
 - `main.py` 装配 coordinator 并 `init_data_dir()`；`listen_main.py` 新增 `/深思` `/工坊状态` `/强制放行` `/自主轮 开|关`（master 限定，私聊可用状态与放行）。
 - 测试：`tests/test_autonomous_sandbox.py` 9 项（投票收敛/轮数上限/压缩/强制停止/准入/do_nothing 零痕迹/memo_only 落盘/chat_history 零污染）；全量 206 passed。
+
+## 2026-11-15 自主沙盒 P3（记忆层收口）
+- `core/notebook.py` 双区化：`daily`(≤350)+`plans`(≤160)，`load_zones/load_zone/save_zone/render`，旧 `content` 自动回落 daily、写回时同步旧字段；`render()` ≤512 且优先保住长期规划区。
+- `core/tools/tools_notebook.py` + `update_notebook` spec 新增 `zone=daily|plans`；`core/prompts.py` 按双区渲染小本本，并新增「今日独处工作记忆」槽位（读 L4 `daily_work_memory_store.text()`，失败静默跳过）。
+- 日记归属标注改用群名缓存：`core/maid/maid_tools.py::_diary_labels` 走 `group_name_cache.label()`，取不到群名回落群号。
+- 说明：§5 的「软比例 7:3 + 群标 + 三档降级话术」在 7aed820 已落地（`search_diary_fast` 内实现）；`MemoryRAG.search_diaries` 的群归属只做排序加权，未再加名额硬切分（避免动 chat 热路径）。
+- 测试：更新 notebook 双区/旧格式迁移断言；全量 207 passed。

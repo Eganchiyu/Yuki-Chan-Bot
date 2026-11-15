@@ -228,14 +228,36 @@ def test_recall_cache_persistence_and_pipeline_merge(tmp_path, monkeypatch):
 
 
 def test_notebook_store_roundtrip_and_truncation(tmp_path):
-    """NotebookStore 支持空文件默认、超长截断到 512 字以及损坏 JSON 容错。"""
+    """NotebookStore 支持空文件默认、双区截断（日常350/路标160）以及损坏 JSON 容错。"""
+    from core.notebook import NOTEBOOK_DAILY_MAX_CHARS, NOTEBOOK_PLANS_MAX_CHARS
+
     nb_path = tmp_path / "notebook.json"
     store = NotebookStore(path=str(nb_path))
     assert store.load() == ""
 
-    saved = store.save("A" * (NOTEBOOK_MAX_CHARS + 50))
-    assert len(saved) == NOTEBOOK_MAX_CHARS
-    assert store.load() == "A" * NOTEBOOK_MAX_CHARS
+    saved = store.save("A" * (NOTEBOOK_DAILY_MAX_CHARS + 50))
+    assert len(saved) == NOTEBOOK_DAILY_MAX_CHARS
+    assert store.load() == "A" * NOTEBOOK_DAILY_MAX_CHARS
+
+    plans = store.save_zone("plans", "B" * (NOTEBOOK_PLANS_MAX_CHARS + 10))
+    assert len(plans) == NOTEBOOK_PLANS_MAX_CHARS
+    zones = store.load_zones()
+    assert zones["plans"] == "B" * NOTEBOOK_PLANS_MAX_CHARS
+    assert zones["daily"] == "A" * NOTEBOOK_DAILY_MAX_CHARS
+    # 整本可见文本仍不超过 512 字上限
+    assert len(store.render()) <= NOTEBOOK_MAX_CHARS
 
     nb_path.write_text("{corrupted json", encoding="utf-8")
     assert store.load() == ""
+
+
+def test_notebook_legacy_content_migrates_to_daily(tmp_path):
+    """旧格式 {"content": ...} 读取时回落为日常随记区。"""
+    import json as _json
+
+    nb_path = tmp_path / "notebook.json"
+    nb_path.write_text(_json.dumps({"content": "旧版随手记"}, ensure_ascii=False), encoding="utf-8")
+    store = NotebookStore(path=str(nb_path))
+    assert store.load_zones() == {"daily": "旧版随手记", "plans": ""}
+    store.save_zone("plans", "长期目标")
+    assert store.load_zones() == {"daily": "旧版随手记", "plans": "长期目标"}

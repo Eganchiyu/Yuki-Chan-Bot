@@ -179,6 +179,16 @@ def _normalize_for_dedup(text):
     return text
 
 
+def _today_work_memory() -> str:
+    """读取有效的今日工作记忆（≤1000 字）；不可用时返回空串。"""
+    try:
+        from modules.autonomous.storage import daily_memory_store
+
+        return daily_memory_store.text()
+    except Exception:
+        return ""
+
+
 async def build_chat_context(yuki, chat_id: str, combined_text: str, history_dict: dict, mode,
                              relevant_diaries, ice_break: bool = False):
     # 这里的 diary 现在是字典，我们要取出 ['content']
@@ -201,16 +211,35 @@ async def build_chat_context(yuki, chat_id: str, combined_text: str, history_dic
         # 打印加权分和匹配到的关键词信息
         logger.debug(f"[RAG-Debug] 回忆 {i} | 得分: {diary_obj['score']:.2f} | 详情: {diary_obj['debug']}")
 
-    # 2.5 插入小本本：日记回忆之后、群聊上下文之前，作为潜意识想法
-    notebook_content = notebook_store.load()
-    if notebook_content:
+    # 2.5 插入小本本：日记回忆之后、群聊上下文之前，作为潜意识想法（上下双区）
+    zones = notebook_store.load_zones() if hasattr(notebook_store, "load_zones") else {
+        "daily": notebook_store.load(), "plans": ""
+    }
+    notebook_parts = []
+    if zones.get("daily"):
+        notebook_parts.append(zones["daily"])
+    if zones.get("plans"):
+        notebook_parts.append(f"【长期规划路标】{zones['plans']}")
+    if notebook_parts:
         combined_API_message.append({
             "role": "system",
             "content": (
                 "【小本本】(这是只有你能看到的小本本，也是你的潜意识想法。"
                 "不要在回复中反复提及小本本或复述和引用里面的原话，"
                 "也不要让它变成聊天话题，只在心里默默作为判断和行动的底色哦！)\n"
-                f"{notebook_content}"
+                + "\n".join(notebook_parts)
+            ),
+        })
+
+    # 2.6 今日独处工作记忆：她今天自己做了什么、产物在哪（自主轮回群后常驻）
+    today_work = _today_work_memory()
+    if today_work:
+        combined_API_message.append({
+            "role": "system",
+            "content": (
+                "【今日独处工作记忆（今天你自己做的事情与产物）】\n"
+                f"{today_work}\n"
+                "（这些是你自己做的，不用主动汇报；群里聊到相关话题时自然接上就好。）"
             ),
         })
 

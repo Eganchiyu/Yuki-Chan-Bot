@@ -14,7 +14,12 @@ def _diary_labels(chat_id, chat_mode):
     def other_label(cid):
         if not cid or cid in ("None", "manual_record"):
             return "[群:未标注]"
-        return f"[群:{cid}]"
+        try:
+            from modules.autonomous.storage import group_name_cache
+
+            return f"[群:{group_name_cache.label(cid)}]"
+        except Exception:
+            return f"[群:{cid}]"
 
     return local_label, other_label
 
