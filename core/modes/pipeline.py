@@ -18,6 +18,24 @@ from utils.logger import get_logger
 logger = get_logger("modes.pipeline")
 
 
+def catchup_mode(chat_id) -> str:
+    """补台要按会话类型走对模式：主人私聊 / 普通私聊 / 群聊。"""
+    cid = str(chat_id)
+    try:
+        if cid in {str(q) for q in cfg.MASTER_QQS}:
+            return "master_private"
+    except Exception:
+        pass
+    return "group" if cid.isdigit() and len(cid) >= 6 and _is_group_id(cid) else "private"
+
+
+def _is_group_id(cid: str) -> bool:
+    try:
+        return int(cid) in {int(g) for g in (cfg.TARGET_GROUPS or [])}
+    except (TypeError, ValueError):
+        return False
+
+
 class ModeAwarePipeline(SessionPipeline):
     """SessionPipeline 的子类：入站统一先问路由，非聊天模式只入缓冲。
 
@@ -96,7 +114,7 @@ class ModeAwarePipeline(SessionPipeline):
             self.mode_router.clear_catchup(cid)
             return
         await super().enqueue_message(
-            cid, "group", message_obj=event, debounce_flag=False, force_reply=True,
+            catchup_mode(cid), message_obj=event, debounce_flag=False, force_reply=True,
         )
 
     def _inner_event_from_history(self, chat_id: str) -> dict | None:

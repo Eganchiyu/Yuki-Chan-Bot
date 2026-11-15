@@ -201,6 +201,7 @@ class AutonomousCoordinator:
         state_store.set_active_mode(gid, "debate", run_id)
         self._resolve_reply_watch(gid)
         summary = ""
+        episode = False      # 只有 memo_only / start_work 才算「带着东西回到群里」
         try:
             debate_mode = DebateMode(
                 chat_id=gid, router=self.router, run_id=run_id, deps=deps,
@@ -239,6 +240,7 @@ class AutonomousCoordinator:
                     status="随想",
                 )
                 summary = self._reflection_summary(reflection, memo_id)
+                episode = True
                 return {"ok": True, "outcome": "memo_only", "summary": summary}
 
             # ---- Phase 3：自主执行工坊 ----
@@ -257,6 +259,7 @@ class AutonomousCoordinator:
             self.router.exit(gid, run_id=run_id)
             record_work_memory(state, reflection, status="可接续")
             summary = self._reflection_summary(reflection, memo_id, state)
+            episode = True
             return {"ok": True, "outcome": "start_work", "summary": summary}
         except ModeBusyError as exc:
             self._last_error[gid] = str(exc)
@@ -279,7 +282,7 @@ class AutonomousCoordinator:
             self._runs.pop(gid, None)
             if notify_master and summary:
                 await self._notify_master(gid, summary)
-            await self._after_run(gid)
+            await self._after_run(gid, episode=episode)
 
     async def _run_mode(self, mode: Mode) -> dict:
         """带墙钟上限地跑一个模式；超时则请求它尽快收尾。"""
@@ -390,13 +393,17 @@ class AutonomousCoordinator:
             logger.warning(f"[Autonomous] 写入小本本长期路标失败: {exc}")
 
     # ------------------------------------------------------------ 回群收尾
-    async def _after_run(self, gid) -> None:
+    async def _after_run(self, gid, *, episode: bool = False) -> None:
         try:
             await self.router.dispatch_catchups()
         except Exception as exc:
             logger.error(f"[Autonomous] 补台失败: {exc}")
+        if not episode:
+            # do_nothing / abandon / 中断：不拉高欲望、不主动破冰，安静回到群聊
+            return
         self._mark_high_spirits(gid)
-        await self._trigger_ice_break(gid)
+        if not self.pipeline.yuki.message_buffer.get(str(gid)):
+            await self._trigger_ice_break(gid)
 
     def _mark_high_spirits(self, gid) -> None:
         marker = getattr(self.pipeline.yuki, "mark_high_spirits", None)
@@ -409,9 +416,6 @@ class AutonomousCoordinator:
     async def _trigger_ice_break(self, gid) -> None:
         """回群时群里仍然安静：立刻给一次破冰机会（Phase 4 主动开口）。"""
         try:
-            buffer = self.pipeline.yuki.message_buffer.get(str(gid)) or []
-            if buffer:
-                return
             callback = getattr(getattr(self.pipeline, "engine", None), "process_callback", None)
             if callback is None:
                 return

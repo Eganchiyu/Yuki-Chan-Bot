@@ -686,3 +686,19 @@ async def test_full_run_start_work_enters_workshop(sandbox_data, monkeypatch):
 
     assert "雪夜电台" in notebook_store.load_zone("plans")
     assert notebook_store.load_zone("daily") == ""      # 测试不碰真实小本本日常区
+
+
+async def test_do_nothing_does_not_mark_high_spirits(sandbox_data, monkeypatch):
+    _enable_autonomous(monkeypatch)
+    gid = str(cfg.TARGET_GROUPS[0]) if cfg.TARGET_GROUPS else "1057020972"
+    monkeypatch.setattr(cfg.autonomous, "debate_max_rounds", 4)
+    llm = ScriptedLLM([vote("do_nothing"), vote("do_nothing")])
+    monkeypatch.setattr("modules.autonomous.sandbox_loop.llm_chat_raw", llm)
+
+    pipeline = FakePipeline()
+    pipeline.yuki.message_buffer[gid] = []
+    coordinator = AutonomousCoordinator(pipeline)
+    await coordinator._run(gid, trigger="manual", goal="", mode_arg="group", notify_master=False)
+    pipeline.yuki.mark_high_spirits.assert_not_called()
+    pipeline.engine.process_callback.assert_not_awaited()
+    assert pipeline.handle_catchup.await_count == 0
