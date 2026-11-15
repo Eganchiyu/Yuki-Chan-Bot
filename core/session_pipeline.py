@@ -53,6 +53,8 @@ class IncomingMessage:
     status: str = "received"
     tags: set[str] = field(default_factory=set)
     segments: list[dict] = field(default_factory=list)
+    is_catchup: bool = False
+    is_maid_report: bool = False
 
     @classmethod
     def from_mapping(cls, data: dict) -> "IncomingMessage":
@@ -70,6 +72,8 @@ class IncomingMessage:
             status=data.get("status", "received"),
             tags=set(data.get("tags") or []),
             segments=list(data.get("segments") or []),
+            is_catchup=bool(data.get("is_catchup", False)),
+            is_maid_report=bool(data.get("is_maid_report", False)),
         )
 
     def to_dict(self) -> dict:
@@ -85,7 +89,19 @@ class IncomingMessage:
             "status": self.status,
             "tags": sorted(self.tags),
             "segments": self.segments,
+            "is_catchup": self.is_catchup,
+            "is_maid_report": self.is_maid_report,
         }
+
+    @property
+    def is_system_injected(self) -> bool:
+        """系统注入的消息（补台 / 小女仆汇报 / 定时器）不算真人到达。"""
+        return bool(
+            self.is_catchup
+            or self.is_maid_report
+            or "catchup" in self.tags
+            or "maid_report" in self.tags
+        )
 
 
 class SessionPipeline:
@@ -199,26 +215,36 @@ class SessionPipeline:
         last["content"] = f"{last_base} x{count}"
         return True
 
+    def _buffer_incoming(self, chat_id_str, message_obj) -> IncomingMessage | None:
+        """把一条入站消息写进缓冲区并维护相关状态（不动定时器/锁）。
+
+        模式层在非 chat 模式下复用这段逻辑：只入缓冲、不建处理任务。
+        """
+        if not message_obj:
+            return None
+        incoming = IncomingMessage.from_mapping(message_obj)
+        if not incoming.owner_id:
+            incoming.owner_id = chat_id_str
+        buffer = self.yuki.message_buffer.setdefault(chat_id_str, [])
+        if not self._append_poke_to_buffer(buffer, incoming):
+            buffer.append(incoming.to_dict())
+        self.last_msg_time[chat_id_str] = time.time()
+        # 有人来了就算等到了：解除回复订阅，避免 Yuki 继续追击。
+        # 补台/小女仆汇报/定时器属于系统注入，不算真人到达。
+        if is_human_incoming(incoming) and not incoming.is_system_injected:
+            resolve(chat_id_str, "human_message")
+            self._record_human_timestamp(chat_id_str)
+        # 消息一到就后台预取图片，把下载与图像理解挪出回复关键路径
+        self._schedule_image_prefetch(incoming.content)
+        return incoming
+
     async def enqueue_message(self, chat_id, mode, message_obj=None, debounce_flag=True,
                               force_reply=None, ice_break=False):
         """核心入列机制：写入缓冲 -> 重置定时器 -> 等待执行锁"""
         chat_id_str = str(chat_id)
 
         # 1. 安全写入缓冲区
-        if message_obj:
-            incoming = IncomingMessage.from_mapping(message_obj)
-            if not incoming.owner_id:
-                incoming.owner_id = chat_id_str
-            buffer = self.yuki.message_buffer.setdefault(chat_id_str, [])
-            if not self._append_poke_to_buffer(buffer, incoming):
-                buffer.append(incoming.to_dict())
-            self.last_msg_time[chat_id_str] = time.time()
-            # 有人来了就算等到了：解除回复订阅，避免 Yuki 继续追击
-            if is_human_incoming(incoming):
-                resolve(chat_id_str, "human_message")
-                self._record_human_timestamp(chat_id_str)
-            # 消息一到就后台预取图片，把下载与图像理解挪出回复关键路径
-            self._schedule_image_prefetch(incoming.content)
+        self._buffer_incoming(chat_id_str, message_obj)
 
         # 2. 本轮是否需要跳过防抖：被直接叫到（名字/被 @）时上游会带
         #    debounce_flag=False + force_reply=True，这里把状态锁住供定时器读取
@@ -345,6 +371,10 @@ class SessionPipeline:
         if not incoming_messages and not context["force_reply"]:
             context["stop"] = True
             return context
+
+        if any(m.get("is_catchup") for m in incoming_messages if isinstance(m, dict)):
+            # 补台是系统注入的「你不在的时候发生了什么」，必须走一次真实回复
+            context["force_reply"] = True
 
         context["first_time"] = time.time()
         context["incoming_messages"] = incoming_messages

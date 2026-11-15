@@ -550,6 +550,136 @@ class ToolsConfig:
 
 
 @dataclass
+class AutonomousConfig:
+    """自主沙盒（自主轮次 / 多主循环模式）配置"""
+    enabled: bool = config_field(
+        False,
+        comment="自主轮次总开关，默认关；关时 /深思 直接拒绝",
+        section="autonomous"
+    )
+    enabled_groups: List[str] = config_field_factory(
+        list,
+        comment="允许自主轮的群白名单，默认空 = 一个都不开",
+        section="autonomous"
+    )
+    auto_trigger_enabled: bool = config_field(
+        False,
+        comment="冷场自动触发自主轮（只对白名单群生效）",
+        section="autonomous"
+    )
+    min_group_idle_minutes: int = config_field(
+        45,
+        comment="群聊静默多少分钟后才允许自动触发",
+        section="autonomous"
+    )
+    min_energy: float = config_field(
+        0.60,
+        comment="触发自主轮所需的最低精力值",
+        section="autonomous"
+    )
+    quiet_hours: List[int] = config_field_factory(
+        lambda: [1, 7],
+        comment="深夜禁触发区间 [起始小时, 结束小时)，跨零点写 [22, 6]",
+        section="autonomous"
+    )
+    cooldown_minutes: int = config_field(
+        120,
+        comment="两次自动自主轮之间的最小间隔（分钟）",
+        section="autonomous"
+    )
+    daily_max_runs: int = config_field(
+        3,
+        comment="每日自动触发上限（持久化，重启不清零）",
+        section="autonomous"
+    )
+    max_wall_seconds: int = config_field(
+        900,
+        comment="非聊天模式单次最长占用秒数，超时强制暂停并全面放行",
+        section="autonomous"
+    )
+    debate_max_rounds: int = config_field(
+        32,
+        comment="debate 模式（双念头交锋）最大轮数",
+        section="autonomous"
+    )
+    debate_max_tokens: int = config_field(
+        600,
+        comment="debate 每步输出上限 token",
+        section="autonomous"
+    )
+    debate_compress_every: int = config_field(
+        8,
+        comment="debate 每多少步把旧交锋压成锚点卡",
+        section="autonomous"
+    )
+    workshop_max_tool_calls: int = config_field(
+        60,
+        comment="workshop 模式单次最大工具调用次数",
+        section="autonomous"
+    )
+    zero_tool_max_retries: int = config_field(
+        2,
+        comment="零工具返回自动追问的最大容忍次数（防死循环）",
+        section="autonomous"
+    )
+    step_timeout_seconds: int = config_field(
+        180,
+        comment="单步（一次 LLM + 该批工具）超时熔断秒数",
+        section="autonomous"
+    )
+    catchup_enabled: bool = config_field(
+        True,
+        comment="回到群聊时是否注入「独处期间群里发生了什么」补台摘要",
+        section="autonomous"
+    )
+    catchup_max_messages: int = config_field(
+        80,
+        comment="补台摘要最多纳入的消息条数",
+        section="autonomous"
+    )
+    catchup_summarize_threshold: int = config_field(
+        12,
+        comment="缺席消息超过该条数时改用 sub-LLM 摘要",
+        section="autonomous"
+    )
+    digest_model: str = config_field(
+        "",
+        comment="补台/压缩摘要模型，留空用主模型",
+        section="autonomous"
+    )
+    diary_local_ratio: float = config_field(
+        0.7,
+        comment="日记检索本群占比（软比例）",
+        section="autonomous"
+    )
+    daily_memory_ttl_hours: int = config_field(
+        18,
+        comment="今日工作记忆有效期（小时）",
+        section="autonomous"
+    )
+    high_spirits_turns: int = config_field(
+        3,
+        comment="回到群聊后「心情高涨」主动连发配额",
+        section="autonomous"
+    )
+    high_spirits_minutes: int = config_field(
+        25,
+        comment="心情高涨状态持续分钟数",
+        section="autonomous"
+    )
+    high_spirits_desire_bonus: float = config_field(
+        0.45,
+        comment="心情高涨时的回复欲望加成",
+        section="autonomous"
+    )
+    high_spirits_followup_window: int = config_field(
+        12,
+        comment="高涨状态下被动回音窗口秒数（可小于 reply_watch 的 30s 下限）",
+        section="autonomous"
+    )
+
+
+@dataclass
 class GitHubMonitorRepoConfig:
     """GitHub 监控仓库配置"""
     owner: str = config_field(
@@ -719,6 +849,11 @@ class Config:
         ToolsConfig,
         comment="主模型亲手操作类工具配置",
         section="tools"
+    )
+    autonomous: AutonomousConfig = config_field_factory(
+        AutonomousConfig,
+        comment="自主沙盒（自主轮次 / 多主循环）配置",
+        section="autonomous"
     )
     github_monitor: GitHubMonitorConfig = config_field_factory(
         GitHubMonitorConfig,
@@ -1277,6 +1412,7 @@ _SECTION_HEADERS = {
     "energy": "# ================= 精力值系统配置 =================",
     "attention": "# ================= 注意力/响应配置 =================",
     "debug": "# ================= 调试配置 =================",
+    "autonomous": "# ================= 自主沙盒（自主轮次 / 多主循环） =================",
 }
 
 

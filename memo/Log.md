@@ -658,3 +658,10 @@
 - `tests/test_tool_phone_macro.py` / `tests/test_focus_snapshot.py`：聚焦工具集断言改为 `search_diary` 在、`skip` 不在。
 - `tests/test_diary_filter.py`：假日记文案短于 `do_summarize` 的 50 字下限会走备用模型后丢弃，改为更长的完整句；配套断言 `点了外卖` → `点外卖`。
 - 结果：`pytest tests -q` 全绿 `186 passed / 0 failed`（此前 5 failed 为断言漂移）。
+
+## 2026-11-15 自主沙盒 P0–P1
+- P0：`config.py` 新增 `AutonomousConfig`（24 项，`autonomous` 段）并 sync 到 `configs/config.yaml`（值校验无变化，新增 41 键）；新增 `modules/autonomous/storage.py`（L1 memo / L2 work_diary.jsonl / L3 work_sessions / L4 daily_work_memory / 运行状态 state_store / group_names 缓存 / DiarySeedSampler）与 `init_data_dir()`。
+- P1：新增 `core/modes/`（base/router/pipeline）。`ModeRouter` 管每群单一模式 + `_global_run` 唯一体性 + 冻结登记 + 补台派发 + 内部事件投递 + `force_release`；`ModeAwarePipeline.enqueue_message` 是唯一路由点，router 空闲时原样 `super()` 透传。
+- `core/session_pipeline.py` 抽出 `_buffer_incoming()` 供模式层复用；`IncomingMessage` 增 `is_catchup`/`is_maid_report`/`is_system_injected`；`prepare_message_batch` 识别补台强制回复；`history_filter` 不再把补台/小女仆汇报算聊天轮次。
+- `main.py` 换用 `ModeAwarePipeline`（`main_process` 未改）。
+- 测试：新增 `tests/test_mode_router.py`（11 项）；全量 `197 passed`。

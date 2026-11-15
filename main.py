@@ -11,7 +11,7 @@ from core.brain import YukiState
 from core.engine.engine import YukiEngine
 from core.history_manager import HistoryManager
 from core.prompts import sync_system_prompts
-from core.session_pipeline import SessionPipeline
+from core.modes import ModeAwarePipeline, router as mode_router
 from init import load_group_state
 from modules.QQNapcatListen.listen_main import napcat_listen
 from modules.vision.processor import MemeProcessor
@@ -320,7 +320,7 @@ if __name__ == "__main__":
 
     try:
         components = initialize_components()
-        session_pipeline = SessionPipeline(components, group_active_state)
+        session_pipeline = ModeAwarePipeline(components, group_active_state, mode_router)
         components["engine"].process_callback = main_process
         start_health_probe(components)
         if not is_dry_run():
