@@ -10,7 +10,6 @@ from core.focus.domains.art import (
 from core.phone_focus import phone_finish_tool, phone_start_tool
 from core.toolchain import MAID_GOAL_BREVITY_HINT, ToolSpec
 
-from .tools_bash import bash_tool
 from .tools_diary import search_diary_tool
 from .tools_maid import delegate_to_maid_tool
 from .tools_media import download_file_tool, generate_image_tool
@@ -23,34 +22,6 @@ from .tools_skip import skip_reply_tool
 from .tools_snapshot import capture_group_snapshot_tool, search_group_snapshots_tool
 
 TOOL_SPECS = [
-    ToolSpec(
-        name="bash",
-        description=(
-            "亲手在电脑上执行一条 shell 命令（工作目录是项目根）。"
-            "适合 10 秒内能完成的轻量操作：查系统/文件状态、跑 skills/ 下的现成脚本、"
-            "单步 adb/curl 操作等，这样你能亲眼看到结果并马上带着自己的判断回复。"
-            "需要多步探索、写代码、或耗时较长的任务仍然交给小女仆。"
-            "命令里的密钥会自动打码；remember=false 时原始输出只在本轮可见、不写进长期记忆。"
-        ),
-        parameters={
-            "type": "object",
-            "properties": {
-                "command": {"type": "string", "description": "要执行的 shell 命令（单条，可含管道）"},
-                "timeout": {"type": "integer", "description": "超时秒数，默认20，最多60", "default": 20},
-                "note": {
-                    "type": "string",
-                    "description": "顺手记一句这步做了什么/结果是什么，之后上下文折叠时只保留它",
-                },
-                "remember": {
-                    "type": "boolean",
-                    "description": "输出是否写进长期记忆，默认true；纯属中间过程的临时输出可以传false",
-                    "default": True,
-                },
-            },
-            "required": ["command"],
-        },
-        handler=bash_tool,
-    ),
     ToolSpec(
         name="phone_start",
         description=(

@@ -23,7 +23,7 @@ class EngineDiaryService:
     async def do_summarize(self, chat_id, history):
         """总结会话内容并写入记忆库。
 
-        只总结聊天部分：工具执行结果（bash 输出、手机控件树）与调用痕迹不进日记，
+        只总结聊天部分：工具执行结果（手机控件树、截图说明）与调用痕迹不进日记，
         它们是当时的临时材料，写进日记只会污染长期记忆。
         """
         logger.info(f"[Engine] [{chat_id}] 记忆过长，{cfg.ROBOT_NAME.title()} 正在写日记...")

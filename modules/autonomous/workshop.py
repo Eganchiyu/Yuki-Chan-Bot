@@ -104,7 +104,7 @@ class Workshop:
             context=self.context,
             history=self.history,
             max_steps=self.max_tool_calls + self.zero_tool_max_retries + 5,
-            max_tokens=1200,
+            max_tokens=cfg.autonomous.workshop_max_tokens,
             temperature=0.9,
             pinned=WORKSHOP_PINNED,
             debug_tag="workshop",

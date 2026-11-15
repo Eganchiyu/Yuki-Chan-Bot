@@ -9,7 +9,6 @@ from core.focus.domains.art import (
 )
 from core.phone_focus import phone_finish_tool, phone_start_tool
 from .tools import TOOL_HANDLERS, TOOL_SCHEMAS, TOOL_SPECS
-from .tools_bash import bash_tool
 from .tools_diary import search_diary_tool
 from .tools_maid import delegate_to_maid_tool
 from .tools_media import download_file_tool, generate_image_tool
@@ -25,7 +24,6 @@ __all__ = [
     "TOOL_SPECS",
     "TOOL_SCHEMAS",
     "TOOL_HANDLERS",
-    "bash_tool",
     "search_diary_tool",
     "delegate_to_maid_tool",
     "download_file_tool",

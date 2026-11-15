@@ -16,7 +16,7 @@ def _mix_session():
         {"role": "assistant", "content": "好~人家看看"},
         {"role": "tool", "name": "phone_action", "tool_call_id": "c1",
          "content": json.dumps({"success": True, "content": "[#1] [可点] 外卖 @(540,435)"})},
-        {"role": "tool", "name": "bash", "tool_call_id": "c2",
+        {"role": "tool", "name": "search_diary", "tool_call_id": "c2",
          "content": json.dumps({"success": True, "content": "total 0\ndrwxr-xr-x ..."})},
         {"role": "assistant", "content": "找到外卖啦，要点哪家？"},
         {"role": "user", "content": "第一家"},
@@ -108,7 +108,7 @@ async def test_pipeline_forces_diary_by_chat_count_only(monkeypatch):
     session.append({"role": "assistant", "content": "嗯"})
     # 塞入超过阈值的工具消息
     for i in range(cfg.DIARY_MAX_LENGTH + 10):
-        session.append({"role": "tool", "name": "bash", "tool_call_id": f"c{i}",
+        session.append({"role": "tool", "name": "search_diary", "tool_call_id": f"c{i}",
                         "content": "一堆输出"})
     pipeline.history_manager.append_session_message.return_value = session
 

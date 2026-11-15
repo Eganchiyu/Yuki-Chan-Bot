@@ -1,11 +1,11 @@
 # core/tool_prune.py
 """工具历史折叠。
 
-Yuki 亲手操作（bash / 手机）后，历史里会留下大段原始输出。这些输出只在「正在连续
+Yuki 亲手操作手机后，历史里会留下大段原始输出（控件树、截图说明）。这些输出只在「正在连续
 操作」时有价值：一旦连续 N 轮都没再调用工具，说明那件事已经收尾，原始输出就是纯
 噪音。这里在那种时刻把历史里的工具消息压成一行存根：
 
-    【历史操作·已折叠】bash "adb devices" exit=0 备注:手机已连上
+    【历史操作·已折叠】[#1] [可点] 外卖 备注:手机已连上
 
 折叠不消耗任何 LLM 调用——Yuki 当时的最终回复和 note 参数本身就是这轮操作的总结。
 """
@@ -33,18 +33,14 @@ def _stub(name: str, payload: dict) -> str:
     data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
     note = str(data.get("note") or "").strip()
 
-    if name == "bash":
-        command = str(data.get("command") or "").strip().replace("\n", " ")
-        text = f'bash "{command[:80]}" exit={data.get("exit_code", "?")}'
-    else:
-        from core.focus import focus_manager
+    from core.focus import focus_manager
 
-        domain = focus_manager.domain_of_tool(name)
-        if domain is not None and domain.stub is not None:
-            text = domain.stub(payload)
-        else:
-            # 其他工具本来就不长，保守地保留开头
-            text = str(payload.get("content") or "").replace("\n", " ")
+    domain = focus_manager.domain_of_tool(name)
+    if domain is not None and domain.stub is not None:
+        text = domain.stub(payload)
+    else:
+        # 其他工具本来就不长，保守地保留开头
+        text = str(payload.get("content") or "").replace("\n", " ")
 
     if note:
         text += f" 备注:{note}"

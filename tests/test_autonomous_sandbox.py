@@ -104,7 +104,7 @@ def _main_registry():
         return ToolResult(success=True, content="ok")
 
     registry = FunctionRegistry()
-    for name in ("search_diary", "search_group_snapshots", "bash", "work_finish",
+    for name in ("search_diary", "search_group_snapshots", "work_finish",
                  "phone_start", "phone_action", "phone_macro", "phone_finish",
                  "art_start", "art_draw", "art_asset", "art_gacha", "art_finish"):
         registry.register(ToolSpec(name=name, description=f"{name}工具",
@@ -187,6 +187,39 @@ async def test_context_compression_every_8_steps(sandbox_data, monkeypatch):
     result = await debate.run()
     assert result.anchor.startswith("锚点")
     assert len(result.transcript) <= 6
+
+
+async def test_debate_retrieval_window_then_pure_discussion(sandbox_data, monkeypatch):
+    """前 N 步可用检索工具，之后收起只剩投票，越窗调用会被工具层拒绝。"""
+    monkeypatch.setattr(cfg.autonomous, "debate_retrieval_steps", 2)
+    script = [
+        {"content": "先翻翻旧日记。", "tool_calls": [tool_call("search_diary", keyword="雪夜电台")]},
+        {"content": "那段电台夜聊我还记得。"},
+        {"content": "再确认一下细节。", "tool_calls": [tool_call("search_diary", keyword="电台")]},
+        {"content": "好吧，凭记忆也能往下想。"},
+    ]
+    debate, state, llm = _debate(script, sandbox_data, max_rounds=4)
+    monkeypatch.setattr("modules.autonomous.sandbox_loop.llm_chat_raw", llm)
+    await debate.run()
+
+    full = {"inspect_work_session", "inner_vote", "list_recent_work_sessions",
+            "search_diary", "search_group_snapshots"}
+    step_tools = [
+        {t["function"]["name"] for t in (call["kwargs"].get("tools") or [])}
+        for call in llm.calls
+    ]
+    assert step_tools[0] == full and step_tools[1] == full     # 窗口内：检索 + 投票
+    assert step_tools[2] == {"inner_vote"}                     # 窗口外：纯讨论
+    assert step_tools[3] == {"inner_vote"}
+    assert debate._visible_tools(2) == full
+    assert debate._visible_tools(3) == {"inner_vote"}
+
+    records = [json.loads(line) for line in
+               (sandbox_data.transcripts / "run-test.jsonl").read_text(encoding="utf-8").splitlines()]
+    steps = {r["step"]: r for r in records if r["kind"] == "debate_step"}
+    assert steps[1]["tools"][0]["success"] is True
+    assert steps[3]["tools"][0]["success"] is False
+    assert "未展开" in steps[3]["tools"][0]["content"]
 
 
 async def test_debate_force_stop_breaks_loop(sandbox_data, monkeypatch):
@@ -367,7 +400,8 @@ async def test_workshop_60_call_cap_trims_tools_to_finish(sandbox_data, monkeypa
     """预算耗尽后只暴露 work_finish，模型被迫收尾。"""
     from modules.autonomous import workshop as ws_mod
 
-    calls = [{"content": "继续", "tool_calls": [tool_call("bash", command="ls")]} for _ in range(5)]
+    calls = [{"content": "继续", "tool_calls": [tool_call("search_diary", keyword="雪夜")]}
+             for _ in range(5)]
     calls.append({"content": "收尾", "tool_calls": [tool_call(
         "work_finish", status="paused", work_log="写到第二章开头，产物 workspace/n.md",
         artifacts=["workspace/n.md"])]})
@@ -655,7 +689,7 @@ async def test_full_run_start_work_enters_workshop(sandbox_data, monkeypatch):
             work_diary_entry="今晚先写第一章。",
             notebook_pointer="[sess] 雪夜电台第一章待写",
         )]},
-        {"content": "先建个目录", "tool_calls": [tool_call("bash", command="mkdir -p workspace/novels")]},
+        {"content": "先翻翻旧日记", "tool_calls": [tool_call("search_diary", keyword="深夜电台")]},
         {"content": "写完第一章", "tool_calls": [tool_call(
             "work_finish", status="paused",
             work_log="写了《雪夜电台》第一章约1800字，存在 workspace/novels/snow_radio_ch1.md，下次写第二章。",
@@ -774,7 +808,7 @@ async def test_transcript_records_debate_and_reflection(sandbox_data, monkeypatc
 
 async def test_transcript_records_workshop_steps(sandbox_data, monkeypatch):
     script = [
-        {"content": "先看看目录", "tool_calls": [tool_call("bash", command="ls workspace")]},
+        {"content": "先翻翻旧日记", "tool_calls": [tool_call("search_diary", keyword="第一章")]},
         {"content": "收尾", "tool_calls": [tool_call(
             "work_finish", status="completed", work_log="写好第一章",
             artifacts=["workspace/a.md"])]},
@@ -788,7 +822,8 @@ async def test_transcript_records_workshop_steps(sandbox_data, monkeypatch):
     kinds = [r["kind"] for r in records]
     assert kinds[0] == "run_start" and kinds[-1] == "workshop_finish"
     steps = [r for r in records if r["kind"] == "workshop_step"]
-    assert any(r.get("calls") and r["calls"][0]["name"] == "bash" and r.get("tools") for r in steps)
+    assert any(r.get("calls") and r["calls"][0]["name"] == "search_diary" and r.get("tools")
+               for r in steps)
     assert "写好第一章" in records[-1]["work_log"]
 
 

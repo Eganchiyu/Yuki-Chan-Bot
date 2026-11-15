@@ -24,11 +24,12 @@ from utils.logger import get_logger
 
 logger = get_logger("autonomous.debate")
 
-# 交锋阶段不挂任何检索工具：锚点由 DiarySeedSampler 一次性注入，唯一工具是投票
-DEBATE_MAIN_TOOLS: set[str] = set()
-DEBATE_SANDBOX_TOOLS = ["inner_vote"]
+# 交锋前 debate_retrieval_steps 步可以翻日记/群聊截屏/工作档案，之后收起，只剩投票
+DEBATE_MAIN_TOOLS = {"search_diary", "search_group_snapshots"}
+DEBATE_SANDBOX_TOOLS = ["inner_vote", "list_recent_work_sessions", "inspect_work_session"]
 DEBATE_VISIBLE = DEBATE_MAIN_TOOLS | set(DEBATE_SANDBOX_TOOLS)
-RETRIEVAL_TOOLS: set[str] = set()  # debate 已无检索工具，压力旁白不再依赖「是否检索过」
+RETRIEVAL_TOOLS = DEBATE_MAIN_TOOLS | {"list_recent_work_sessions", "inspect_work_session"}
+DISCUSSION_ONLY_TOOLS = {"inner_vote"}   # 检索窗口关闭后的纯讨论视图
 ANCHOR_MAX_CHARS = 600
 CONSENSUS_SUMMARY_MAX_CHARS = 600
 
@@ -78,6 +79,7 @@ class InnerDebate:
         self.sender = sender or SilentSender(self.chat_id)
         self.image_store = image_store
         self.max_rounds = int(max_rounds or cfg.autonomous.debate_max_rounds)
+        self.retrieval_steps = max(0, int(cfg.autonomous.debate_retrieval_steps))
         self.stop_check = stop_check or (lambda: False)
 
         self.history = AdaptorHistory(self.chat_id)
@@ -108,9 +110,10 @@ class InnerDebate:
     async def run(self) -> DebateResult:
         result = DebateResult()
         seeds = await asyncio.to_thread(diary_seed_sampler.sample, self.chat_id)
-        shared = sb_prompts.debate_shared(self.chat_label)
+        shared = sb_prompts.debate_shared(self.chat_label, self.retrieval_steps)
         transcript = transcript_for(self.state, mode="debate")
         transcript.event("debate_start", rounds_limit=self.max_rounds,
+                        retrieval_steps=self.retrieval_steps,
                         seeds=[s.get("source") for s in seeds])
         turns: list[dict] = []
         anchor = ""
@@ -124,12 +127,15 @@ class InnerDebate:
                 break
 
             role = "A" if step % 2 == 1 else "B"
-            narration = sb_prompts.pressure_narration(step, self.max_rounds, used_retrieval)
+            visible = self._visible_tools(step)
+            narration = sb_prompts.pressure_narration(
+                step, self.max_rounds, used_retrieval, self.retrieval_steps,
+            )
             messages = self._build_messages(shared, role, seeds, turns, anchor, narration, step)
 
             try:
                 msg, _llm_ms = await run_step_with_timeout(
-                    self.loop.call_model(messages, DEBATE_VISIBLE)
+                    self.loop.call_model(messages, visible)
                 )
             except asyncio.TimeoutError:
                 result.stopped = "timeout"
@@ -141,7 +147,7 @@ class InnerDebate:
                 break
 
             content = strip_tool_call_markup(msg.get("content") or "").strip()
-            calls = self.loop.extract_calls(msg, DEBATE_VISIBLE)
+            calls = self.loop.extract_calls(msg, visible)
             step_results: list[dict] = []
             if calls:
                 self.context.metadata["debate_role"] = role
@@ -151,7 +157,7 @@ class InnerDebate:
                 try:
                     results = await run_step_with_timeout(
                         self.loop.execute_calls(
-                            calls, DEBATE_VISIBLE, finish_reason=msg.get("_finish_reason") or "",
+                            calls, visible, finish_reason=msg.get("_finish_reason") or "",
                         )
                     )
                 except asyncio.TimeoutError:
@@ -198,6 +204,12 @@ class InnerDebate:
                          rounds=result.rounds, note=result.consensus_note)
         return result
 
+    def _visible_tools(self, step: int) -> set[str]:
+        """前 retrieval_steps 步放开检索工具，之后收起只剩投票（纯讨论）。"""
+        if step <= self.retrieval_steps:
+            return set(DEBATE_VISIBLE)
+        return set(DISCUSSION_ONLY_TOOLS)
+
     def _build_messages(self, shared, role, seeds, turns, anchor, narration, step) -> list[dict]:
         body = []
         if seeds:
@@ -205,7 +217,9 @@ class InnerDebate:
         body.append(sb_prompts.transcript_block(turns, anchor))
         if narration:
             body.append(narration)
-        body.append(sb_prompts.debate_step_instruction(role, step, self.max_rounds))
+        body.append(sb_prompts.debate_step_instruction(
+            role, step, self.max_rounds, self.retrieval_steps,
+        ))
         return [
             {"role": "system", "content": shared + sb_prompts.role_prompt(role)},
             {"role": "user", "content": "\n\n".join(p for p in body if p)},

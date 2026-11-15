@@ -344,7 +344,8 @@ class AutonomousCoordinator:
         )
         loop = SandboxLoop(
             chat_id=gid, registry=registry, context=context, history=history,
-            max_steps=REFLECTION_MAX_ATTEMPTS, max_tokens=900, temperature=0.8,
+            max_steps=REFLECTION_MAX_ATTEMPTS,
+            max_tokens=cfg.autonomous.reflection_max_tokens, temperature=0.8,
             pinned={"conclude_reflection"}, debug_tag="reflection",
         )
         messages = [

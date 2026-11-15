@@ -36,13 +36,12 @@
 
 ---
 
-## 三、现役标准工具清单（17 个，含手机聚焦模式按需展开）
+## 三、现役标准工具清单（16 个，含手机聚焦模式按需展开）
 
 > 手机相关工具采用**「聚焦模式（Focus Mode）」**按需披露：常态下只暴露极简入口 `phone_start`，调用后进入聚焦模式展开 `phone_action` / `phone_macro` / `phone_finish` 并收起其他无关日常工具；结束时调用 `phone_finish` 用一条 `role="user"` 的 `【手机操作总结】` 覆盖工作过程记录。详见 [`docs/focus-mode-paradigm.md`](./focus-mode-paradigm.md)。
 
 | 工具名 | 所在文件 | 暴露时机 | `persist_result` | 功能说明 |
 |---|---|---|---|---|
-| `bash` | `tools_bash.py` | 常态 | `True` | Yuki 亲手执行单条 shell 命令（cwd=项目根，默认 20s、上限 60s）。输出自动脱敏 `sk-*` 等密钥；拦截 `rm -rf /`、`mkfs`、关机等防呆命令与凭证文件读取；`remember=false` 时该次输出不落历史 |
 | `phone_start` | `phone_focus.py` | 常态 | `True` | 极简入口：拿起手机进入「手机聚焦模式」，自动返回当前屏幕控件树与已有组合技简表，并解锁 `phone_action` / `phone_macro` / `phone_finish` |
 | `phone_action` | `tools_phone.py` | 手机聚焦模式 | `True` | 通过 adb 操作手机：`inspect/tap/long_press/input/swipe/scroll_to_find/key/back/home/launch/wait`。控件树精简为 `[#编号] + 中心坐标`；文字过少或 `include_screenshot=true` 时附带编号红框截图（Set-of-Mark） |
 | `phone_macro` | `tools_phone_macro.py` | 手机聚焦模式 | `True` | 手机组合技：`list/history/show/save/play/delete`。`save` 支持 Sub-LLM 自动提炼冗余滑动与业务参数（`auto_distill=True`）；`play` 内置 `SystemWatcher` 弹窗清理与 `MacroHealer` 语义自愈进化 |
@@ -73,6 +72,8 @@
 - `_archive/timer_tool/`：`manage_timer_task`（会话级定时提醒）
 - `_archive/user_resolve_tool/`：`resolve_user`（昵称查 QQ 号）
 
+另外，`bash`（`core/tools/tools_bash.py`）已于 2026-11-15 按机主要求**彻底删除**（不归档、不再恢复）；需要时只能从 git 历史 `git show 0afd21e^:core/tools/tools_bash.py` 取。
+
 ---
 
 ## 五、如何新增或修改工具
@@ -81,9 +82,9 @@
 2. **注册 Spec**：在 `core/tools/tools.py` 的 `TOOL_SPECS` 中追加 `ToolSpec(...)`（并同步在 `core/tools/__init__.py` 导出 handler）。若工具输出无需留存在持久化历史中，设 `persist_result=False`。
 3. **验证测试**：运行 `~/miniconda3/envs/yuki/bin/python -m pytest tests/test_toolchain.py -q`。
 
-### 亲手操作类工具的两个约定
+### 亲手操作类工具的约定
 
-- **动态 `no_persist`**：handler 可在 `ToolResult.data` 里返回 `no_persist=True`（`bash` / `phone_action` 的 `remember=false`），`EngineReplyService` 会跳过写历史，效果等同静态 `persist_result=False`，但由 Yuki 每次调用自行决定。
+- **动态 `no_persist`**：handler 可在 `ToolResult.data` 里返回 `no_persist=True`（`phone_action` 的 `remember=false`），`EngineReplyService` 会跳过写历史，效果等同静态 `persist_result=False`，但由 Yuki 每次调用自行决定。
 - **日记只看聊天**：`core/history_filter.py` 定义了「聊天消息」（user/assistant）。日记的两个触发阈值（`diary.max_length` 强制、`diary.min_turns` 空闲）都只数聊天条数，`EngineDiaryService.do_summarize` 的总结输入也只喂聊天消息——工具输出与工具调用痕迹既不会提前触发日记，也不会写进日记。
 - **历史折叠**：`core/tool_prune.py` 按会话统计连续未调用工具的轮数，达到 `tools.prune_idle_turns`（默认 2）时把历史里的 `role="tool"` 消息压成一行 `【历史操作·已折叠】…备注…` 存根，不额外调用 LLM。想调整或排查时看日志 `[ToolPrune]`。
 - **手机工具依赖**：

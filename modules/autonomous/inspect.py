@@ -122,7 +122,10 @@ def autonomous_snapshot(limit: int = 10) -> dict:
         },
         "tuning": {
             "debate_max_tokens": cfg.autonomous.debate_max_tokens,
+            "debate_retrieval_steps": cfg.autonomous.debate_retrieval_steps,
             "debate_compress_every": cfg.autonomous.debate_compress_every,
+            "workshop_max_tokens": cfg.autonomous.workshop_max_tokens,
+            "reflection_max_tokens": cfg.autonomous.reflection_max_tokens,
             "catchup_enabled": cfg.autonomous.catchup_enabled,
             "catchup_max_messages": cfg.autonomous.catchup_max_messages,
             "diary_local_ratio": cfg.autonomous.diary_local_ratio,

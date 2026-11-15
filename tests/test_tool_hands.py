@@ -1,4 +1,4 @@
-"""亲手操作类工具（bash / 手机 ADB）与工具历史折叠的单元测试。"""
+"""亲手操作类工具（手机 ADB）与工具历史折叠的单元测试。"""
 import io
 import json
 from types import SimpleNamespace
@@ -9,7 +9,6 @@ from PIL import Image
 from core.tool_prune import STUB_PREFIX, ToolHistoryPruner
 from core.toolchain import ToolContext, ToolRuntime
 from core.tools import TOOL_HANDLERS, TOOL_SPECS
-from core.tools.tools_bash import bash_tool
 from core.tools.tools_phone import _annotate_screenshot, _compact_tree, _format_tree, phone_action_tool
 
 SAMPLE_XML = """<?xml version="1.0" encoding="UTF-8"?>
@@ -45,56 +44,15 @@ def _context(mode="group"):
 
 def test_hands_on_tools_registered():
     names = {spec.name for spec in TOOL_SPECS}
-    assert {"bash", "phone_action"} <= names
-    assert "bash" in TOOL_HANDLERS and "phone_action" in TOOL_HANDLERS
+    assert "phone_action" in names
+    assert "phone_action" in TOOL_HANDLERS
+    # bash 工具已全局移除，不允许再回到注册表
+    assert "bash" not in names and "bash" not in TOOL_HANDLERS
 
 
 def test_phone_schema_has_action_enum():
     spec = next(s for s in TOOL_SPECS if s.name == "phone_action")
     assert "inspect" in spec.parameters["properties"]["action"]["enum"]
-
-
-# ---------- bash ----------
-
-async def test_bash_runs_command():
-    result = await bash_tool(_context(), "echo hello-hands")
-    assert result.success is True
-    assert "hello-hands" in result.content
-    assert result.data["no_persist"] is False
-
-
-async def test_bash_remember_false_marks_no_persist():
-    result = await bash_tool(_context(), "echo temp", remember=False)
-    assert result.data["no_persist"] is True
-
-
-async def test_bash_rejects_destructive_command():
-    result = await bash_tool(_context(), "rm -rf /")
-    assert result.success is False
-    assert result.error == "command_rejected"
-
-
-async def test_bash_rejects_credential_read():
-    result = await bash_tool(_context(), "cat ~/.dsh/.credentials.yaml")
-    assert result.success is False
-    assert result.error == "command_rejected"
-
-
-async def test_bash_redacts_secret_output():
-    result = await bash_tool(_context(), "echo sk-abcdef1234567890ab")
-    assert "sk-abcdef1234567890ab" not in result.content
-    assert "sk-***" in result.content
-
-
-async def test_bash_timeout_kills_command():
-    result = await bash_tool(_context(), "sleep 5", timeout=1)
-    assert result.success is False
-    assert result.error == "timeout"
-
-
-async def test_bash_missing_command():
-    result = await bash_tool(_context(), "   ")
-    assert result.error == "missing_command"
 
 
 # ---------- 控件树 ----------

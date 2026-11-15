@@ -138,7 +138,8 @@ for step in 1..debate_max_rounds:
     role = 'A' if step 奇数 else 'B'
     messages = [system: 共有底色 + 该念头附加引导,
                 user:   日记契机 + 交锋记录/锚点 + 压力旁白 + 轮到谁]
-    msg = llm_chat_raw(tools=inner_vote, max_tokens=debate_max_tokens)
+    msg = llm_chat_raw(tools=可见工具, max_tokens=debate_max_tokens)
+          # 前 debate_retrieval_steps 步：检索集 + inner_vote；之后：只有 inner_vote
     calls = 原生 tool_calls 或 tool_markup 还原
     calls 非空 → execute(calls)（投票写进 SandboxState.votes）
     turns.append({role, content})
@@ -148,14 +149,15 @@ for step in 1..debate_max_rounds:
 ```
 
 - **收敛条件**：连续两步 `agree_to_end=True` **且** `verdict` 完全一致（`SandboxState.consensus()`）。
-- **可见工具**：只有 `inner_vote`。debate 阶段不挂任何检索工具——锚点由 `DiarySeedSampler` 一次性注入（2 条近 7 天本群 + 1 条 30 天前旧日记），她要用的是已经浮现的画面，不能搜新的。
-- **三段式压力旁白**（纯代码，不花 token）：第 4 步→提醒「挑一个锚点，别急着查」；第 11 步→推演落地细节；第 `max(23, 0.7*上限)` 步→催收敛。
+- **可见工具（检索窗口）**：前 `debate_retrieval_steps`（默认 5）步放开 `search_diary`、`search_group_snapshots`、`list_recent_work_sessions`、`inspect_work_session` + `inner_vote`；窗口关闭后视图只剩 `inner_vote`，进入纯讨论（越窗调用由 `ToolCallManager` 的 view 拦截成「该工具当前未展开」）。锚点仍由 `DiarySeedSampler` 一次性注入 3 条日记（2 条近 7 天本群 + 1 条 30 天前）。
+- **三段式压力旁白**（纯代码，不花 token）：第 `debate_retrieval_steps` 步→提醒「这是最后一步还能翻资料」；第 `debate_retrieval_steps+1` 步→提醒「检索收起来了，只凭记得的画面往下推」；第 11 步→推演落地细节；第 `max(23, 0.7*上限)` 步→催收敛。`debate_retrieval_steps=0` 时退化为无检索，第 4 步仍提醒「挑一个锚点，别急着查」。
 
 ### 3.4 reflection 步骤（`coordinator._reflect`）
 
 - 单独 registry：只有 `conclude_reflection`；`AdaptorHistory` 承接内存历史。
 - 输入：`reflection_system()`（本尊人格 + 三向指引）+ `reflection_user_block()`（交锋共识/最后 6 轮摘要 + 倾向）。
 - 最多 3 次；模型不调工具就追加 `NUDGE_TEXT` 追问；仍未落盘 → 按 abandon 处理。
+- 每步输出上限 `reflection_max_tokens`（默认 4096）。
 
 ### 3.5 workshop 主循环（`workshop.py`）
 
@@ -165,7 +167,7 @@ for step in 1..:
     stop_check() ? break
     _drain_inner_events()                  # 小女仆汇报并入上下文
     budget_left <= 0 ? visible={'work_finish'} : visible=focus_view()|pinned
-    msg = llm_chat_raw(tools=visible, max_tokens=1200)
+    msg = llm_chat_raw(tools=visible, max_tokens=workshop_max_tokens)
     calls 为空 → zero_streak+1；≤ zero_tool_max_retries 则追问，否则熔断
     calls 非空 → execute → 拼接结果 → 附加截图 → 预算提醒
     state.finished (work_finish 被调用) ? break
@@ -271,7 +273,7 @@ chat ────────► debate ──投票 start_work──► reflect
 | `storage.py` | 665 | L1 memo（`MemoStore`）、L2 `WorkDiaryStore`、L3 `WorkSessionStore`、L4 `DailyWorkMemoryStore`、`AutonomousStateStore`、`GroupNameCache`、`DiarySeedSampler`、`init_data_dir()`、容量常量（512/1000/400/800） |
 | `tools.py` | 441 | `SandboxState`（votes/reflection/work_log/artifacts/transcript）+ 6 个 `ToolSpec` + `build_registry()` + L1/L2/L4 落盘辅助 |
 | `sandbox_loop.py` | 256 | `SilentSender`（发送只进 outbox）、`AdaptorHistory`、`SandboxLoop`（`call_model` / `extract_calls` / `execute_calls` / `focus_view()` + `pinned`）、`SandboxDeps`、`build_tool_context`、`run_step_with_timeout` |
-| `inner_debate.py` | 244 | `InnerDebate`、`DebateResult`、`DEBATE_VISIBLE`、`RETRIEVAL_TOOLS`、锚点压缩 |
+| `inner_debate.py` | 258 | `InnerDebate`、`DebateResult`、`DEBATE_VISIBLE`、`RETRIEVAL_TOOLS`、锚点压缩 |
 | `workshop.py` | 288 | `Workshop`、`WorkshopOutcome`、预算/零工具熔断/内部事件/兜底日志 |
 | `mode_impl.py` | 129 | `DebateMode` / `WorkshopMode`（`Mode` 实现）、`make_mode_factory` |
 | `prompts.py` | 187 | 共有独处底色、念头 A/B 引导、压力旁白、复盘提示词、工坊提示词（只读复用 `core.prompts.get_base_setting()`） |
@@ -342,8 +344,11 @@ chat ────────► debate ──投票 start_work──► reflect
 | `max_wall_seconds` | `900` | 单次非聊天模式最长占用 |
 | `debate_max_rounds` | `32` | 交锋上限 |
 | `debate_max_tokens` | `4096` | 每步输出上限 |
+| `debate_retrieval_steps` | `5` | 前多少步可用检索工具，之后只剩投票（纯讨论） |
 | `debate_compress_every` | `8` | 压缩间隔（保留最近 6 步原文） |
 | `workshop_max_tool_calls` | `60` | 工坊工具预算 |
+| `workshop_max_tokens` | `4096` | 工坊每步输出上限 |
+| `reflection_max_tokens` | `4096` | 复盘每步输出上限 |
 | `zero_tool_max_retries` | `2` | 零工具追问容忍 |
 | `step_timeout_seconds` | `180` | 单步（LLM+工具）超时 |
 | `catchup_enabled` | `true` | 回群补台开关 |

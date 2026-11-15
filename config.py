@@ -466,25 +466,10 @@ class TimingConfig:
 
 @dataclass
 class ToolsConfig:
-    """主模型亲手操作类工具配置（bash / 手机 ADB）"""
+    """主模型亲手操作类工具配置（手机 ADB）"""
     max_rounds: int = config_field(
         8,
         comment="单轮对话最多工具调用轮次（手机连招需要多步）",
-        section="tools"
-    )
-    bash_timeout_seconds: int = config_field(
-        20,
-        comment="bash 工具单次执行超时（秒）",
-        section="tools"
-    )
-    bash_max_timeout_seconds: int = config_field(
-        60,
-        comment="bash 工具允许的最大超时（秒）",
-        section="tools"
-    )
-    bash_max_output_chars: int = config_field(
-        4000,
-        comment="bash 输出回传给模型的最大字符数（超出保留头尾）",
         section="tools"
     )
     prune_idle_turns: int = config_field(
@@ -607,6 +592,11 @@ class AutonomousConfig:
         comment="debate 每步输出上限 token",
         section="autonomous"
     )
+    debate_retrieval_steps: int = config_field(
+        5,
+        comment="交锋前多少步可用检索工具（日记/群聊截屏/工作档案），之后收起只留投票",
+        section="autonomous"
+    )
     debate_compress_every: int = config_field(
         8,
         comment="debate 每多少步把旧交锋压成锚点卡",
@@ -615,6 +605,16 @@ class AutonomousConfig:
     workshop_max_tool_calls: int = config_field(
         60,
         comment="workshop 模式单次最大工具调用次数",
+        section="autonomous"
+    )
+    workshop_max_tokens: int = config_field(
+        4096,
+        comment="workshop 每步输出上限 token",
+        section="autonomous"
+    )
+    reflection_max_tokens: int = config_field(
+        4096,
+        comment="复盘（conclude_reflection）每步输出上限 token",
         section="autonomous"
     )
     zero_tool_max_retries: int = config_field(
@@ -1408,7 +1408,7 @@ _SECTION_HEADERS = {
     "rag": "# ================= RAG 记忆配置 =================",
     "paths": "# ================= 本地文件路径配置 =================\n# 均为相对项目根目录的路径",
     "timing": "# ================= 时间/超时配置 =================",
-    "tools": "# ================= 亲手操作类工具（bash / 手机 ADB） =================",
+    "tools": "# ================= 亲手操作类工具（手机 ADB） =================",
     "energy": "# ================= 精力值系统配置 =================",
     "attention": "# ================= 注意力/响应配置 =================",
     "debug": "# ================= 调试配置 =================",

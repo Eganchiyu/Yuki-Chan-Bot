@@ -744,3 +744,12 @@
 
 ## 2026-11-15 debate 输出上限提到 4096
 - 600 token 在带 reasoning 的模型上常被 `finish_reason=length` 截断，按机主要求 `debate_max_tokens` 改为 4096（config.py 默认值、configs/config.yaml、docs 参数表同步），容器已平滑重启生效。
+
+## 2026-11-15 debate 检索窗口 / 复盘+工坊 4096 / 删除 bash 工具
+- debate 改为「检索窗口」：`DEBATE_MAIN_TOOLS` 恢复 `search_diary` + `search_group_snapshots`，`DEBATE_SANDBOX_TOOLS` = `inner_vote` + `list_recent_work_sessions` + `inspect_work_session`；新增 `autonomous.debate_retrieval_steps`（默认 5，按步计）。前 N 步可见检索集，窗口关闭后视图只剩 `inner_vote`（越窗调用被 `ToolCallManager` 的 view 拦成「该工具当前未展开」）。`InnerDebate._visible_tools(step)` 统一出视图，`call_model` / `extract_calls` / `execute_calls` 三处同源。
+- 提示词：`debate_shared(chat_label, retrieval_steps)`、`debate_step_instruction(..., retrieval_steps)` 按窗口给「还剩几步可查 / 已收起」；`pressure_narration` 在窗口最后一步与关闭后第一步各给一次旁白；`debate_retrieval_steps=0` 退化为无检索（第 4 步仍提醒挑锚点）。
+- token：新增 `autonomous.reflection_max_tokens`（4096）与 `autonomous.workshop_max_tokens`（4096）；`coordinator._reflect` 由 900、`workshop` 由 1200 改为读配置；`inspect` 的 tuning 同步暴露三项。
+- 删除 `bash` 工具（全局、不归档）：删 `core/tools/tools_bash.py`、`TOOL_SPECS` spec 与 `__init__` 导出、`ToolsConfig` 三个 `bash_*` 键（config.py + configs/config.yaml）、`tool_prune._stub` 的 bash 分支；`core/prompts.py`「你自己的手」改为只讲手机；`history_filter`/`engine_diary` 注释同步。
+- 文档：`docs/autonomous-architecture.md` §3.3/§3.4/§3.5 + 配置表、`docs/toolchain-usage.md` 工具表与归档说明同步。
+- 测试：`test_tool_hands` 删 7 项 bash 用例并加「bash 不在注册表」断言；`test_autonomous_sandbox` 桩改走 `search_diary`，新增检索窗口用例（窗口内 5 个工具、越窗只剩 inner_vote 且工具结果为「未展开」）；`test_diary_filter` 工具名改 `search_diary`。全量 `pytest tests -q` **223 passed / 0 failed**；`YUKI_DRY_RUN=1 python main.py` 通过。
+- 状态：代码已落地，线上容器仍是旧进程，需重启 `yuki` 容器生效。
