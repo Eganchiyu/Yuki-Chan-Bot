@@ -732,3 +732,12 @@
 - 后端：`inspect.py` 快照增补 `groups`（准入逐群解释）、`freeze.pending_catchups`、`tuning`、`run.progress`（从 transcript 汇总步数/投票/工具数/当前 phase）、`last_run_at_ts`/`started_ts`（前端算冷却）；新增 `autonomous_transcripts(limit)` / `autonomous_transcript(run_id)` 与路由 `GET /api/autonomous/runs`、`GET /api/autonomous/runs/<run_id>`（run_id 白名单正则防穿越）。工坊工具数是累计值，聚合取 max 而非求和。
 - 验证：`pytest tests -q` 229 passed；容器内起 8899 临时实例实测 `/`、`/static/*`、三个 autonomous API、`/static/../` 403、合成 transcript 回放 13 事件全部正常。
 - 待机主操作：线上容器进程仍持有旧模块，需重启容器（或走 `deploy/supervisor.py`）后 8777 才是新界面。
+
+## 2026-11-15 debate 只发工具不说话：撤检索 + 锚点引导
+- 现象：`run-1794718721055`（/深思）32 步 `content` 全空，只反复调 `search_diary`/`search_group_snapshots`/`list_recent_work_sessions`，零投票、`stopped=cap`、复盘 abandon。
+- 根因：主线路 `gemini-3.5-flash-lite` 403 被封 → 整轮走备用 `deepseek-flash`；该模型挂了 tools 时把整轮当纯工具调用、`content=''`（容器内复现，与 reasoning_effort 无关）。`_message_is_empty` 见 tool_calls 不算空，故不打日志；空字符转成占位符「（先翻了翻旧记录和档案）」进历史，越翻越原地打转。
+- 改动（按机主要求「引导 + 撤回日记检索」）：
+  - `DEBATE_MAIN_TOOLS` 清空、`DEBATE_SANDBOX_TOOLS` 只剩 `inner_vote`，`RETRIEVAL_TOOLS` 置空——debate 阶段不再挂任何检索工具，锚点只用 `DiarySeedSampler` 注入的 3 条日记。
+  - `prompts.py`：共有底色补「手边没有检索工具，挑一个在意的细节当锚点再往下想」；A 视角删掉 search_diary/群聊截屏/工作档案指引，改为「锚点→那我到底想做什么」；B 视角加「别要求对方再查资料」；步进指令要求「先用完整两三句话说出来，别只调用工具」；第 4 步旁白改为「挑锚点，别急着查」。`seeds_block` 标题提示可当锚点。
+  - `docs/autonomous-architecture.md` 3.3 同步（可见工具仅 inner_vote、旁白文案）。
+- 验证：容器内用真实提示词打 `deepseek-flash`，A/B 两步都正常输出正文（之前同条件恒空）；`pytest tests -q` 229 passed。

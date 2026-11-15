@@ -138,7 +138,7 @@ for step in 1..debate_max_rounds:
     role = 'A' if step 奇数 else 'B'
     messages = [system: 共有底色 + 该念头附加引导,
                 user:   日记契机 + 交锋记录/锚点 + 压力旁白 + 轮到谁]
-    msg = llm_chat_raw(tools=只读接地工具+inner_vote, max_tokens=debate_max_tokens)
+    msg = llm_chat_raw(tools=inner_vote, max_tokens=debate_max_tokens)
     calls = 原生 tool_calls 或 tool_markup 还原
     calls 非空 → execute(calls)（投票写进 SandboxState.votes）
     turns.append({role, content})
@@ -148,8 +148,8 @@ for step in 1..debate_max_rounds:
 ```
 
 - **收敛条件**：连续两步 `agree_to_end=True` **且** `verdict` 完全一致（`SandboxState.consensus()`）。
-- **可见工具**：`search_diary`、`search_group_snapshots`、`list_recent_work_sessions`、`inspect_work_session`、`inner_vote`（只读接地 + 投票）。
-- **三段式压力旁白**（纯代码，不花 token）：第 4 步未检索过→提醒去翻日记；第 11 步→推演落地细节；第 `max(23, 0.7*上限)` 步→催收敛。
+- **可见工具**：只有 `inner_vote`。debate 阶段不挂任何检索工具——锚点由 `DiarySeedSampler` 一次性注入（2 条近 7 天本群 + 1 条 30 天前旧日记），她要用的是已经浮现的画面，不能搜新的。
+- **三段式压力旁白**（纯代码，不花 token）：第 4 步→提醒「挑一个锚点，别急着查」；第 11 步→推演落地细节；第 `max(23, 0.7*上限)` 步→催收敛。
 
 ### 3.4 reflection 步骤（`coordinator._reflect`）
 

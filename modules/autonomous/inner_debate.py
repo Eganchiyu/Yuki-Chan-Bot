@@ -24,11 +24,11 @@ from utils.logger import get_logger
 
 logger = get_logger("autonomous.debate")
 
-# 交锋阶段只挂只读接地工具 + 投票（§4.2 第 3 条）
-DEBATE_MAIN_TOOLS = {"search_diary", "search_group_snapshots"}
-DEBATE_SANDBOX_TOOLS = ["inner_vote", "list_recent_work_sessions", "inspect_work_session"]
+# 交锋阶段不挂任何检索工具：锚点由 DiarySeedSampler 一次性注入，唯一工具是投票
+DEBATE_MAIN_TOOLS: set[str] = set()
+DEBATE_SANDBOX_TOOLS = ["inner_vote"]
 DEBATE_VISIBLE = DEBATE_MAIN_TOOLS | set(DEBATE_SANDBOX_TOOLS)
-RETRIEVAL_TOOLS = DEBATE_MAIN_TOOLS | {"list_recent_work_sessions", "inspect_work_session"}
+RETRIEVAL_TOOLS: set[str] = set()  # debate 已无检索工具，压力旁白不再依赖「是否检索过」
 ANCHOR_MAX_CHARS = 600
 CONSENSUS_SUMMARY_MAX_CHARS = 600
 
