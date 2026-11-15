@@ -643,3 +643,11 @@
 - `utils/llm_client.get_route_state()`：只读暴露主备熔断状态。
 - 测试：新增 `tests/test_status.py`（26 项），更新 `tests/test_napcat.py` 私聊调用签名；全量 `179 passed / 5 failed`（5 项为既有断言漂移）。
 - 状态：需重启 `yuki` 容器生效。
+
+## 2026-11-15 日记检索群归属标注 + 软比例抽样
+- `core/maid/maid_tools.py`：`search_diary_fast(date_str, keyword, chat_id, chat_mode)` 增加归属参数；`collection.get` 追加 `include=["documents","metadatas"]`，按 metadata `chat_id` 拆本对话/别的群，结果行前缀 `[本群]`（私聊 `[本对话]`）/ `[群:xxx]`（无 chat_id 元数据为 `[群:未标注]`）。
+- 软比例：`DIARY_LOCAL_QUOTA=6` / `DIARY_OTHER_QUOTA=2` 于 `DIARY_PREVIEW_MAX=8`，本对话优先占 6 条，剩余名额让给另一侧（本群不足时自动用别的群补齐）。
+- 兜底文案：本对话 0 命中 → `本群没有相关记录，以下是别的群的日记（共 N 条）`（私聊写 `本对话`）；两侧全空 → `没有相关记录。`（替换原「没有找到匹配的日记」）。
+- `core/tools/tools_diary.py` 传 `context.chat_id` + `context.mode`；`core/tools/tools.py` 的 `search_diary` 描述补群归属说明。
+- 测试：`tests/test_memory.py` 新增 `test_search_diary_fast_labels_and_soft_ratio`、`test_search_diary_fast_no_local_or_no_records`，旧断言「没有找到」改「没有相关记录」。全量 `181 passed / 5 failed`（5 项为既有断言漂移，与本改动无关）。
+- 真实库冒烟：chat 1057020972 关键词「主人」→ 本群 2730/别的群 1630，展示本群 6 + 别的群 2；小群 620127376 查 FrostFrame → 正确输出「本群没有相关记录」。待重启 `yuki` 容器生效。
