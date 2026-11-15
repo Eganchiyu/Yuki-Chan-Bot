@@ -526,7 +526,9 @@ function renderAutoRunList() {
   });
   if (countLabel) countLabel.textContent = `${rows.length}/${autoRuns.length} 次`;
   if (!rows.length) {
-    box.innerHTML = '<div class="auto-empty">没有匹配的运行记录</div>';
+    box.innerHTML = autoRuns.length
+      ? '<div class="auto-empty">没有匹配的运行记录</div>'
+      : '<div class="auto-empty">还没有逐轮记录：本群用 /深思 跑一次后就会出现</div>';
     return;
   }
   box.innerHTML = rows.map(r => {
