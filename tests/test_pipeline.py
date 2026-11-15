@@ -244,6 +244,45 @@ async def test_reply_watch_lifecycle_and_pipeline_integration(fast_watch, monkey
     assert get_watch("g1") is None
 
 
+async def test_reply_watch_custom_builder_none_skips_silently(fast_watch):
+    """event_builder 返回 None（如心情高涨连发护栏判定超额）时静默关闭订阅。"""
+    calls = []
+
+    async def callback(chat_id, mode, **kwargs):
+        calls.append(chat_id)
+
+    subscribe("c_skip", "group", callback, timeout_seconds=0.001,
+              event_builder=lambda watch: None)
+    await asyncio.sleep(0.12)
+    assert calls == []
+    assert get_watch("c_skip") is None
+
+
+async def test_high_spirits_burst_guard_caps_at_two_sends(fast_watch):
+    """独处回群后最多连发 2 条：第二句发完就不再登记任何追击。"""
+    from core.brain import YukiState
+
+    pipeline = _create_mock_pipeline()
+    pipeline.yuki = YukiState()
+    pipeline.engine.process_callback = AsyncMock()
+    pipeline.yuki.mark_high_spirits("g1", turns=1, minutes=5)
+    context = {
+        "chat_id": "g1", "mode": "group", "message_objs": [],
+        "answer_text": "人家刚写的小故事，要不要听呀？",
+    }
+
+    # 回群第一句已发出：还剩 1 次连发额度，允许登记第二句的候补窗口
+    pipeline.yuki.note_high_spirits_send("g1")
+    watch = pipeline._maybe_subscribe_reply(context)
+    assert watch is not None
+
+    # 第二句也发出后额度用尽：不再登记追击，也打不出第三条
+    pipeline.yuki.note_high_spirits_send("g1")
+    assert pipeline._high_spirits_guard_active("g1") is True
+    assert pipeline._maybe_subscribe_reply(context) is None
+    assert pipeline.yuki.high_spirits_burst_remaining("g1") == 0
+
+
 # ==================== 引擎空闲总结 ====================
 
 async def test_engine_idle_summarize():

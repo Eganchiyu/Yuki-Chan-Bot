@@ -425,6 +425,11 @@ class AutonomousCoordinator:
 
     # ------------------------------------------------------------ 回群收尾
     async def _after_run(self, gid, *, episode: bool = False) -> None:
+        # 有补台的群不再额外破冰：两者都是「回群开口」，同时触发会立刻连发两条
+        pending_catchup = set(self.router.pending_catchups())
+        # 先进入高涨：回群第一句就从连发额度开始记账，避免处理延迟造成账实不符
+        if episode:
+            self._mark_high_spirits(gid)
         try:
             await self.router.dispatch_catchups()
         except Exception as exc:
@@ -432,8 +437,7 @@ class AutonomousCoordinator:
         if not episode:
             # do_nothing / abandon / 中断：不拉高欲望、不主动破冰，安静回到群聊
             return
-        self._mark_high_spirits(gid)
-        if not self.pipeline.yuki.message_buffer.get(str(gid)):
+        if str(gid) not in pending_catchup:
             await self._trigger_ice_break(gid)
 
     def _mark_high_spirits(self, gid) -> None:

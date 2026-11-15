@@ -658,13 +658,13 @@ class AutonomousConfig:
         section="autonomous"
     )
     high_spirits_turns: int = config_field(
-        3,
-        comment="回到群聊后「心情高涨」主动连发配额",
+        1,
+        comment="回到群聊后「心情高涨」额外补发条数（1 = 回群第一句 + 补 1 句，共 2 连发）",
         section="autonomous"
     )
     high_spirits_minutes: int = config_field(
         25,
-        comment="心情高涨状态持续分钟数",
+        comment="心情高涨状态持续分钟数（回复欲望加成有效期）",
         section="autonomous"
     )
     high_spirits_desire_bonus: float = config_field(
@@ -673,8 +673,8 @@ class AutonomousConfig:
         section="autonomous"
     )
     high_spirits_followup_window: int = config_field(
-        12,
-        comment="高涨状态下被动回音窗口秒数（可小于 reply_watch 的 30s 下限）",
+        30,
+        comment="两次连发之间的最小空隙秒数（30~60 为宜；到期无人接话才补第二句）",
         section="autonomous"
     )
 

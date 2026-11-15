@@ -234,6 +234,13 @@ class SessionPipeline:
         if is_human_incoming(incoming) and not incoming.is_system_injected:
             resolve(chat_id_str, "human_message")
             self._record_human_timestamp(chat_id_str)
+            # 真人接话打断连发链：独处回群后的连发额度回满（不限高涨期则无副作用）
+            reset_burst = getattr(self.yuki, "reset_high_spirits_burst", None)
+            if callable(reset_burst):
+                try:
+                    reset_burst(chat_id_str)
+                except Exception:
+                    pass
         # 消息一到就后台预取图片，把下载与图像理解挪出回复关键路径
         self._schedule_image_prefetch(incoming.content)
         return incoming
@@ -851,9 +858,6 @@ class SessionPipeline:
         answer_text = context.get("answer_text") or ""
         if not answer_text.strip():
             return None
-        # 破冰和注入事件不订阅，避免自己套自己
-        if context.get("ice_break"):
-            return None
         message_objs = context.get("message_objs") or []
         if any(m.get("is_reply_watch_event") or m.get("is_timer_event") for m in message_objs):
             return None
@@ -867,7 +871,8 @@ class SessionPipeline:
 
         chat_id = str(context["chat_id"])
 
-        # 心情高涨：10~15s 短窗口被动判断，群里还安静就主动再说几句（Phase 4）
+        # 心情高涨：留出连发空隙（默认 30s），到期群里还安静才轻轻补一句。
+        # 连发护栏最多 2 条（回群第一句 + 补 1 句），这里登记的是第二句的候补。
         high_event = self._high_spirits_event_builder(chat_id)
         if high_event is not None:
             window = max(1.0, float(cfg.autonomous.high_spirits_followup_window))
@@ -879,6 +884,15 @@ class SessionPipeline:
                 )
             except Exception as exc:
                 logger.warning(f"[Pipeline] 心情高涨订阅失败: {exc}")
+
+        # 破冰和注入事件不订阅，避免自己套自己
+        if context.get("ice_break"):
+            return None
+
+        # 高涨期连发额度已用完：不再登记「等待回音」追击，避免回群后刷屏
+        if self._high_spirits_guard_active(chat_id):
+            logger.debug(f"[Pipeline] {chat_id} 心情高涨连发额度已用完，不再追加追击")
+            return None
 
         energy = float(getattr(self.yuki, "energy", {}).get(chat_id, 0.0))
         activity = float(getattr(self.yuki, "group_activity", {}).get(chat_id, 0.0))
@@ -898,28 +912,73 @@ class SessionPipeline:
             recent_times=list(self._recent_msg_times.get(chat_id, [])),
         )
 
-    def _high_spirits_event_builder(self, chat_id: str):
-        """心情高涨时构造「再主动说几句」的被动事件；不在高涨状态返回 None。"""
-        active = getattr(self.yuki, "high_spirits_active", None)
-        turns_left = getattr(self.yuki, "high_spirits_turns_left", None)
-        if not callable(active) or not callable(turns_left):
+    def _high_spirits_burst_left(self, chat_id: str) -> int | None:
+        """读连发护栏剩余额度；brain 未升级时返回 None（保持旧行为）。"""
+        getter = getattr(self.yuki, "high_spirits_burst_remaining", None)
+        if not callable(getter):
             return None
         try:
-            if not active(chat_id) or turns_left(chat_id) <= 0:
-                return None
+            return max(0, int(getter(chat_id)))
         except Exception:
             return None
 
+    def _high_spirits_guard_active(self, chat_id: str) -> bool:
+        """高涨期内连发额度已用完：此时不再登记任何主动追击。"""
+        active = getattr(self.yuki, "high_spirits_active", None)
+        if not callable(active):
+            return False
+        try:
+            if not active(chat_id):
+                return False
+        except Exception:
+            return False
+        return self._high_spirits_burst_left(chat_id) == 0
+
+    def _high_spirits_can_followup(self, chat_id: str) -> bool:
+        """能否在回群第一句后再补一句：高涨有效 + 补发配额 + 连发护栏都允许。"""
+        active = getattr(self.yuki, "high_spirits_active", None)
+        turns_left = getattr(self.yuki, "high_spirits_turns_left", None)
+        if not callable(active) or not callable(turns_left):
+            return False
+        try:
+            if not active(chat_id) or turns_left(chat_id) <= 0:
+                return False
+        except Exception:
+            return False
+        burst_left = self._high_spirits_burst_left(chat_id)
+        return burst_left is None or burst_left > 0
+
+    def _high_spirits_event_builder(self, chat_id: str):
+        """心情高涨时构造「再轻轻补一句」的被动事件；额度/空隙不允许时返回 None。"""
+        if not self._high_spirits_can_followup(chat_id):
+            return None
+
+        gap = max(1.0, float(cfg.autonomous.high_spirits_followup_window))
+
         def _builder(watch):
+            # 到点时再核一次：等待期间可能已经发过别的消息，超限或空隙不够就安静收手
+            if not self._high_spirits_can_followup(chat_id):
+                logger.info(f"[Pipeline] {chat_id} 心情高涨连发额度已用完，放弃补发")
+                return None
+            gap_ok = getattr(self.yuki, "high_spirits_gap_elapsed", None)
+            if callable(gap_ok):
+                try:
+                    if not gap_ok(chat_id, gap):
+                        logger.info(
+                            f"[Pipeline] {chat_id} 心情高涨连发空隙未到（需 {gap:.0f}s），放弃补发"
+                        )
+                        return None
+                except Exception:
+                    pass
             left = self.yuki.consume_high_spirits_turn(chat_id)
-            logger.info(f"[Pipeline] {chat_id} 心情高涨被动窗口到期，主动再说几句（剩余 {left} 轮）")
+            logger.info(f"[Pipeline] {chat_id} 心情高涨被动窗口到期，轻轻补一句（剩余配额 {left} 轮）")
             return {
                 "content": (
-                    "【心情高涨】你刚刚在独处时光里自己捣鼓出了很有意思的东西，"
-                    "现在心情高涨、很有分享欲，想再接着多说几句。"
-                    "自然地聊聊你刚做的东西、分享一点细节或感想就好，"
-                    "如果做了图片或文件也可以发给大家看看；"
-                    "注意保持平时聊天的自然节奏，不要像汇报工作。"
+                    "【心情高涨·轻轻补一句】你刚在独处时光里做出了自己挺喜欢的东西，"
+                    "回到群里心情还很好。这是回群后最多两句里的第二句——"
+                    "用你平时那种软软的、带点小得意的电子妹妹语气，只说一两句就好，"
+                    "可以带「喵」「～」和小表情。不要像汇报工作，不要重复上一句，"
+                    "也不要再展开成长篇或连发第三条。"
                 ),
                 "raw_text": "",
                 "name": "系统",
@@ -934,6 +993,21 @@ class SessionPipeline:
         """保存回复上下文，并在历史过长时触发总结。"""
         chat_id = context["chat_id"]
         answer_text = context["answer_text"]
+
+        # 连发护栏记账：这条回复已经发出（心情高涨期内消耗一次连发额度）
+        try:
+            note_send = getattr(self.yuki, "note_high_spirits_send", None)
+            if callable(note_send):
+                note_send(chat_id)
+        except Exception as exc:
+            logger.debug(f"[Pipeline] 心情高涨连发额度记账失败: {exc}")
+
+        # 额度用尽就把还在倒计时的被动追击一并撤掉，确保回群后最多只留下 2 条
+        if self._high_spirits_guard_active(chat_id):
+            try:
+                resolve(chat_id, "high_spirits_burst_used")
+            except Exception:
+                pass
 
         # 她刚才那句话像在等人回答，就静默等她一会儿
         try:

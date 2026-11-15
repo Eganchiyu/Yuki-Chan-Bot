@@ -123,11 +123,14 @@ finally:
 ### 3.2 `_after_run`
 
 ```
-router.dispatch_catchups()        # 冻结期有新消息的群各补一次台
-if not episode: return            # do_nothing / abandon / 中断：不拉高欲望、不破冰
-yuki.mark_high_spirits(gid)       # 25 分钟高涨 + 3 轮连发配额
-若该群缓冲区为空 → engine.process_callback(ice_break=True) 主动破冰
+pending = router.pending_catchups()          # 先记下哪些群需要补台
+if episode: yuki.mark_high_spirits(gid)      # 25 分钟高涨 + 最多 2 连发额度
+router.dispatch_catchups()                   # 冻结期有新消息的群各补一次台
+if not episode: return                       # do_nothing / abandon / 中断：不拉高欲望、不破冰
+若该群不在 pending → engine.process_callback(ice_break=True) 主动破冰
 ```
+
+> 补台和破冰是「回群开口」的两种方式，二选一：否则补台回复刚发完又立刻破冰，等于回群就连发两条。
 
 ### 3.3 debate 主循环（`inner_debate.py`）
 
@@ -207,12 +210,23 @@ handle_catchup(chat_id):
   生成 is_catchup 合成消息 → super().enqueue_message(force_reply=True)
 ```
 
-### 3.8 心情高涨与被动连发（回群后）
+### 3.8 心情高涨与被动连发（回群后，最多 2 连发）
 
-- `YukiState.mark_high_spirits(gid)`：`high_spirits_until[gid]=now+25min`、`high_spirits_remaining_turns[gid]=3`。
-- `EngineDecisionService.decide_to_reply`：高涨时 `reply_score += high_spirits_desire_bonus*100`（默认 +45），低精力拒绝分支留 `15% MAX_ENERGY` 底线。
-- `SessionPipeline._maybe_subscribe_reply`：高涨且还有配额时，注册 `high_spirits_followup_window`（默认 12s，可低于 reply_watch 的 30s 下限）的被动窗口；到期无人回 → `event_builder` 注入「想再说几句」并扣 1 轮配额。
-- `prompts.build_chat_context` 注入【心情高涨】引导 + 【今日独处工作记忆】+ 小本本双区。
+- `YukiState.mark_high_spirits(gid)`：`high_spirits_until[gid]=now+25min`、`high_spirits_remaining_turns[gid]=1`，
+  并初始化连发护栏：`high_spirits_burst_limit=1+turns=2`、`burst_left=2`、`last_send_at=0`。
+- 连发护栏（防独处回群后刷屏）：
+  - 回群第一句（补台回复/破冰/自然接话）在 `finalize_conversation` 记账，`burst_left -= 1`；
+  - 真主任何消息到达时 `reset_high_spirits_burst()` 把额度回满（连发链被打断，不限制正常 1:1 回复）；
+  - 额度用尽后，高涨期内不再登记任何 `reply_watch` 追击（`_high_spirits_guard_active`），
+    也就是「最多连发 2 条」是硬上限。
+- `high_spirits_followup_window`（默认 30s，可配 30~60）是两次连发的**最小空隙**：
+  第二句只在到期且群里仍安静、空隙已够时才补；等待期间有人接话则订阅自动解除。
+- `reply_watch._fire_later`：`event_builder` 明确返回 `None` 时静默关闭订阅（不发兜底的「等待超时」事件）。
+- `EngineDecisionService.decide_to_reply`：高涨时 `reply_score += high_spirits_desire_bonus*100`（默认 +45），
+  低精力拒绝分支留 `15% MAX_ENERGY` 底线；加成只按 25 分钟时间窗算，不再随补发配额消耗而提前结束。
+- `SessionPipeline._maybe_subscribe_reply`：高涨且补发配额/连发额度都允许时，注册被动窗口；
+  到期无人回 → `event_builder` 注入「轻轻补一句」并扣 1 轮配额，文案要求保持软软的电子妹妹语气、不重复上一句。
+- `prompts.build_chat_context` 注入【心情高涨】引导（含「最多连发两条、两条之间留空隙」）+ 【今日独处工作记忆】+ 小本本双区。
 
 ---
 
@@ -287,13 +301,13 @@ chat ────────► debate ──投票 start_work──► reflect
 | 文件 | 改动 |
 | --- | --- |
 | `main.py` | 用 `ModeAwarePipeline` 装配、`init_data_dir()`、`AutonomousCoordinator` 注入 `pipeline.autonomous` 与 `engine.autonomous`、`sweep_stale_runs()` |
-| `core/session_pipeline.py` | 抽出 `_buffer_incoming()`；`IncomingMessage.is_catchup/is_maid_report/is_system_injected`；补台强制回复；`_maybe_subscribe_reply` 高涨短窗口 + `_high_spirits_event_builder` |
+| `core/session_pipeline.py` | 抽出 `_buffer_incoming()`；`IncomingMessage.is_catchup/is_maid_report/is_system_injected`；补台强制回复；`_maybe_subscribe_reply` 高涨连发空隙窗口 + `_high_spirits_event_builder` + 连发护栏（`_high_spirits_guard_active`） |
 | `core/history_filter.py` | 补台 / 小女仆汇报不计入聊天轮次 |
-| `core/brain.py` | `high_spirits_until` / `high_spirits_remaining_turns`（按 chat_id）+ 四个方法 |
+| `core/brain.py` | `high_spirits_until` / `high_spirits_remaining_turns` / `high_spirits_burst_*`（按 chat_id）+ 连发护栏方法 |
 | `core/engine/engine_decision.py` | 高涨加分与 15% 精力底线 |
 | `core/engine/engine_monitor.py` | 30s 巡检挂 `auto_trigger_check()`；自主轮期间跳过日记巡检与破冰 |
 | `core/engine/engine.py` | `self.autonomous` 挂点 + 传给 monitor |
-| `core/reply_watch.py` | `subscribe/auto_subscribe` 可选 `min_timeout_seconds` / `event_builder` |
+| `core/reply_watch.py` | `subscribe/auto_subscribe` 可选 `min_timeout_seconds` / `event_builder`（返回 `None` 表示静默跳过补发） |
 | `core/notebook.py` | 双区（daily ≤350 / plans ≤160）、`load_zones/save_zone/render`、旧 `content` 兼容 |
 | `core/prompts.py` | 小本本双区渲染、今日工作记忆槽位、心情高涨槽位 |
 | `core/tools/tools_notebook.py` + `tools.py` | `update_notebook(zone=...)` |
@@ -357,10 +371,10 @@ chat ────────► debate ──投票 start_work──► reflect
 | `digest_model` | `""` | 补台/压缩模型，空=主模型 |
 | `diary_local_ratio` | `0.7` | 日记检索本群占比（软比例，实现于 `search_diary_fast`） |
 | `daily_memory_ttl_hours` | `18` | L4 有效期 |
-| `high_spirits_turns` | `3` | 回群连发配额 |
-| `high_spirits_minutes` | `25` | 高涨持续 |
+| `high_spirits_turns` | `1` | 回群后额外补发配额（1 = 回群第一句 + 补 1 句，共 2 连发） |
+| `high_spirits_minutes` | `25` | 高涨持续（回复欲望加成） |
 | `high_spirits_desire_bonus` | `0.45` | 欲望加成（换算成 +45 分） |
-| `high_spirits_followup_window` | `12` | 被动回音窗口秒数 |
+| `high_spirits_followup_window` | `30` | 两次连发之间的最小空隙秒数（30~60 为宜） |
 
 ---
 

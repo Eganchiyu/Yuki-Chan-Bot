@@ -10,14 +10,12 @@ REPLY_THRESHOLD = 50.0
 
 
 def _high_spirits_active(yuki, chat_id) -> bool:
-    """自主轮回群后的心情高涨判定（brain 未升级时视为 False）。"""
+    """自主轮回群后的心情高涨判定（只按时间窗；连发额度由 pipeline 护栏单独管）。"""
     check = getattr(yuki, "high_spirits_active", None)
     if not callable(check):
         return False
     try:
-        return bool(check(chat_id)) and (
-            not hasattr(yuki, "high_spirits_turns_left") or yuki.high_spirits_turns_left(chat_id) > 0
-        )
+        return bool(check(chat_id))
     except Exception:
         return False
 

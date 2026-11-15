@@ -6,6 +6,7 @@ import time
 from collections import defaultdict
 
 from config import cfg
+from core.maid.maid_runtime import MaidRuntime
 from core.prompts import (
     get_yuki_setting_group,
     get_yuki_setting_master_private,
@@ -90,6 +91,8 @@ class YukiState:
         self.last_sent_meme = {}  # {chat_id: doc_id}
         # 在 __init__ 里添加
         self.maid_task_queue = asyncio.Queue()
+        # 小女仆任务运行时登记表：会话内编号、并行执行、叫停都走它（唯一事实源）
+        self.maid_runtime = MaidRuntime()
         self.maid_current_tasks = {}  # chat_id -> 当前任务描述（让Yuki知道她在干什么）
         self.maid_active_chats = {}  # chat_id -> mode，重启前要往这些会话喊一声
 
@@ -103,18 +106,32 @@ class YukiState:
 
         # --- 新增：自主轮回群后的「心情高涨」社交反哺状态（按 chat_id 记账）---
         self.high_spirits_until = {}          # chat_id -> 截止时间戳
-        self.high_spirits_remaining_turns = {}  # chat_id -> 剩余主动连发配额
+        self.high_spirits_remaining_turns = {}  # chat_id -> 剩余主动补发配额
+        # 连发护栏：回群后最多连发「1 + high_spirits_turns」条，两条之间要留出空隙，
+        # 避免独处结束后一口气刷屏（真主接话会把连发链重置）。
+        self.high_spirits_burst_limit = {}    # chat_id -> 本轮连发上限（含回群第一句）
+        self.high_spirits_burst_left = {}     # chat_id -> 本轮还能连发几条
+        self.high_spirits_last_send_at = {}   # chat_id -> 上一条发出时间
 
     def mark_high_spirits(self, chat_id, turns=None, minutes=None):
-        """自主轮结束回到群聊：拉高回复欲望并给几轮主动分享配额。"""
+        """自主轮结束回到群聊：拉高回复欲望，并给一小段「最多 2 连发」的分享窗口。"""
         cid = str(chat_id)
-        turns = int(turns if turns is not None else getattr(cfg.autonomous, "high_spirits_turns", 3) or 3)
+        turns = max(
+            0,
+            int(turns if turns is not None else getattr(cfg.autonomous, "high_spirits_turns", 1) or 1),
+        )
         minutes = float(
             minutes if minutes is not None else getattr(cfg.autonomous, "high_spirits_minutes", 25) or 25
         )
+        burst_limit = turns + 1  # 回群第一句也算一次连发
         self.high_spirits_until[cid] = time.time() + max(0.0, minutes) * 60
-        self.high_spirits_remaining_turns[cid] = max(0, turns)
-        logger.info(f"[Brain] {cid} 进入心情高涨：剩余 {turns} 轮，持续 {minutes:.0f} 分钟")
+        self.high_spirits_remaining_turns[cid] = turns
+        self.high_spirits_burst_limit[cid] = burst_limit
+        self.high_spirits_burst_left[cid] = burst_limit
+        self.high_spirits_last_send_at[cid] = 0.0
+        logger.info(
+            f"[Brain] {cid} 进入心情高涨：最多连发 {burst_limit} 条，持续 {minutes:.0f} 分钟"
+        )
 
     def high_spirits_active(self, chat_id) -> bool:
         cid = str(chat_id)
@@ -130,9 +147,39 @@ class YukiState:
         cid = str(chat_id)
         left = max(0, self.high_spirits_turns_left(cid) - 1)
         self.high_spirits_remaining_turns[cid] = left
-        if left == 0:
-            self.high_spirits_until[cid] = 0.0
+        # 配额用完只代表不再额外补发，心情高涨本身仍按 high_spirits_minutes 持续
         return left
+
+    # ------------------------------------------------------------ 连发护栏
+    def high_spirits_burst_remaining(self, chat_id) -> int:
+        """高涨期内本轮还能连发几条（不在高涨期返回 0）。"""
+        if not self.high_spirits_active(chat_id):
+            return 0
+        return max(0, int(self.high_spirits_burst_left.get(str(chat_id), 0) or 0))
+
+    def note_high_spirits_send(self, chat_id) -> int:
+        """回复真正发出后记账：消耗一条连发额度并记录发送时刻。"""
+        cid = str(chat_id)
+        if not self.high_spirits_active(chat_id):
+            return 0
+        left = max(0, self.high_spirits_burst_remaining(cid) - 1)
+        self.high_spirits_burst_left[cid] = left
+        self.high_spirits_last_send_at[cid] = time.time()
+        return left
+
+    def reset_high_spirits_burst(self, chat_id) -> None:
+        """真人接话：连发链被打断，回群连发额度回满（只在高涨期内生效）。"""
+        cid = str(chat_id)
+        if not self.high_spirits_active(chat_id):
+            return
+        limit = int(self.high_spirits_burst_limit.get(cid, 0) or 0)
+        if limit:
+            self.high_spirits_burst_left[cid] = limit
+
+    def high_spirits_gap_elapsed(self, chat_id, seconds) -> bool:
+        """距离上一条发出是否已经够得上「连发空隙」。"""
+        last = float(self.high_spirits_last_send_at.get(str(chat_id), 0.0) or 0.0)
+        return last <= 0 or (time.time() - last) >= max(0.0, float(seconds))
 
     async def boost_activity(self, chat_id, sensitivity = cfg.SENSITIVITY) -> None:
         """

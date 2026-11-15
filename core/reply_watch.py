@@ -68,7 +68,7 @@ def subscribe(chat_id, mode, callback, timeout_seconds=60, min_timeout_seconds=N
               event_builder=None):
     """登记（或覆盖）一个会话的回复订阅，返回对模型可见的状态。
 
-    `min_timeout_seconds` 允许调用方压低 30s 下限（心情高涨的 10~15s 窗口用），
+    `min_timeout_seconds` 允许调用方压低 30s 下限（心情高涨的「连发空隙」窗口用），
     默认仍是 `MIN_TIMEOUT_SECONDS`，不影响既有行为。
     """
     if callback is None:
@@ -164,10 +164,16 @@ async def _fire_later(chat_id, delay):
     if callable(builder):
         try:
             custom = builder(watch)
-            if isinstance(custom, dict):
-                event = custom
         except Exception as exc:
             logger.warning(f"[ReplyWatch] 自定义事件构造失败: {exc}")
+            custom = False  # 异常：回落到默认的「等待超时」事件
+        if custom is None:
+            # 构造器明确返回 None：这次不补发（如心情高涨连发护栏判定超额/空隙不够）
+            _watches.pop(chat_id, None)
+            logger.info(f"[ReplyWatch] 自定义事件判定不触发 chat_id={chat_id}，关闭本次订阅")
+            return
+        if isinstance(custom, dict):
+            event = custom
     logger.info(f"[ReplyWatch] 到点提醒 chat_id={chat_id} 第 {watch['followups']}/{MAX_FOLLOWUPS} 次")
     asyncio.create_task(_dispatch(watch["callback"], chat_id, watch["mode"], event))
 

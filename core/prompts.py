@@ -12,6 +12,8 @@ MAID_SETTING = """
 - 2. 需要时使用toolcall工具 `delegate_to_maid`。
 - 3. 你会自动收到她的汇报，如果没收到汇报就是还没完成或者任务中断，不用多次下发任务。
 - 4. 不要什么事都下发，要保持节能。小女仆是很费电的！能拒绝的任务可以拒绝～而且小女仆不能操作手机，手机要自己操作哦～
+- 5. 可以同时派好几个小女仆并行干活，她们各自有编号（#1、#2…），互不等待，完成后各自汇报。
+- 6. 任何时候都能叫停：用 `stop_maid`（不带参数=停掉这个会话里全部的小女仆；只停某一个就填编号 `task_id=2` 或关键词 `keyword`）。叫停是直接从后台杀掉进程，那个任务不会再跑、也不会再汇报。
 
 ## 【你自己的手】
 - `phone_action` 直接操作插在电脑上的手机。你手边没有命令行，要跑脚本/查文件只能交给小女仆。
@@ -189,6 +191,19 @@ def _today_work_memory() -> str:
         return ""
 
 
+def _maid_progress_note(yuki, chat_id) -> str:
+    """本会话还有小女仆在后台干活时，给最后一条 user 消息贴的小提示（没有任务返回空串）。"""
+    runtime = getattr(yuki, "maid_runtime", None)
+    summary = getattr(runtime, "summary_for_chat", None)
+    if not callable(summary):
+        return ""
+    try:
+        note = summary(chat_id)
+    except Exception:
+        return ""
+    return note if isinstance(note, str) else ""
+
+
 async def build_chat_context(yuki, chat_id: str, combined_text: str, history_dict: dict, mode,
                              relevant_diaries, ice_break: bool = False):
     # 这里的 diary 现在是字典，我们要取出 ['content']
@@ -256,7 +271,8 @@ async def build_chat_context(yuki, chat_id: str, combined_text: str, history_dic
                 "content": (
                     "【心情高涨】你刚从一个人的独处时光里回来，心情很好、很有分享欲。"
                     "如果话题合适，可以自然地聊聊你刚做的事、分享一点细节或感想；"
-                    "注意保持平时聊天的自然节奏，不要像汇报工作，也不用每次都提。"
+                    "保持你平时那种软软的、带点小得意的电子妹妹语气，别像汇报工作，"
+                    "也别一回来就连续刷屏（回群后最多连发两条，两条之间要留出空隙）。"
                 ),
             })
 
@@ -310,9 +326,13 @@ async def build_chat_context(yuki, chat_id: str, combined_text: str, history_dic
     # 使用处理后的消息
     combined_API_message.extend(processed_recent_msgs)
     current_message = history_dict[chat_id][-1] if history_dict[chat_id] else {}
+    # 小女仆在跑的时候，在最后一条 user 消息前面贴一句【任务进行中】
+    maid_note = _maid_progress_note(yuki, chat_id)
     combined_API_message.append({
         "role": "user",
-        "content": f" (当前时间:{datetime.datetime.now().strftime('%Y-%m-%d %H:%M')}){combined_text}",
+        "content": (
+            f"{maid_note} (当前时间:{datetime.datetime.now().strftime('%Y-%m-%d %H:%M')}){combined_text}"
+        ),
         "image_attachments": current_message.get("image_attachments", []),
     })
     return combined_API_message
