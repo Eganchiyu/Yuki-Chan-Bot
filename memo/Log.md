@@ -679,3 +679,10 @@
 - 日记归属标注改用群名缓存：`core/maid/maid_tools.py::_diary_labels` 走 `group_name_cache.label()`，取不到群名回落群号。
 - 说明：§5 的「软比例 7:3 + 群标 + 三档降级话术」在 7aed820 已落地（`search_diary_fast` 内实现）；`MemoryRAG.search_diaries` 的群归属只做排序加权，未再加名额硬切分（避免动 chat 热路径）。
 - 测试：更新 notebook 双区/旧格式迁移断言；全量 207 passed。
+
+## 2026-11-15 自主沙盒 P4+P5（工坊与子聚焦嵌套）
+- `modules/autonomous/workshop.py`：≤60 次工具调用（55 次起在工具结果尾附预算提醒、耗尽后 tools 只留 `work_finish`）、零工具追问 ≤2 次后熔断（兜底 512 字日志标 paused）、`work_finish` 512 字截断与产物路径落 L3、跨轮 `inspect_work_session`/自动读取上次 512 字日志续作、小女仆汇报作为内部事件在每轮开头并入上下文（不发群）。
+- 子聚焦嵌套：工具上下文 `metadata["history_manager"]` 传 `AdaptorHistory`，`focus_manager.exit` 只覆写内存流；`focus_view()` 保证子聚焦期间 `work_finish` 等沙盒工具仍在（`pinned`）；模式退出统一 `focus_manager.abort()`。
+- `core/phone_driver.py` 加全局 `ADB_LOCK`，所有 adb 子命令串行，防残留协程抢设备。
+- `SandboxDeps` 增 `image_attach`（复用 `EngineReplyService._attach_tool_screenshots`），工坊里手机截图仍能进多模态上下文。
+- 测试新增 6 项（零工具熔断/预算裁剪/512 截断/续作读日志/内部事件/子聚焦保留 work_finish）；全量 213 passed。

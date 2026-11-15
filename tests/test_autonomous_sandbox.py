@@ -93,7 +93,9 @@ def _main_registry():
         return ToolResult(success=True, content="ok")
 
     registry = FunctionRegistry()
-    for name in ("search_diary", "search_group_snapshots", "bash", "work_finish"):
+    for name in ("search_diary", "search_group_snapshots", "bash", "work_finish",
+                 "phone_start", "phone_action", "phone_macro", "phone_finish",
+                 "art_start", "art_draw", "art_asset", "art_gacha", "art_finish"):
         registry.register(ToolSpec(name=name, description=f"{name}工具",
                                    parameters={"type": "object", "properties": {}},
                                    handler=dummy_handler))
@@ -311,3 +313,123 @@ async def test_no_debate_trace_in_chat_history(sandbox_data, monkeypatch):
     pipeline.history_manager.append_session_message.assert_not_called()
     pipeline.history_manager.replace_session.assert_not_called()
     pipeline.sender.send.assert_not_called()
+
+
+# ==================== Phase 3：工坊 ====================
+
+def _workshop(script, sandbox_data, *, max_calls=10, zero_retries=2,
+              chat_id="1057020972", session_id="sess_test_01"):
+    from modules.autonomous.workshop import Workshop
+
+    monkeypatch_cfg = cfg.autonomous
+    monkeypatch_cfg.workshop_max_tool_calls = max_calls
+    monkeypatch_cfg.zero_tool_max_retries = zero_retries
+    state = SandboxState(run_id="run-w", chat_id=chat_id, session_id=session_id)
+    deps = SimpleNamespace(
+        yuki=MagicMock(),
+        sender=SilentSender(chat_id),
+        main_registry=_main_registry(),
+        history_manager=MagicMock(),
+        memory_rag=MagicMock(),
+        image_store=None,
+        process_callback=None,
+        gateway=None,
+        image_attach=None,
+    )
+    workshop = Workshop(chat_id=chat_id, chat_label="测试群", state=state, deps=deps)
+    return workshop, state, ScriptedLLM(script)
+
+
+async def test_zero_tool_retry_then_fuse(sandbox_data, monkeypatch):
+    workshop, state, llm = _workshop([], sandbox_data, zero_retries=2)
+    monkeypatch.setattr("modules.autonomous.sandbox_loop.llm_chat_raw", llm)
+    outcome = await workshop.run()
+    assert outcome.status == "fuse"
+    # 第一次零工具 → 追问；第二次零工具 → 追问；第三次 → 熔断
+    assert len(llm.calls) == 3
+    assert outcome.work_log                      # 熔断也要留一份兜底工作日志
+    record = sandbox_data.session_store.load(state.session_id)
+    assert record and record["status"] == "paused"
+
+
+async def test_workshop_60_call_cap_trims_tools_to_finish(sandbox_data, monkeypatch):
+    """预算耗尽后只暴露 work_finish，模型被迫收尾。"""
+    from modules.autonomous import workshop as ws_mod
+
+    calls = [{"content": "继续", "tool_calls": [tool_call("bash", command="ls")]} for _ in range(5)]
+    calls.append({"content": "收尾", "tool_calls": [tool_call(
+        "work_finish", status="paused", work_log="写到第二章开头，产物 workspace/n.md",
+        artifacts=["workspace/n.md"])]})
+    workshop, state, llm = _workshop(calls, sandbox_data, max_calls=3, zero_retries=0)
+    seen_tools = []
+
+    original = ws_mod.Workshop._append_budget_reminder
+
+    def spy(self, messages):
+        seen_tools.append(set((msg.get("tool_calls") or [{}])[0].get("function", {}).get("name")
+                              for msg in messages if msg.get("tool_calls")))
+        return original(self, messages)
+
+    monkeypatch.setattr(ws_mod.Workshop, "_append_budget_reminder", spy)
+    monkeypatch.setattr("modules.autonomous.sandbox_loop.llm_chat_raw", llm)
+    outcome = await workshop.run()
+    assert outcome.status == "paused"
+    assert state.session_id == "sess_test_01"
+    record = sandbox_data.session_store.load("sess_test_01")
+    assert record["work_log"].startswith("写到第二章开头")
+    assert record["artifacts"] == ["workspace/n.md"]
+    # 预算耗尽后最后一轮的可见工具只剩 work_finish
+    last_available = llm.calls[-1]["kwargs"].get("tools") or []
+    assert [t["function"]["name"] for t in last_available] == ["work_finish"] or not last_available
+
+
+async def test_work_log_512_truncation(sandbox_data, monkeypatch):
+    long_log = "长" * 800
+    script = [{"content": "收尾", "tool_calls": [tool_call(
+        "work_finish", status="completed", work_log=long_log)]}]
+    workshop, state, llm = _workshop(script, sandbox_data)
+    monkeypatch.setattr("modules.autonomous.sandbox_loop.llm_chat_raw", llm)
+    outcome = await workshop.run()
+    assert outcome.status == "completed"
+    assert len(outcome.work_log) <= 512
+
+
+async def test_session_resume_reads_512_log(sandbox_data, monkeypatch):
+    """第二次进工坊时把上次的 512 字工作日志读进上下文。"""
+    sandbox_data.session_store.save({
+        "session_id": "sess_resume_01", "title": "雪夜电台", "kind": "creative",
+        "status": "paused", "work_log": "第一章已写完，存在 workspace/novels/snow_radio_ch1.md，"
+                                        "下次从第二章开始推演。",
+        "artifacts": ["workspace/novels/snow_radio_ch1.md"], "chat_id": "1057020972",
+    })
+    script = [{"content": "收尾", "tool_calls": [tool_call(
+        "work_finish", status="paused", work_log="继续写了第二章开头")]}]
+    workshop, state, llm = _workshop(script, sandbox_data, session_id="sess_resume_01")
+    monkeypatch.setattr("modules.autonomous.sandbox_loop.llm_chat_raw", llm)
+    await workshop.run()
+    joined = json.dumps(llm.calls[0]["messages"], ensure_ascii=False)
+    assert "snow_radio_ch1.md" in joined and "第二章" in joined
+
+
+async def test_workshop_inner_event_merges_maid_report(sandbox_data, monkeypatch):
+    workshop, state, llm = _workshop([], sandbox_data, zero_retries=0)
+    workshop.queue_inner_event({"content": "小女仆：第一章草稿已写到 workspace/a.md"})
+    monkeypatch.setattr("modules.autonomous.sandbox_loop.llm_chat_raw", llm)
+    await workshop.run()
+    joined = json.dumps(llm.calls[0]["messages"], ensure_ascii=False)
+    assert "小女仆汇报" in joined
+
+
+async def test_workshop_subfocus_keeps_work_finish(sandbox_data, monkeypatch):
+    """进入手机子聚焦后，可见工具仍包含 work_finish。"""
+    from core.focus import focus_manager
+
+    workshop, state, llm = _workshop([], sandbox_data)
+    focus_manager.enter("1057020972", "phone", goal="点外卖")
+    try:
+        visible = workshop.loop.focus_view()
+        assert "work_finish" in visible
+        assert "phone_action" in visible
+        assert "write_work_diary" in visible
+    finally:
+        focus_manager.abort("1057020972")

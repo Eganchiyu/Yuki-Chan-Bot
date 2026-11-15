@@ -81,6 +81,8 @@ class AutonomousCoordinator:
             image_store=getattr(self.pipeline, "image_store", None),
             process_callback=getattr(engine, "process_callback", None),
             gateway=self.pipeline.sender,
+            image_attach=getattr(getattr(engine, "reply_service", None),
+                                 "_attach_tool_screenshots", None),
         )
 
     # ------------------------------------------------------------ 群级准入

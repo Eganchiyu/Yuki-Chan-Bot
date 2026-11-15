@@ -112,26 +112,27 @@ class AndroidDriver:
         if override != self.adb:
             return await override(args, timeout=timeout)
 
-        proc = await asyncio.create_subprocess_exec(
-            *self.adb_cmd(*args),
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        try:
-            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
-            self._consecutive_timeouts = 0
-        except asyncio.TimeoutError:
+        async with ADB_LOCK:
+            proc = await asyncio.create_subprocess_exec(
+                *self.adb_cmd(*args),
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
             try:
-                proc.kill()
-                await proc.wait()
-            except Exception:
-                pass
-            self._consecutive_timeouts += 1
-            if self._consecutive_timeouts >= 2:
+                stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
                 self._consecutive_timeouts = 0
-                await self._restart_adb_server()
-            raise TimeoutError("adb 执行超时")
-        return proc.returncode or 0, stdout or stderr or b""
+            except asyncio.TimeoutError:
+                try:
+                    proc.kill()
+                    await proc.wait()
+                except Exception:
+                    pass
+                self._consecutive_timeouts += 1
+                if self._consecutive_timeouts >= 2:
+                    self._consecutive_timeouts = 0
+                    await self._restart_adb_server()
+                raise TimeoutError("adb 执行超时")
+            return proc.returncode or 0, stdout or stderr or b""
 
     async def adb_text(self, args: list[str], timeout: float = 20.0) -> str:
         override = self._tp_override("_adb_text", self.adb_text)
@@ -496,6 +497,15 @@ class AndroidDriver:
             attempt += 1
             await asyncio.sleep(min(delay, max(0.05, deadline - now)))
             tree = await dump_tree_fn(max_nodes)
+
+
+# 全局 adb 互斥锁：模式锁只保证「没有第二个 Yuki」，防不住残留协程抢同一个设备
+ADB_LOCK = asyncio.Lock()
+
+
+async def adb_guard():
+    """串行化所有 adb 子命令的上下文管理器（供工具层复用）。"""
+    return ADB_LOCK
 
 
 driver = AndroidDriver()

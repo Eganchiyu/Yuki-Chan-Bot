@@ -97,6 +97,7 @@ class SandboxDeps:
     image_store: Any = None
     process_callback: Any = None
     gateway: Any = None
+    image_attach: Any = None          # 工具截图转多模态块的辅助函数（可选）
 
 
 @dataclass

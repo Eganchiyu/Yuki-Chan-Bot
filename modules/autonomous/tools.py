@@ -211,7 +211,8 @@ async def work_finish_tool(context, status: str = "completed", work_log: str = "
     session_id = state.session_id if state and state.session_id else ""
     record = work_session_store.load(session_id) if session_id else None
     if record is None:
-        session_id = work_session_store.new_session_id(getattr(context, "chat_id", ""))
+        # 有 session_id 就沿用它（协调器可能还没落盘），没有才新建
+        session_id = session_id or work_session_store.new_session_id(getattr(context, "chat_id", ""))
         record = {
             "session_id": session_id,
             "title": str(title or "未命名工作"),
