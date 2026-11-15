@@ -183,9 +183,16 @@ async def test_chat_with_tools_text_call_and_working_notice():
             self.sent.append(message)
 
     sender = _Sender()
+    appended = []
+
+    class _History:
+        @staticmethod
+        def append_session_message(chat_id, role, content, **extra):
+            appended.append({"role": role, "content": content, **extra})
+
     service = EngineReplyService(
         yuki=type("Y", (), {"message_buffer": {}})(),
-        history=type("H", (), {"append_session_message": staticmethod(lambda *a, **k: None)})(),
+        history=_History(),
         sender=sender,
         tool_registry=type("R", (), {
             "get_tools": lambda self: [],
@@ -210,6 +217,10 @@ async def test_chat_with_tools_text_call_and_working_notice():
         raw, visible = await service.chat_with_tools("10001", "hi", [], "group", [])
 
     assert captured["tool_calls"][0]["function"]["name"] == "poke"
-    assert sender.sent == ["我戳你一下喵"]
+    # 工具轮的正文一律静默：不发到会话，只以 is_tool_thought 落进历史
+    assert sender.sent == []
+    thought = [m for m in appended if m.get("is_tool_thought")]
+    assert thought and thought[0]["content"] == "我戳你一下喵"
+    assert thought[0]["sent_realtime"] is False
     assert raw == "<layout>后续盘算</layout>"
     assert visible == WORKING_NOTICE

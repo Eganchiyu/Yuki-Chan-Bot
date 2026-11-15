@@ -1,6 +1,7 @@
 """艺术创作聚焦模式 (art) 与艺术资产管理 (ArtAssetStore) 单元测试。"""
 from __future__ import annotations
 
+import asyncio
 import os
 from types import SimpleNamespace
 
@@ -9,6 +10,7 @@ import pytest
 from config import cfg
 from core.art_assets import ArtAssetStore, art_asset_store
 from core.focus import ToolView, focus_manager
+from core.art_gen_jobs import art_gen_store
 from core.focus.domains.art import (
     ART,
     art_asset_tool,
@@ -28,6 +30,12 @@ _TINY_PNG = (
     b"\x08\x06\x00\x00\x00\x1f\x15\xc4\x89\x00\x00\x00\nIDATx\x9cc\x00\x01"
     b"\x00\x00\x05\x00\x01\r\n-\xb4\x00\x00\x00\x00IEND\xaeB`\x82"
 )
+
+
+async def _flush_triggers():
+    """把 create_task 起的「触发回复」跑到完成。"""
+    for _ in range(5):
+        await asyncio.sleep(0)
 
 
 def _make_ctx(chat_id: str = "c_art", image_store=None, history=None) -> ToolContext:
@@ -208,6 +216,10 @@ async def test_art_draw_resolves_multiple_assets_and_aspect_ratio(monkeypatch):
         note="画樱花散步",
     )
     assert res.success is True
+    # 异步：工具立刻返回任务号，参数交给后台任务
+    assert res.data["art_job"] == "queued"
+    job = await art_gen_store.wait(res.data["job_id"])
+    assert job is not None and job.status == "done"
     assert captured["size"] == "1024*1536"
     assert captured["seed"] == 42
     assert captured["quality"] == "high"
@@ -228,6 +240,7 @@ async def test_art_draw_resolves_multiple_assets_and_aspect_ratio(monkeypatch):
         background="transparent",
     )
     assert res_trans.success is True
+    await art_gen_store.wait(res_trans.data["job_id"])
     assert captured["background"] == "transparent"
     assert captured["output_format"] == "png"
     assert captured["input_fidelity"] is None
@@ -238,13 +251,14 @@ async def test_art_draw_resolves_multiple_assets_and_aspect_ratio(monkeypatch):
     assert bad_res.error == "asset_not_found"
 
 
-async def test_art_start_contains_director_guide_and_art_draw_preview(monkeypatch, tmp_path):
-    """art_start 返回导演指南与默认禁透明规则；art_draw 成品自动附带预览 screenshot。"""
+async def test_art_start_contains_director_guide_and_async_draw_delivery(monkeypatch, tmp_path):
+    """art_start 返回导演指南与默认禁透明规则；art_draw 后台画完后自动发图并注入带预览的汇报。"""
     ctx_start = _make_ctx("c_guide")
     start_res = await art_start_tool(ctx_start, goal="画海报")
     assert "二次元艺术总监生图指南" in start_res.content
     assert "opaque" in start_res.content
     assert "背景铁律" in start_res.content
+    assert "异步" in start_res.content or "自动把图发到会话里" in start_res.content
 
     out_png = tmp_path / "preview.png"
     out_png.write_bytes(_TINY_PNG)
@@ -259,14 +273,48 @@ async def test_art_start_contains_director_guide_and_art_draw_preview(monkeypatc
             data={"file_path": str(out_png), "prompt": kwargs["prompt"], "size": "1024x1024"},
         )
 
+    sent = []
+    triggered = []
+
+    async def fake_send_local_image(chat_id, path, mode="group"):
+        sent.append((str(chat_id), path))
+
+    async def fake_process_callback(chat_id, mode, debounce_flag=True, force_reply=None, **kwargs):
+        triggered.append((str(chat_id), bool(force_reply)))
+
+    class FakeHistory:
+        def __init__(self):
+            self.messages = []
+
+        def append_session_message(self, chat_id, role, content, **extra):
+            self.messages.append({"chat_id": str(chat_id), "role": role, "content": content, **extra})
+
+    history = FakeHistory()
     monkeypatch.setattr("core.tools.tools_media.generate_image_tool", fake_gen)
-    ctx_draw = _make_ctx("c_preview", image_store=store)
+    ctx_draw = _make_ctx("c_preview", image_store=store, history=history)
+    ctx_draw.runtime.sender = SimpleNamespace(send_local_image=fake_send_local_image)
+    ctx_draw.metadata["process_callback"] = fake_process_callback
     focus_manager.enter("c_preview", "art", goal="自检测试")
+
     res = await art_draw_tool(ctx_draw, prompt="An anime girl at sunset")
     assert res.success is True
-    assert isinstance(res.data.get("screenshot"), dict)
-    assert res.data["screenshot"]["index"] == "001"
-    assert "已附带成品预览 [img:001]" in res.content
+    assert res.data["art_job"] == "queued"
+    job = await art_gen_store.wait(res.data["job_id"])
+    assert job.status == "done"
+    assert isinstance(job.result.get("screenshot"), dict)
+    assert job.result["screenshot"]["index"] == "001"
+
+    # 自动把成品发到会话里
+    assert sent == [("c_preview", str(out_png))]
+    # 汇报写进历史并触发一次强制回复
+    assert len(history.messages) == 1
+    report = history.messages[0]
+    assert report["is_art_report"] is True
+    assert "已经自动发到会话里" in report["content"]
+    assert "[img:001]" in report["content"]
+    assert report["image_attachments"]
+    await _flush_triggers()
+    assert triggered == [("c_preview", True)]
 
 
 async def test_generate_image_openai_gpt_image_params_and_400_fallback(monkeypatch, tmp_path):

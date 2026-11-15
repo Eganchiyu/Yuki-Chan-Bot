@@ -20,7 +20,6 @@ from core.reply_format import (
     clean_visible_reply,
     normalize_reply_markup,
     strip_layout_markup,
-    strip_meme_tags,
 )
 from core.tool_markup import extract_text_tool_calls, strip_tool_call_markup
 from core.tool_prune import ToolHistoryPruner
@@ -153,20 +152,14 @@ class EngineReplyService:
         )
         tool_messages.append(rendered)
 
-    async def send_tool_thought(self, chat_id, mode, content, sent_thoughts, tool_names=None):
-        """实时发送工具链中模型产生的阶段性文本。"""
+    def capture_tool_thought(self, chat_id, content, sent_thoughts, tool_names=None):
+        """收取工具链中模型产生的阶段性文本——只进历史，不再发到群里。"""
         clean_content = self.clean_visible_reply(content)
         if not clean_content or clean_content in sent_thoughts:
             return ""
 
-        display_content = strip_meme_tags(clean_content).strip()
-        if tool_names and "delegate_to_maid" in tool_names:
-            display_content = clean_content + " | (๑•̀ㅂ•́)و💻"
-        if display_content:
-            send_mode = "private" if mode == "master_private" else mode
-            await self.sender.send(chat_id, display_content, mode=send_mode)
         sent_thoughts.add(clean_content)
-        logger.info(f"[ToolChain] 实时发送阶段性文本 chat_id={chat_id}: {clean_content}")
+        logger.info(f"[ToolChain] 工具轮文本已静默 chat_id={chat_id}: {clean_content}")
         return clean_content
 
     async def _render_message(self, message, native_vision, image_budget):
@@ -426,9 +419,8 @@ class EngineReplyService:
 
         st.pending_thought = ""
         if "skip" not in tool_names:
-            st.pending_thought = await self.send_tool_thought(
+            st.pending_thought = self.capture_tool_thought(
                 st.chat_id,
-                st.mode,
                 msg.get("content"),
                 st.sent_thoughts,
                 tool_names,
@@ -449,7 +441,7 @@ class EngineReplyService:
                     "assistant",
                     st.pending_thought,
                     is_tool_thought=True,
-                    sent_realtime=True,
+                    sent_realtime=False,
                     save_immediately=False,
                     return_snapshot=False,
                     **extra,
@@ -492,7 +484,7 @@ class EngineReplyService:
                     "assistant",
                     st.pending_thought,
                     is_tool_thought=True,
-                    sent_realtime=True,
+                    sent_realtime=False,
                     save_immediately=False,
                     return_snapshot=False,
                     **extra,

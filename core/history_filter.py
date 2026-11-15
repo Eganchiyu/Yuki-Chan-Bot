@@ -20,7 +20,7 @@ def is_dialogue_message(message) -> bool:
     if message.get("focus_work") or message.get("phone_focus_work"):
         return False
     # 系统补台与小女仆汇报不是聊天轮次，不参与日记触发计数
-    if message.get("is_catchup") or message.get("is_maid_report"):
+    if message.get("is_catchup") or message.get("is_maid_report") or message.get("is_art_report"):
         return False
     return True
 

@@ -7,6 +7,7 @@ import re
 from typing import Any
 
 from core.art_assets import _clean_ref, art_asset_store
+from core.art_gen_jobs import art_gen_store
 from core.art_gacha import art_gacha_store
 from core.focus.domain import BASE_KEEP_TOOLS, FocusDomain
 from core.focus.manager import focus_manager, register_domain
@@ -20,6 +21,10 @@ logger = get_logger("tools")
 
 def _art_stub(payload: dict) -> str:
     data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
+    if data.get("art_job"):
+        assets = data.get("used_assets") or []
+        asset_str = f" assets={','.join(assets)}" if assets else ""
+        return f"art_draw{asset_str} -> 后台任务 {data.get('job_id', '')}".strip()
     if "file_path" in data and "prompt" in data:
         assets = data.get("used_assets") or []
         asset_str = f" assets={','.join(assets)}" if assets else ""
@@ -62,26 +67,6 @@ def _looks_like_path_or_img_tag(val: str) -> bool:
     return False
 
 
-def _register_generated_preview(context, filepath: str) -> tuple[dict | None, str]:
-    """把刚生成的图片注册进会话 image_store，供主模型在下一轮直接视觉自检。"""
-    store = getattr(context, "image_store", None)
-    if store is None or not filepath or not os.path.isfile(filepath):
-        return None, ""
-    try:
-        with open(filepath, "rb") as f:
-            raw = f.read()
-        if not raw:
-            return None, ""
-        ext = os.path.splitext(filepath)[1].lower() or ".png"
-        index = store.register(raw, url="art_draw", ext=ext)
-        attachment = store.attachment(index)
-        if attachment:
-            return attachment, f"[img:{index}]"
-    except Exception as exc:
-        logger.warning(f"[Art] 注册成品预览失败: {exc}")
-    return None, ""
-
-
 _ART_DIRECTOR_GUIDE = (
     "【二次元艺术总监生图指南（发挥模型全实力）】\n"
     "1. Prompt 写法（四段式导演指令，画面描述优先用英文，画面内需渲染的中文/日文台词与标题用引号保留原文）：\n"
@@ -91,7 +76,10 @@ _ART_DIRECTOR_GUIDE = (
     "   - 版面文字与减法约束：有字时写明字色/排向/气泡位置；极简图结尾加 no extra objects, no detailed background。\n"
     "2. 背景铁律（极其重要）：默认必须使用 `background=\"opaque\"` 生成完整实底/纯色背景；仅在用户明确要求“透明背景/免抠/透明贴纸”时才传 `background=\"transparent\"`。\n"
     "3. 角色一致性与换装：用 `assets` 时默认 `input_fidelity=\"high\"` 锁定五官与发饰；换装时在 prompt 明写保留参考图的脸型、发色瞳色与标志性发饰并替换服装；若要跨画风重绘（如精绘转极简 Q 版表情包）可设 `input_fidelity=\"low\"`。\n"
-    "4. 自检与局部精修：生成后若附带了成品预览图，先看一眼构图/文字/手指；满意再 `send_qq_file`，若局部瑕疵可用 `art_draw(image_paths=[该file_path], prompt=\"Keep everything else identical, only fix...\", input_fidelity=\"high\")` 精修。\n"
+    "4. 异步出图与自检：`art_draw` 只是提交任务、立刻返回，**不要空等**——这期间可以继续聊天或准备下一张；"
+    "画好后成品会自动发到会话里，并在下一轮把成品预览交给你，那时先看一眼构图/文字/手指；"
+    "若局部瑕疵可用 `art_draw(image_paths=[该file_path], prompt=\"Keep everything else identical, only fix...\", input_fidelity=\"high\")` 精修；"
+    "成品不要自己再用 `send_qq_file` 重复发一遍。\n"
     "需要注意的是，上述的括号内内容仅是示例，实际使用时不要直接照搬括号内的文字，而是根据你想要的画面和风格来写 prompt。"
 )
 
@@ -113,7 +101,8 @@ async def art_start_tool(context, goal: str = "") -> ToolResult:
     header = (
         "【已进入艺术创作聚焦模式】已展开 art_draw / art_gacha / art_asset / art_finish 工具，并收起其他无关日常工具。\n"
         "- 画图用 `art_draw`：可通过 `assets=[\"yuki\", \"master\"]` 直接选用下方已登记的角色参考图（支持单张或多张同框），"
-        "也可同时传 `image_paths=[\"[img:001]\"]` 混用群聊临时参考图；生成并确认满意后请用 `send_qq_file` 把图片发到会话中。\n"
+        "也可同时传 `image_paths=[\"[img:001]\"]` 混用群聊临时参考图。"
+        "**art_draw 是异步的**：提交后立刻返回，后台画完会自动把图发到会话里并提醒你；你不用等，也不要再用 `send_qq_file` 重发成品。\n"
         "- 提示词抽卡用 `art_gacha`：想抽风格盲盒或找创作灵感时，抽一发二次元 Prompt 草稿给你参考与微调（不会直接生图），满意后再调用 `art_draw`。\n"
         "- 资产管理用 `art_asset`：支持登记群友/角色立绘或三视图（`register`）、修改（`update`）、删除（`delete`）或查看列表（`list`）。\n"
         "- 创作与发图全部完成后，请调用 `art_finish(summary=\"...\")` 收起画板并写一句简短这段工作的总结。\n\n"
@@ -200,7 +189,7 @@ async def art_draw_tool(
                 if resolved_ref not in combined_refs:
                     combined_refs.append(resolved_ref)
 
-    from core.tools.tools_media import generate_image_tool, resolve_image_size
+    from core.tools.tools_media import resolve_image_size
 
     target_size = resolve_image_size(size=size, aspect_ratio=aspect_ratio)
     bg_mode = "transparent" if str(background or "").strip().lower() == "transparent" else "opaque"
@@ -225,16 +214,6 @@ async def art_draw_tool(
     if bg_mode == "transparent":
         gen_kwargs["output_format"] = "png"
 
-    gen_res = await generate_image_tool(context, **gen_kwargs)
-    if not gen_res.success:
-        return ToolResult(
-            success=False,
-            content=gen_res.content,
-            data=gen_res.data,
-            error=gen_res.error,
-            name="art_draw",
-        )
-
     used_keys = [a["key"] for a in matched_assets]
     used_owners = [f"{a['key']}({a['owner']})" for a in matched_assets]
     step_target = f"参考资产[{','.join(used_keys)}]" if used_keys else "无资产参考"
@@ -245,35 +224,43 @@ async def art_draw_tool(
         domain=ART.name,
     )
 
-    filepath = (gen_res.data or {}).get("file_path", "")
-    final_size = (gen_res.data or {}).get("size", target_size)
-    attachment, preview_tag = _register_generated_preview(context, filepath)
-    asset_line = f"\n已选用登记资产: {', '.join(used_owners)}" if used_owners else ""
-    preview_line = (
-        f"\n已附带成品预览 {preview_tag}：若构图/文字/人物细节满意请调用 send_qq_file 发送；"
-        "若有明显瑕疵可传入该 file_path 到 image_paths 做一轮局部精修。"
-        if attachment
-        else "\n请调用 send_qq_file 将图片发送给用户；若这幅图是新的角色设定/立绘，也可用 art_asset 登记到资产库。"
+    # 异步：只提交任务，后台画完自动发图并唤起一次回复，工具链不再被生图卡住
+    job = art_gen_store.submit(
+        context,
+        gen_kwargs,
+        meta={
+            "used_assets": used_keys,
+            "note": note or "",
+            "size": target_size,
+            "aspect_ratio": aspect_ratio,
+            "background": bg_mode,
+            "quality": qual_mode,
+            "prompt": prompt,
+        },
+        prompt=prompt,
     )
+
+    asset_line = f"，参考资产: {', '.join(used_owners)}" if used_owners else ""
     content = (
-        f"图像已生成并保存: {filepath}（画幅: {final_size}，背景: {bg_mode}）{asset_line}"
-        f"{preview_line}"
+        f"已提交后台生成（任务 {job.job_id}）：画幅 {target_size}，背景 {bg_mode}{asset_line}。\n"
+        "这张图不用你等——画好后会自动发到会话里，并在下一轮把成品交给你看一眼。\n"
+        "这期间你可以继续和群友聊天、准备下一张 prompt，或直接 art_finish 收工。"
     )
-    data = dict(gen_res.data or {})
-    data.update({
+    data = {
+        "art_job": "queued",
+        "job_id": job.job_id,
+        "prompt": prompt,
         "used_assets": used_keys,
         "reference_paths": combined_refs,
-        "size": final_size,
+        "size": target_size,
         "aspect_ratio": aspect_ratio,
         "background": bg_mode,
         "quality": qual_mode,
         "note": note or "",
         "no_persist": False,
-    })
+    }
     if combined_refs:
         data["input_fidelity"] = fid_mode
-    if attachment:
-        data["screenshot"] = attachment
     return ToolResult(
         success=True,
         content=content,
