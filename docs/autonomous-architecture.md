@@ -341,7 +341,7 @@ chat ────────► debate ──投票 start_work──► reflect
 | `daily_max_runs` | `3` | 每日自动次数（持久化） |
 | `max_wall_seconds` | `900` | 单次非聊天模式最长占用 |
 | `debate_max_rounds` | `32` | 交锋上限 |
-| `debate_max_tokens` | `600` | 每步输出上限 |
+| `debate_max_tokens` | `4096` | 每步输出上限 |
 | `debate_compress_every` | `8` | 压缩间隔（保留最近 6 步原文） |
 | `workshop_max_tool_calls` | `60` | 工坊工具预算 |
 | `zero_tool_max_retries` | `2` | 零工具追问容忍 |

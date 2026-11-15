@@ -741,3 +741,6 @@
   - `prompts.py`：共有底色补「手边没有检索工具，挑一个在意的细节当锚点再往下想」；A 视角删掉 search_diary/群聊截屏/工作档案指引，改为「锚点→那我到底想做什么」；B 视角加「别要求对方再查资料」；步进指令要求「先用完整两三句话说出来，别只调用工具」；第 4 步旁白改为「挑锚点，别急着查」。`seeds_block` 标题提示可当锚点。
   - `docs/autonomous-architecture.md` 3.3 同步（可见工具仅 inner_vote、旁白文案）。
 - 验证：容器内用真实提示词打 `deepseek-flash`，A/B 两步都正常输出正文（之前同条件恒空）；`pytest tests -q` 229 passed。
+
+## 2026-11-15 debate 输出上限提到 4096
+- 600 token 在带 reasoning 的模型上常被 `finish_reason=length` 截断，按机主要求 `debate_max_tokens` 改为 4096（config.py 默认值、configs/config.yaml、docs 参数表同步），容器已平滑重启生效。

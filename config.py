@@ -603,7 +603,7 @@ class AutonomousConfig:
         section="autonomous"
     )
     debate_max_tokens: int = config_field(
-        600,
+        4096,
         comment="debate 每步输出上限 token",
         section="autonomous"
     )
