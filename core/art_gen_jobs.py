@@ -140,7 +140,8 @@ class ArtGenJobStore:
 
             res = await generate_image_tool(context, **gen_kwargs)
             if not isinstance(res, ToolResult) or not res.success:
-                raise RuntimeError(getattr(res, "content", "") or "图像生成失败")
+                job.meta["error_code"] = getattr(res, "error", "") or ""
+                raise RuntimeError(_compact_reason(getattr(res, "content", "")) or "图像生成失败")
             job.result = dict(res.data or {})
             job.status = "done"
             logger.info(f"[ArtGen] {job.job_id} 生成完成: {job.result.get('file_path')}")
@@ -150,7 +151,7 @@ class ArtGenJobStore:
             raise
         except Exception as exc:
             job.status = "failed"
-            job.error = str(exc)
+            job.error = _compact_reason(str(exc))
             logger.error(f"[ArtGen] {job.job_id} 生成失败: {exc}")
             await self._deliver_failure(job, context)
         finally:
@@ -197,12 +198,18 @@ class ArtGenJobStore:
 
     async def _deliver_failure(self, job: ArtGenJob, context) -> None:
         meta = job.meta or {}
-        lines = [f"{FAIL_PREFIX} 刚才那张图没画成（任务 {job.job_id}）。", f"- 原因: {job.error or '未知错误'}"]
+        code = str(meta.get("error_code") or "").strip()
+        lines = [
+            f"{FAIL_PREFIX} 刚才那张图没画成（任务 {job.job_id}）。",
+            f"- 原因: {job.error or '未知错误'}",
+        ]
+        if code:
+            lines.append(f"- 错误码: {code}")
         if job.prompt:
             lines.append(f"- 当时的 prompt: {job.prompt[:120]}")
         if meta.get("used_assets"):
             lines.append(f"- 参考资产: {', '.join(meta['used_assets'])}")
-        lines.append("可以换个说法重试一次，或者先跟群友说一声。")
+        lines.append(f"- 怎么办: {_failure_hint(code)}")
         self._inject_report(context, "\n".join(lines), None)
 
     def _inject_report(self, context, report: str, attachment) -> None:
@@ -234,6 +241,28 @@ class ArtGenJobStore:
                 asyncio.create_task(coro)
         except Exception as exc:
             logger.warning(f"[ArtGen] 触发回复失败: {exc}")
+
+
+def _compact_reason(text: str, limit: int = 400) -> str:
+    """把上游异常压成一行可读原因（换行拍平 + 超长截断），便于她转述。"""
+    reason = " ".join(str(text or "").split())
+    if len(reason) > limit:
+        reason = reason[:limit] + "……（已截断）"
+    return reason
+
+
+def _failure_hint(code: str) -> str:
+    """按错误码给一句可执行的下一步，避免她只会说「失败了」。"""
+    hints = {
+        "missing_api_key": "生图 Key 没配，重试也没用——直接跟群友说画不了，别提 Key 的事。",
+        "missing_prompt": "缺 prompt，补上画面描述再调一次 art_draw。",
+        "invalid_reference_image": "参考图读不到或已过期，换一张参考图（或用已登记资产）再试。",
+        "asset_not_found": "资产名不对，先 art_asset(action=\"list\") 看正确 key。",
+        "reference_not_supported": "当前模型不支持参考图，去掉 assets / image_paths 再画。",
+        "reference_image_read_failed": "参考图读取失败，换图或减少参考图数量重试。",
+        "no_image_data": "模型没吐图，换个 prompt 重试一次。",
+    }
+    return hints.get(code, "可以换个说法重试一次（prompt 更短、参考图更少），或者先跟群友说一声。")
 
 
 art_gen_store = ArtGenJobStore()

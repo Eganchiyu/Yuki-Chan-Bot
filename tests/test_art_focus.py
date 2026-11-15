@@ -513,3 +513,35 @@ async def test_generate_image_native_400_compatibility_fallback(monkeypatch, tmp
     assert posted_params[2] == {"size": "1024*1024", "n": 1}
     if res.data and res.data.get("file_path") and os.path.exists(res.data["file_path"]):
         os.remove(res.data["file_path"])
+
+
+async def test_art_draw_failure_report_explains_reason(monkeypatch):
+    """后台画失败时，汇报里要写清原因、错误码与下一步怎么办。"""
+    async def fake_gen(context, **kwargs):
+        return ToolResult(
+            success=False,
+            content="图像生成失败: API 返回 400: {'error': 'unsupported size'}",
+            error="reference_not_supported",
+        )
+
+    class FakeHistory:
+        def __init__(self):
+            self.messages = []
+
+        def append_session_message(self, chat_id, role, content, **extra):
+            self.messages.append({"role": role, "content": content, **extra})
+
+    history = FakeHistory()
+    monkeypatch.setattr("core.tools.tools_media.generate_image_tool", fake_gen)
+    ctx = _make_ctx("c_fail", history=history)
+    focus_manager.enter("c_fail", "art", goal="失败汇报")
+    res = await art_draw_tool(ctx, prompt="A very long prompt", assets=["yuki"])
+    assert res.success is True
+
+    job = await art_gen_store.wait(res.data["job_id"])
+    assert job.status == "failed"
+    report = history.messages[0]["content"]
+    assert "【画图失败】" in report
+    assert "- 原因: 图像生成失败: API 返回 400" in report
+    assert "错误码: reference_not_supported" in report
+    assert "去掉 assets / image_paths 再画" in report
