@@ -515,9 +515,9 @@ def test_registry_get_tools_switches_between_default_and_phone_focus():
     focus_names = {t["function"]["name"] for t in reg.get_tools(phone_focus=True)}
     assert {"phone_action", "phone_macro", "phone_finish"} <= focus_names
     assert "phone_start" not in focus_names
-    assert "search_diary" not in focus_names
+    assert "search_diary" in focus_names
     assert "update_notebook" not in focus_names
-    assert "skip" in focus_names
+    assert "skip" not in focus_names
 
 
 async def test_phone_focus_enter_and_finish_overwrites_work_records_preserving_chat(monkeypatch):

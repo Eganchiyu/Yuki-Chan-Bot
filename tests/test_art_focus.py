@@ -84,7 +84,7 @@ def test_default_view_hides_generate_image_and_exposes_art_start():
         "art_gacha",
         "art_asset",
         "art_finish",
-        "skip",
+        "search_diary",
         "send_master_private",
         "send_qq_file",
     }
@@ -243,7 +243,7 @@ async def test_art_start_contains_director_guide_and_art_draw_preview(monkeypatc
     start_res = await art_start_tool(ctx_start, goal="画海报")
     assert "二次元艺术总监生图指南" in start_res.content
     assert "opaque" in start_res.content
-    assert "严禁擅自生成透明背景" in start_res.content
+    assert "背景铁律" in start_res.content
 
     out_png = tmp_path / "preview.png"
     out_png.write_bytes(_TINY_PNG)

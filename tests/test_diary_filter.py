@@ -55,7 +55,10 @@ async def test_do_summarize_feeds_only_chat_to_model(monkeypatch):
 
     async def fake_llm_chat(messages, **kwargs):
         captured["messages"] = messages
-        return "今天主人让人家看手机，点了外卖~"
+        return (
+            "今天主人让人家帮忙看手机点外卖，第一家那家店人家记得清清楚楚，"
+            "下单成功以后主人还夸人家动作快，人家开心得在桌面转了好几个圈呢~"
+        )
 
     monkeypatch.setattr("core.engine.engine_diary.llm_chat", fake_llm_chat)
 
@@ -74,7 +77,7 @@ async def test_do_summarize_feeds_only_chat_to_model(monkeypatch):
 
     rag.save_diary.assert_called_once()
     diary_text = rag.save_diary.call_args[0][0]
-    assert "【日记(" in diary_text and "点了外卖" in diary_text
+    assert "【日记(" in diary_text and "点外卖" in diary_text
 
     # 回写历史：system 前缀保留，其余只留最近 KEEP_LAST_DIALOGUE 条聊天
     roles = [msg["role"] for msg in result]

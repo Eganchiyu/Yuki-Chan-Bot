@@ -651,3 +651,10 @@
 - `core/tools/tools_diary.py` 传 `context.chat_id` + `context.mode`；`core/tools/tools.py` 的 `search_diary` 描述补群归属说明。
 - 测试：`tests/test_memory.py` 新增 `test_search_diary_fast_labels_and_soft_ratio`、`test_search_diary_fast_no_local_or_no_records`，旧断言「没有找到」改「没有相关记录」。全量 `181 passed / 5 failed`（5 项为既有断言漂移，与本改动无关）。
 - 真实库冒烟：chat 1057020972 关键词「主人」→ 本群 2730/别的群 1630，展示本群 6 + 别的群 2；小群 620127376 查 FrostFrame → 正确输出「本群没有相关记录」。待重启 `yuki` 容器生效。
+
+## 2026-11-15 清理 5 项既有失败断言（非删除，全部改为对齐现状）
+- 口径确认（机主选择「只按现状改测试」）：聚焦模式 `BASE_KEEP_TOOLS = {send_master_private, send_qq_file, search_diary}`，即手机/艺术聚焦时保留 `search_diary`、**不保留 `skip`**。
+- `tests/test_art_focus.py`：聚焦视图集合断言里 `skip` → `search_diary`；导演指南文案断言 `严禁擅自生成透明背景` → `背景铁律`（代码已改写为同义的 opaque 铁律条目）。
+- `tests/test_tool_phone_macro.py` / `tests/test_focus_snapshot.py`：聚焦工具集断言改为 `search_diary` 在、`skip` 不在。
+- `tests/test_diary_filter.py`：假日记文案短于 `do_summarize` 的 50 字下限会走备用模型后丢弃，改为更长的完整句；配套断言 `点了外卖` → `点外卖`。
+- 结果：`pytest tests -q` 全绿 `186 passed / 0 failed`（此前 5 failed 为断言漂移）。

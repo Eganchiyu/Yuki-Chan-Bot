@@ -200,11 +200,11 @@ async def test_snapshot_same_turn_view_switch_and_forbid_reentry(monkeypatch):
     assert "phone_action" not in seen_tool_sets[0]
     assert "phone_finish" not in seen_tool_sets[0]
 
-    # Round 2 & 3: 聚焦视图，有 phone_action / phone_macro / phone_finish / skip，无 phone_start / search_diary
+    # Round 2 & 3: 聚焦视图，有 phone_action / phone_macro / phone_finish / search_diary，无 phone_start / skip
     for idx in (1, 2):
-        assert {"phone_action", "phone_macro", "phone_finish", "skip"} <= seen_tool_sets[idx]
+        assert {"phone_action", "phone_macro", "phone_finish", "search_diary"} <= seen_tool_sets[idx]
         assert "phone_start" not in seen_tool_sets[idx]
-        assert "search_diary" not in seen_tool_sets[idx]
+        assert "skip" not in seen_tool_sets[idx]
 
     # Round 4: 同轮退出后切回常态（search_diary 恢复），但禁止同轮重入（phone_start 被收起）
     assert "search_diary" in seen_tool_sets[3]
