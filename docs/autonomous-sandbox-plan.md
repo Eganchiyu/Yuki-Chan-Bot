@@ -1,353 +1,494 @@
 # 自主沙盒（Autonomous Sandbox v1）可行性评估与开发规划
 
-> 上游设计基准：`docs/Autonomous Sandbox.md`
-> 本文档只回答两件事：**能不能落地**、**按什么顺序落地**。
-> 结论先行：**可以实现**，且不需要改动主循环 `engine_reply.py` 的既有热路径；
-> 但设计文档里有 6 处与当前代码事实不符，必须按本文档的口径修正后再动手。
+> 上游设计基准：`docs/Autonomous Sandbox.md`（保留为愿景与 prompt 素材来源）
+> 本文档是**施工用**规划：能不能做、按什么范式做、动哪些文件、哪些口径必须修正。
+> **v3（2026-11-15）**：范式改为**模式化多主循环**（机主提议），已并入三条决策：
+> 唯一体性（全局单活跃非聊天模式）、群聊隔离 + 日记群归属检索、`/强制放行` 逃生阀。
+
+**结论：可以实现。** 现有 `SessionPipeline` 作为 `chat` 模式原样保留，
+新模式以「子类覆写入口 + 独立主循环」接入，`engine_reply.py` 热路径零改动。预计 11~12 人日。
 
 ---
 
 ## 一、可行性结论
 
-### 1.1 可以直接复用的底座（已核实到函数级）
+### 1.1 关键事实：入站只有一个收口，所以模式可以做成路由
+
+`enqueue_message` 是全项目唯一的外部入站入口，调用方只有四处：
+`modules/QQNapcatListen/listen_main.py`、`modules/github_monitor/monitor.py`、
+`core/reply_watch.py`（经 `main_process`）、`_archive/LiveYukiL2D/server.py`；
+`main.py::main_process` 与 `tests/test_pipeline.py` 也走它。
+
+因此模式化不需要动任何上层业务：**让 `SessionPipeline` 的一个子类在 `enqueue_message` 开头做路由**，
+`chat` 模式原样 `super()`，非聊天模式把消息缓存起来或投给运行中的主循环即可。
+
+### 1.2 可以直接复用的底座（已核实到函数级）
 
 | 能力 | 位置 | 复用方式 |
 | --- | --- | --- |
-| 生物钟 / 精力 / 活跃度 | `core/brain.py` `YukiState.{update_energy,get_smooth_time_weight,group_activity,last_message_time}` | 触发条件判定，零改动 |
-| 冷场巡检循环 | `core/engine/engine_monitor.py` `idle_diary_checker`（30s 一轮） | 在同一个循环体里挂 `autonomous_trigger_check()` |
-| 工具声明/执行/参数容错 | `core/toolchain.py` `ToolSpec` `FunctionRegistry` `ToolCallManager`（已含 JSON 截断提示、超时、skip_reply） | 沙盒自建 registry，`max_rounds=60` |
-| 文本形式工具调用还原 | `core/tool_markup.py` `extract_text_tool_calls` | 沙盒循环里照抄 `engine_reply._extract_calls` 的处理 |
-| 日记只读检索 | `modules/memory/rag.py` `search_diaries` / `core/maid/maid_tools.py` `search_diary_fast`（走 chromadb `where_document`，**不加载 embedding 模型**） | 直接给工具用；冷启动采样只读 `collection.get(where={"timestamp": ...})` |
-| 日记追加写入 | `modules/memory/rag.py` `save_diary` → `save_memory`（内部 `self.model.encode`） | 只追加，不改表结构；metadata 追加 `type="autonomous_memo"` |
-| 聚焦模式范式 | `core/focus/{domain,manager,view}.py` | 借用概念；**不注册**到全局 `focus_manager`（理由见 2.1） |
-| 等回音追击 | `core/reply_watch.py` `subscribe/_dispatch` | Phase 4 被动多轮复用，需加可选下限参数（见 2.4） |
-| LLM 主备切换/空回复重试 | `utils/llm_client.py` `llm_chat_raw(**tools)` | 沙盒循环的唯一出口 |
+| 生物钟 / 精力 / 活跃度 | `core/brain.py` `YukiState.{update_energy,get_smooth_time_weight,group_activity,last_message_time}` | 触发判定，零改动 |
+| 冷场巡检循环 | `core/engine/engine_monitor.py::idle_diary_checker`（30s） | 循环体里挂 `autonomous_trigger_check()` |
+| 工具声明/执行/容错 | `core/toolchain.py` `ToolSpec` / `FunctionRegistry` / `ToolCallManager` | 辩论/工坊自建 registry，`max_rounds` 按模式给 |
+| 文本形式工具调用还原 | `core/tool_markup.py::extract_text_tool_calls` | 新循环照抄 `engine_reply._extract_calls` |
+| 日记只读检索 | `core/maid/maid_tools.py::search_diary_fast`（`where_document`，不加载 embedding 模型） | 改造为带群归属（§5） |
+| 日记追加写入 | `modules/memory/rag.py::save_diary` → `save_memory` | 只追加，`extra_metadata.type="autonomous_memo"` |
+| 群名获取 | `network/napcat.py::get_group_meta` | 缓存 `data/group_names.json` |
+| 等回音追击 | `core/reply_watch.py` `subscribe/_dispatch` | Phase 4 被动多轮（需可选超时下限） |
+| LLM 主备/重试 | `utils/llm_client.py::llm_chat_raw(**tools)` | 沙盒唯一 LLM 出口 |
+| 聚焦域 | `core/focus/*`（phone / art） | 作为**模式内子态**复用，`FocusManager` 不改 |
 
-### 1.2 必须新建的部分（设计文档 `modules/autonomous/` 五文件，方向正确）
-
-设计文档的模块拆分基本可用，只补一个文件：
+### 1.3 新建：模式层 + 沙盒层
 
 ```text
-modules/autonomous/
+core/modes/                     # 模式层（新范式的地基，与自主沙盒解耦，未来可加新模怷）
 ├── __init__.py
-├── coordinator.py     # 四阶段状态机 + 抢占事件 + 冷却/日配额 + 虚拟 chat 路由
-├── sandbox_loop.py    # 【新增】独立 LLM 工具循环（沙盒版 chat_with_tools，约 180 行）
-├── inner_debate.py    # Phase 1 双念头 + 双向投票 + 三段式压力调度
-├── workshop.py        # Phase 3 工坊（60 步上限、零工具追问、熔断）
-├── prompts.py         # 各阶段 system prompt（只读引用 get_base_setting，剥 layout/MEME）
-├── storage.py         # L2/L3/L4/L1 落盘 + 日记采样 + 小本本双区适配
-└── tools.py           # inner_vote / conclude_reflection / list_recent_work_sessions /
-                       # inspect_work_session / write_work_diary / work_finish
+├── base.py                     # ModeCapabilities + Mode 抽象基类（run / on_input / on_exit）
+├── router.py                   # ModeRouter：每群 current_mode + 全局单活跃非聊天模式 + 冻结/补台队列
+└── pipeline.py                 # ModeAwarePipeline(SessionPipeline)：覆写 enqueue_message 做路由
+
+modules/autonomous/             # 自主沙盒（依赖模式层，不反向依赖）
+├── __init__.py
+├── coordinator.py              # AutonomousCoordinator：chat→debate→workshop→chat 的调度与配额
+├── sandbox_loop.py             # SandboxLoop：独立 LLM 工具循环 + SilentSender + AdaptorHistory
+├── inner_debate.py             # debate 模式主循环（≤32 轮、双向投票、三段式压力、上下文压缩）
+├── workshop.py                 # workshop 模式主循环（≤60 步、零工具追问、熔断）
+├── catchup.py                  # 回群补台摘要生成与注入
+├── prompts.py                  # 各模式 system prompt（只读复用 get_base_setting，剥 layout/MEME）
+├── storage.py                  # L1~L5 落盘 + 日记采样 + 小本本双区 + 群名缓存
+└── tools.py                    # inner_vote / conclude_reflection / *_work_session / work_finish
 ```
 
-`engine_reply.py` 为什么不能直接拿来跑沙盒：它硬绑 `self.history`（真实会话 +
-`replace_session` 覆写）与 `self.sender`（`send_tool_thought` 会把阶段性思考
-**实时发送到群**），任一处漏配就是把内心独白发进群里。而设计铁律 1 恰好禁止这件事。
-所以沙盒必须有自己的瘦循环：`llm_chat_raw` + `ToolCallManager` + 内存消息流 + 静默 sender。
+`engine_reply.py` 不能直接跑非聊天模式：它硬绑 `self.history`（真实会话 + `replace_session` 覆写）
+与 `self.sender`（`send_tool_thought` 会把阶段性文本实时发群）。所以 debate/workshop 各有自己的瘦循环。
 
 ---
 
-## 二、设计文档与代码事实的 6 处偏差（必须先修正口径）
+## 二、设计文档与代码事实的 7 处偏差（修正口径）
 
-### 2.1 `ToolView` 不读 `ToolContext.metadata`，"在 domain.py 检查 is_autonomous_work"不可行
+### 2.1 `ToolView` 不读 `ToolContext.metadata`
 
-`core/focus/view.py::ToolView.resolve(registry, manager, chat_id)` 只由
-`registry.list_functions()` 与 `focus_manager.active(chat_id)` 推导，拿不到 `ToolContext`。
-而且默认视图会**保留 `entry_tool`**，如果沙盒工具注册进主 registry，群聊模型就会看到
-`autonomous_start` 并可能自己去点。
-
-修正方案（更简单、无侵入）：**沙盒工具不注册进主 `FunctionRegistry`**，只在沙盒自建的
-registry 里存在。沙盒的工具视图自己算：
+`core/focus/view.py::ToolView.resolve(registry, manager, chat_id)` 只吃 `registry.list_functions()`
+与 `focus_manager.active(chat_id)`；且默认视图保留 `entry_tool`。
+修正：**沙盒工具不注册进主 registry**，沙盒自建 registry 并自算视图：
 
 ```python
 visible = (set(main_registry.list_functions()) - AUTONOMY_HIDDEN - AUTONOMY_DOMAIN_TOOLS) | AUTONOMY_TOOLS
 ```
 
-`work_finish` 恒在集合里，天然不会被任何子聚焦域屏蔽，`core/focus/domain.py` 无需改动。
+`work_finish` 恒在集合内，子聚焦无法屏蔽；`core/focus/domain.py` 不需要改。
 
-### 2.2 `reply_watch.MIN_TIMEOUT_SECONDS = 30`，做不出 10~15 秒窗口
+### 2.2 `reply_watch.MIN_TIMEOUT_SECONDS = 30`
 
-`subscribe()` 把 timeout 夹到 `>= 30s`（`core/reply_watch.py:20,74`）。
-Phase 4 要求"发出第一条后 10~15 秒安静就补一句"。
-修正：`subscribe(..., min_timeout_seconds=MIN_TIMEOUT_SECONDS)` / `auto_subscribe(..., min_timeout_seconds=...)`，
-只在 high_spirits 路径传 `10.0`，**默认行为不变**，`test_reply_*` 不受影响。
+`core/reply_watch.py:20,74` 把 timeout 夹到 ≥30s，做不出 10~15s 窗口。
+修正：`subscribe/auto_subscribe` 加可选 `min_timeout_seconds`，仅高涨路径传 `10.0`，默认不变。
 
-### 2.3 chat_id 到底填什么：工具语义要求真实群 ID，隔离不能靠它
+### 2.3 `chat_id` 恒为真实群号（不需要虚拟 chat_id 了）
 
-清点后确认：`search_group_snapshots` / `capture_group_snapshot` / `send_qq_file` / `poke` /
-`delegate_to_maid` 全部读 `context.chat_id`。所以**沙盒的 `ToolContext.chat_id` 必须是真实目标群 ID**，
-否则"翻群聊截屏"这类能力直接失效。隔离改由 `runtime` 与 `metadata` 承担：
+`search_group_snapshots` / `capture_group_snapshot` / `send_qq_file` / `poke` / `delegate_to_maid`
+全部读 `context.chat_id`。模式化后这一点反而变简单：
 
-1. `ToolContext.chat_id = target_group_id`（工具语义正确，零包装）；
-2. `metadata["autonomous"] = {"run_id", "session_id"}` 作为隔离标识；
-3. `runtime.sender = SilentSender`：`send_qq_file` / `poke` / `send_master_private` 都只经过
-   `context.sender`，于是**自动变成不真发**（T1 方案 B 免费获得，无需逐个包装）；
-4. `delegate_to_maid` 是唯一需要包装的：沙盒版 handler 把 task 的 chat_id 改为虚拟
-   `autonomous:<gid>` 再入队，`maid_worker` 汇报时 `engine.process_callback("autonomous:<gid>", ...)`
-   会在 `main_process` 被前缀分流回沙盒（不再触发群回复）：
+1. `ToolContext.chat_id = target_group_id`（工具语义天然正确，零包装）；
+2. 隔离由**模式能力**承担：`can_send=False` → `runtime.sender = SilentSender`；
+   `writes_chat_history=False` → 模式循环只写自己的内存流；
+3. `delegate_to_maid` 也不需要改写目标：任务仍挂真实群号，`maid_worker` 汇报时
+   `process_callback(chat_id, ...)` → 模式路由发现该群正在 workshop 模式 →
+   **作为内部事件投递给运行中的主循环**（不再是"入 buffer"），既不丢也不发群。
 
-```python
-if str(chat_id).startswith(AUTONOMOUS_CHAT_PREFIX):   # "autonomous:"
-    return await autonomous_coordinator.on_inner_event(chat_id, text=...)
-```
-
-虚拟 chat_id 只出现在这条链路上；`data/chat_history.json` 永远不会出现该键。
+> 遗留说明：`maid_worker` 会先 `history_manager.append_session_message(chat_id, "user", report, is_maid_report=True)`
+> 把汇报写进群历史（在 `core/maid/maid_worker.py:31`）。这是既有行为，v1 接受：
+> 该条带 `is_maid_report` 标记，补台摘要与日记总结按标记特殊处理即可，不改 worker。
 
 ### 2.4 `FocusManager.exit()` 依赖 `history.get_session/replace_session`
 
-若 Phase 3 想嵌套 `phone_start` / `art_start`，`focus_manager` 的键是 `chat_id`，
-`exit(history=...)` 会去真实 `HistoryManager` 里查这个键。
-修正：给沙盒一个 20 行的 `SandboxHistoryAdapter`（只实现 `get_session` / `replace_session`，
-读写沙盒内存消息流），进入子聚焦时传 `history=adapter`。
-此项列为 P4 可选项，**v1 默认关闭嵌套聚焦**（见 §7 取舍 T3）。
+子聚焦（phone/art，T3 已定允许）退出时会去真实 `HistoryManager` 查键并覆写群历史。
+修正：模式循环给一个 20 行 `AdaptorHistory`（`get_session`/`replace_session` 只读写模式内存流），
+`focus_manager.exit(history=adaptor)`；模式结束一律 `focus_manager.abort(chat_id)` 兜底，
+避免残留的 focus 状态影响 chat 模式的 `finalize_conversation` / `idle_diary_checker`。
+另：phone 类重工具加全局 `asyncio.Lock`（模式锁只保证"没有第二个 Yuki"，防不住残留协程抢 adb）。
 
-### 2.5 基线测试已经是红的（与本需求无关，但会干扰验收）
+### 2.5 基线测试已经是红的
 
-`docker exec yuki python -m pytest tests -q` 现状：**5 failed / 153 passed**，原因是历史漂移：
-`BASE_KEEP_TOOLS` 后来加了 `search_diary`、registry 新增了 `art_*`，但
-`test_tool_phone_macro` / `test_art_focus` 里仍写死旧集合；`test_focus_snapshot`、
-`test_diary_filter` 同理。
-计划：**P0 先修这 5 个测试**（只改断言，不改实现），否则新模块的"测试全绿"无法作为验收依据。
+`docker exec yuki python -m pytest tests -q` 现状 **5 failed / 153 passed**（断言漂移：
+`BASE_KEEP_TOOLS` 后来加了 `search_diary`、registry 新增 `art_*`）。
+P0 只改断言修绿，否则新模式"测试全绿"没有意义。
 
-### 2.6 Phase 1 的"翻群聊截屏"必须显式绑定目标群
+### 2.6 Phase 1 的"翻群聊截屏"靠 `context.chat_id`
 
-`search_group_snapshots` 的入参只有 `keyword` / `limit`，群 ID 取自 `context.chat_id`，
-而 Phase 1 的上下文里没有真实群消息可依据。按 §2.3 的约定 `ToolContext.chat_id = target_group_id`
-即可直接用；P1 只需在 prompt 里说明"你现在在 `<群名/群号>` 的独处空间"，避免模型乱猜群。
+`search_group_snapshots` 入参只有 `keyword`/`limit`，群号取 `context.chat_id`。按 §2.3 填真实群号即可，
+prompt 里点明"你在 `<群名>` 的独处空间"。
+
+### 2.7 日记本来就有 `chat_id`，但检索完全不用它
+
+`save_diary(content, chat_id=...)` 写进 metadata 的 `chat_id` 一直在库里（`rag.py:105-107`），
+但 `search_diary_fast` / `search_diaries` 都没有群过滤，返回文本也不带群归属。
+改造方案见 §5。
 
 ---
 
-## 三、总体架构（落地后的数据流）
+## 三、范式：模式化多主循环
+
+### 3.1 三种模式
+
+| 模式 | 主循环实现 | 能发消息 | 写 `chat_history.json` | 接受真人入站 | 允许子聚焦 | 触发日记总结 |
+| --- | --- | --- | --- | --- | --- | --- |
+| `chat` | 现有 `SessionPipeline.run_once`（8 阶段）+ `EngineReplyService.chat_with_tools` | 是 | 是 | 是（现有防抖/潜水决策） | 是 | 是 |
+| `debate` | `inner_debate.run()` | 否 | 否 | 否 → 入缓冲 | 否 | 否 |
+| `workshop` | `workshop.run()` | 否（T1） | 否 | 否 → 入缓冲/内部事件 | 是（phone / art） | 否 |
+
+`focus`（phone/art）不是模式，仍是**模式内子态**：`chat` 与 `workshop` 都能进，`debate` 不能。
+这样"聚焦模式"那套已验证的范式完全不用动。
+
+### 3.2 两条硬规则
+
+1. **每群同一时刻只有一种模式**：`ModeRouter._states[chat_id] = ModeState(mode, run_id, started_at)`。
+2. **全局同一时刻只有一个非聊天模式**（唯一体性）：`ModeRouter._global_run` 互斥。
+   别的群若在此期间收到消息 → 入缓冲、冻结、不回复；等本次 run 结束，按群各补一条补台摘要。
 
 ```text
-EngineMonitorService.idle_diary_checker (30s)
-        │  autonomous_trigger_check(): 静默≥45min ∧ 精力≥0.6 ∧ 非深夜 ∧ 冷却结束 ∧ 日配额未满
-        ▼
-AutonomousCoordinator.run(target_group, trigger="auto"|"manual")
-        │  session_id = sess_YYYYMMDD_HHMMSS
-        │  ★ asyncio.Event interrupt，由 SessionPipeline.enqueue_message 置位
-        ▼
-  Phase 1  inner_debate.run()
-           messages: [system(内省底色+A/B 视角) , system(3 条采样日记), user(开场旁白)]
-           loop ≤32: llm_chat_raw(tools=READONLY_TOOLS) → 执行 → 累积 → 每 8 步压缩
-           收敛: 连续两步 inner_vote(agree_to_end=True) 且 verdict 相同
-        ├ verdict=do_nothing ──────────────► 出口 1：清空内存，不落盘，直接 return
-        ├ verdict=memo_only / start_work ──► Phase 2
-        └ 满 32 轮 ────────────────────────► Phase 2（consensus_note = 最后 6 步摘要）
-        ▼
-  Phase 2  yuki_self_review.run()
-           messages: [基础人设(剥离 layout/MEME), 契机, consensus_note]
-           一次工具调用 conclude_reflection(action, title, memo_content, work_diary_entry, notebook_pointer)
-        ├ abandon ──► 出口 2：不落盘（除 debug 日志），return
-        ├ memo_only ──► L1 diaries + L2 work_diary + L4 daily_work_memory + L5 小本本下区
-        └ start_work ──► 同上 + 建/续 L3 work_session → Phase 3
-        ▼
-  Phase 3  workshop.run(session_id)
-           messages: [system(工坊 prompt + session_id + 上次 work_log)]
-           tools = 主 registry 全量 ∪ 工坊专属；max_rounds=60
-           零工具 → 注入追问（≤2 次）→ 熔断兜底 work_log(status=paused)
-           55/60 步时工具结果尾部追加提醒；≥60 步强制只剩 work_finish
-        ▼
-  Phase 4  after_return(target_group)
-           L4 daily_work_memory(≤1000 字) 常驻注入 build_chat_context
-           YukiState.high_spirits_until / high_spirits_remaining_turns=3
-           EngineDecisionService 欲望 +0.45；静默则立刻触发一次破冰
-           首条发出后 reply_watch(min_timeout=10~15s) → 静默则再唤醒（每次 -1）
+模式流转（全局守卫：_global_run 只能被一个 chat 持有）
+
+chat ──(/深思 或 冷场触发)──► debate ──(投票 start_work)──► workshop ──(work_finish)──► chat
+  ▲                              │                           │
+  │                              ├─(do_nothing)──────────────┤
+  └──────────────────────────────┴─(abandon / 超时 / 熔断 / /强制放行)┘
+                                  ↓ 每次回到 chat 都执行「补台」（§4）
 ```
 
-隔离保证：沙盒全程只在内存消息流里跑，唯一落盘是 L1~L5 五层记忆与 debug 轨迹；
-`data/chat_history.json` 里不会出现 `autonomous:` 键（写之前断言）。
+### 3.3 实现点（三处，别扩散）
+
+| 位置 | 改动 |
+| --- | --- |
+| `core/modes/pipeline.py` `ModeAwarePipeline.enqueue_message` | `router.route(chat_id, mode, message_obj, **kw)`：该群非 chat 模式 → 交模式；全局被别的 chat 占用 → 入 `yuki.message_buffer` 并标 `frozen_reason`；否则 `await super().enqueue_message(...)` |
+| `core/modes/router.py::ModeRouter` | `enter/exit/force_release`、`_global_run` 互斥、冻结群登记、`deliver_inner_event()`（小女仆汇报 / 定时注入） |
+| `main.py` | 用 `ModeAwarePipeline` 替换 `SessionPipeline` 实例化（`main_process` 一行不改，因为它只调 `enqueue_message`） |
+
+`SessionPipeline` 本体只加两处**极小钩子**：`enqueue_message` 里识别 `is_catchup` 标记
+（不计入"真人到达"、不触发 `reply_watch.resolve`）；`prepare_message_batch` 里把
+`frozen` 期间的缓冲原样交给补台（`is_catchup` 事件不会被潜水决策拦掉，走 `force_reply`）。
+
+### 3.4 `chat` 模式零行为变化的证明方式
+
+`ModeAwarePipeline` 在 `router` 全空（无任何非 chat 模式、无冻结）时，`route()` 必须返回
+`super().enqueue_message(...)`，且不建任何额外 task。
+测试断言：`tests/test_pipeline.py` / `test_toolchain.py` / `test_vision.py` 全绿，
+外加一条 `test_mode_router_noop_passthrough`（router 空 → 调用序列与父类一致）。
+
+### 3.5 群级准入：默认一个群都不开
+
+自主轮是"侵入性"能力（会让那个群短暂停摆），所以采用**白名单 + 默认全关**：
+
+1. `autonomous.enabled: false`（总开关，默认关）；
+2. `autonomous.enabled_groups: []`（默认空 → 没有任何群允许）；
+3. 单群判定 `AutonomousCoordinator.is_group_enabled(gid)`，是**唯一**准入函数，
+   同时被 `autonomous_trigger_check()`（自动）与 `/深思`（手动）调用：
+   ```
+   enabled and gid in enabled_groups（含运行时覆盖）
+   ```
+4. 运行时覆盖：`/自主轮 开|关`（master，群聊内）写 `data/autonomous_state.json`
+   的 `group_overrides: {gid: true|false}`，**优先级高于配置**，重启后仍生效；
+   `/工坊状态` 会显示本群当前是"已开启/未开启（来源：配置/运行时）"。
+5. 未开启的群里执行 `/深思` → 回复"这个群没开自主轮哦，要用的话先 `/自主轮 开`"，
+   不进入任何模式。
+6. 自动触发时的候选群：白名单内按「静默最久 → 精力最高」排序取第一个；
+   全局单活跃规则不变（同时只跑一个群）。
+7. 白名单与 `cfg.TARGET_GROUPS` 的关系：必须同时属于 `TARGET_GROUPS`（不在目标群里的群本来就没人应），
+   取交集。
+
+> 这条同时把 T2（触发目标群）定死了：**不再有"默认主群"**，候选完全来自白名单。
+
+## 四、回群补台（Catch-up）
+
+### 4.1 冻结期间的消息
+
+冻结仍发生在 `yuki.message_buffer[chat_id]`（`SessionPipeline.enqueue_message` 第 1 步照旧写入），
+所以顺序、发送人、`last_message_time` 全部保留，无需额外数据库。
+
+### 4.2 摘要生成（按量自动切）
+
+| 缺席消息量 | 处理 |
+| --- | --- |
+| ≤ 12 条 | **代码直拼**（零 LLM）：`【你独处期间群里发生了什么】14:02 月白: … / 14:05 阿岚: …` |
+| > 12 条 | **第三方 LLM 压成 ≤200 字**（`autonomous.digest_model` 空则用主模型，temperature 0.3；prompt 只要求客观列话题与人名，禁止角色扮演）；失败回落直拼（截断最近 20 条） |
+
+超过 `autonomous.catchup_max_messages`（默认 80）只保留最近 80 条并标注"更早的省略"。
+
+### 4.3 注入形态
+
+```python
+history.append_session_message(
+    cid, "user",
+    "【你刚才在独处，这会儿回到群里了】\n" + digest +
+    "\n（这些是你不在的时候发生的事，可以自然接话，也可以只挑一句感兴趣的问。）",
+    is_catchup=True,
+)
+process_callback(cid, "group", debounce_flag=False, force_reply=True)
+```
+
+- 只对"冻结期间真的有新消息"的群注入；一直安静的群不打扰。
+- `is_catchup` 让 `history_filter.dialogue_length`、`reply_watch.is_human_incoming`、
+  `engine_diary` 都按"系统补台"处理，不误判成群友发言。
 
 ---
 
-## 四、五层记忆的落地 schema
+## 五、群聊隔离与日记群归属检索（v1 必做）
+
+### 5.1 结论：保持群聊隔离，不做一体化
+
+日记共享但必须可归因：检索默认"本群为主、他群为辅"，并显式告诉模型来源。
+
+### 5.2 检索改造（软比例）
+
+新增统一入口 `DiarySearch.query(query, chat_id, n)`：
+
+1. **打标**：每条结果前缀 `[本群]` / `[群:月白の小窝]` / `[早期·未标群]`（旧日记无 `chat_id`）。
+2. **软比例**：本群占 `ceil(n * autonomous.diary_local_ratio)`（默认 0.7），余量给他群；
+   本群名额不满顺延给他群。
+3. **降级话术**（代码在返回文本前生成，保证模型一定看见）：
+   - 本群 0 命中、他群有 → 末尾追加 `（本群没有相关记录，下面是你在其他群里留下的回忆。）`
+   - 全部 0 → 直接返回 `没有相关记录。`
+4. **群名**：`data/group_names.json` 惰性缓存，来源 `NapCatGateway.get_group_meta`，
+   取不到显示 `群 1057020972`。
+5. **Phase 1 冷启动采样**：同上规则 —— 2 条近 7 天本群日记 + 1 条 30 天以上任意群旧日记（标注来源群）。
+
+### 5.3 影响面
+
+`core/maid/maid_tools.py::search_diary_fast`（加 `chat_id`/`local_ratio`）、
+`modules/memory/rag.py::search_diaries`（加 `chat_id_priority`，只调排序与名额）、
+`core/tools/tools_diary.py::search_diary_tool`（传 `context.chat_id`）。
+**不改** 已有 6485 篇日记内容，只做只读归因与展示层标注。
+
+---
+
+## 六、五层记忆 schema
 
 ```python
 # L3 data/work_sessions/<session_id>.json
 {
-  "session_id": "sess_20261115_01",
-  "created_at": 1763200000.0, "updated_at": 1763203600.0,
-  "status": "active",            # active | paused | completed | abandoned
-  "title": "雪夜电台",
-  "kind": "creative",            # creative | code | life | misc
-  "work_log": "≤512 字",          # 干了什么 / 产物路径 / 下次从哪接
-  "artifacts": ["workspace/novels/snow_radio_ch1.md"],
-  "memo_ref": "mem_autonomous_memo_...",   # L1 doc_id
-  "runs": ["sess_20261115_01", "sess_20261116_01"],  # 每次独处一个 run 记录
+  "session_id":"sess_20261115_01","created_at":...,"updated_at":...,
+  "status":"active",                 # active | paused | completed | abandoned
+  "title":"雪夜电台","kind":"creative",   # creative | code | life | misc
+  "work_log":"≤512 字",               # 干了什么 / 产物路径 / 下次从哪接
+  "artifacts":["workspace/novels/snow_radio_ch1.md"],
+  "chat_id":"1057020972","memo_ref":"mem_autonomous_memo_...",
+  "runs":["sess_20261115_01","sess_20261116_01"],
 }
-# L3 data/work_sessions/index.jsonl  每行 {"session_id","title","status","updated_at","log_head":80 字}
+# L3 data/work_sessions/index.jsonl  {"session_id","title","status","updated_at","log_head":80}
 
 # L2 data/work_diary.jsonl
-{"ts": 1763203600.0, "session_id": "...", "title": "...", "content": "150~400 字", "kind": "insight"}
+{"ts":...,"session_id":"...","title":"...","kind":"insight","content":"150~400 字"}
 
-# L4 data/daily_work_memory.json
-{"date": "2026-11-15", "archived_at": null, "updated_at": ..., "text": "≤1000 字",
- "entries": [{"session_id":"...","status":"completed|paused","summary":"...","artifacts":[...]}]}
-#   text 由 entries 渲染（代码拼接，非模型生成），04:00 后把昨天归档进 data/daily_work_memory_archive/<date>.json
+# L4 data/daily_work_memory.json（text 由 entries 代码渲染；04:00 归档到 daily_work_memory_archive/<date>.json）
+{"date":"2026-11-15","archived_at":null,"updated_at":...,"text":"≤1000 字","entries":[...]}
 
 # L5 data/notebook.json（向后兼容旧格式）
-{"version": 2, "daily": "≤350 字", "plans": "≤160 字", "content": "<旧字段，读取时回落为 daily>"}
+{"version":2,"daily":"≤350 字","plans":"≤160 字","content":"<旧字段，读取时回落为 daily>"}
 ```
 
-L1 写入固定前缀：`【自主随想(YYYY-MM-DD)】` / `【工作记录(YYYY-MM-DD)】`，
-metadata `extra_metadata={"type": "autonomous_memo", "session_id": ..., "kind": ...}`
-（`save_memory` 支持 `extra_metadata`，见 `rag.py:_build_memory_metadata`）。
+L1 前缀 `【自主随想(YYYY-MM-DD)】` / `【工作记录(YYYY-MM-DD)】`，
+`extra_metadata={"type":"autonomous_memo","session_id":...,"kind":...,"chat_id":...}`。
 
 ---
 
-## 五、配置项（`configs/config.yaml` + `config.py` 新增 `AutonomousConfig`）
-
-沿用项目现有 `config_field(..., section="autonomous")` 风格，`cfg.autonomous.*` 访问。
+## 七、配置项（`config.py` 新增 `AutonomousConfig`，`section="autonomous"`）
 
 | 键 | 默认 | 说明 |
 | --- | --- | --- |
-| `enabled` | `false` | **先关**，手动 `/深思` 验证通过后再开自动 |
-| `target_groups` | `[]` | 空 = 用 `cfg.TARGET_GROUPS[0]` |
-| `auto_trigger_enabled` | `false` | 冷场自动触发开关（P5 才打开） |
+| `enabled` | `false` | 全局总开关，**默认关**；关时 `/深思` 直接拒绝 |
+| `enabled_groups` | `[]` | **允许自主轮的群白名单，默认空 = 一个都不开**。只有列在这里的群才可能触发或接受 `/深思` |
+| `auto_trigger_enabled` | `false` | 冷场自动触发（P6 才开）；只对白名单群生效 |
 | `min_group_idle_minutes` | `45` | 静默阈值 |
 | `min_energy` | `0.60` | 精力下限 |
-| `quiet_hours` | `[1, 7]` | 深夜禁止触发（配合生物钟） |
+| `quiet_hours` | `[1, 7]` | 深夜禁触发 |
 | `cooldown_minutes` | `120` | 两次自动轮次最小间隔 |
-| `daily_max_runs` | `3` | 每日自动上限（持久化计数，重启不清零） |
-| `debate_max_rounds` | `32` | Phase 1 上限 |
-| `debate_max_tokens` | `600` | 每步输出上限（控 token） |
-| `debate_compress_every` | `8` | 每 8 步把已用上下文压成锚点卡 |
-| `workshop_max_tool_calls` | `60` | Phase 3 上限 |
+| `daily_max_runs` | `3` | 日配额（持久化，重启不清零） |
+| `max_wall_seconds` | `900` | 非聊天模式单次最长占用（超时强制暂停 + 全面放行） |
+| `debate_max_rounds` | `32` | debate 上限 |
+| `debate_max_tokens` | `600` | 每步输出上限 |
+| `debate_compress_every` | `8` | 每 8 步压成锚点卡 |
+| `workshop_max_tool_calls` | `60` | workshop 上限 |
 | `zero_tool_max_retries` | `2` | 零工具追问容忍 |
-| `step_timeout_seconds` | `180` | 单步（一次 LLM+该批工具）超时熔断 |
+| `step_timeout_seconds` | `180` | 单步（LLM + 该批工具）超时熔断 |
+| `catchup_enabled` | `true` | 回群补台 |
+| `catchup_max_messages` | `80` | 补台最多纳入消息数 |
+| `catchup_summarize_threshold` | `12` | 超过则 sub-LLM 摘要 |
+| `digest_model` | `""` | 补台摘要模型，空=主模型 |
+| `diary_local_ratio` | `0.7` | 日记检索本群占比 |
 | `daily_memory_ttl_hours` | `18` | L4 有效期 |
 | `high_spirits_turns` | `3` | 回归后连发配额 |
 | `high_spirits_minutes` | `25` | 高涨持续 |
 | `high_spirits_desire_bonus` | `0.45` | 欲望加成 |
-| `high_spirits_followup_window` | `12` | 被动窗口（秒，允许 <30，走 2.2 的改动） |
+| `high_spirits_followup_window` | `12` | 被动窗口秒数（<30，走 §2.2） |
 
 ---
 
-## 六、分阶段实施计划（每阶段独立可验收、可回滚）
+## 八、涉及文件清单（施工时逐项打勾）
+
+### 8.1 新增文件
+
+| 路径 | 作用 | 阶段 |
+| --- | --- | --- |
+| `core/modes/__init__.py` | 导出 `ModeRouter` / `ModeAwarePipeline` / `ModeCapabilities` | P1 |
+| `core/modes/base.py` | `ModeCapabilities` 数据类 + `Mode` 基类（`run()` / `on_input()` / `on_inner_event()` / `on_exit()`） | P1 |
+| `core/modes/router.py` | 每群 `ModeState`、`_global_run` 互斥、冻结登记、内部事件投递、`force_release()` | P1 |
+| `core/modes/pipeline.py` | `ModeAwarePipeline(SessionPipeline)`：覆写 `enqueue_message` | P1 |
+| `modules/autonomous/__init__.py` | 导出 `AutonomousCoordinator` 单例 | P2 |
+| `modules/autonomous/sandbox_loop.py` | `SandboxLoop`（LLM 循环）+ `SilentSender` + `AdaptorHistory` + 视图计算 | P2 |
+| `modules/autonomous/prompts.py` | 五个阶段 system prompt 组装 | P2 |
+| `modules/autonomous/inner_debate.py` | debate 主循环（含投票、压力调度、压缩） | P2 |
+| `modules/autonomous/tools.py` | `inner_vote` / `conclude_reflection` / `list_recent_work_sessions` / `inspect_work_session` / `write_work_diary` / `work_finish` | P2–P4 |
+| `modules/autonomous/storage.py` | L2~L5 读写、日记采样、`group_names` 缓存、旧 notebook 迁移 | P0 |
+| `modules/autonomous/workshop.py` | workshop 主循环与熔断 | P4 |
+| `modules/autonomous/catchup.py` | 补台摘要与注入 | P6 |
+| `modules/autonomous/coordinator.py` | 模式流转调度、配额、冷却、`sweep_stale_runs` | P2 |
+| `tests/test_mode_router.py` | 路由/冻结/全局互斥/内部事件 | P1 |
+| `tests/test_autonomous_sandbox.py` | 15 项离线测试（§12） | 随阶段 |
+| `data/autonomous_state.json` | 日配额、冷却、`active_mode` 软标记、`group_overrides`（运行时群开关） | P0 |
+| `data/work_diary.jsonl` | L2 | P3 |
+| `data/work_sessions/{index.jsonl,<sid>.json}` | L3 | P3 |
+| `data/daily_work_memory.json` + `daily_work_memory_archive/` | L4 | P3 |
+| `data/group_names.json` | 群号→群名缓存 | P3 |
+
+### 8.2 改动文件
+
+| 文件 | 位置 | 改动 | 体量 |
+| --- | --- | --- | --- |
+| `config.py` | `ToolsConfig`（468 行）后新增 `AutonomousConfig`；`Config`（718 行）挂字段；底部 `SECTION_COMMENTS` 加 `autonomous` | 新配置节 | +80 行 |
+| `configs/config.yaml` | 末尾 `autonomous:` 段 | 配置 | `config.py sync` 生成 |
+| `main.py` | `session_pipeline = SessionPipeline(...)`（323 行）；`initialize_components`（30–72 行） | 换 `ModeAwarePipeline`；装配 coordinator 注入 components | +20 行 |
+| `core/session_pipeline.py` | `enqueue_message`（202–266 行）、`prepare_message_batch`（317–360 行） | 识别 `is_catchup` / `is_maid_report`：不算真人到达、不被潜水决策拦、不计轮次 | +12 行 |
+| `core/brain.py` | `YukiState.__init__`（76–101 行） | `high_spirits_until` / `high_spirits_remaining_turns` / `mark_high_spirits()` / `high_spirits_active()` / `consume_high_spirits_turn()` | +30 行 |
+| `core/notebook.py` | 全文（53 行） | `load_zone/save_zone`、`daily`+`plans` 双区、旧 `content` 回落 | +40 行 |
+| `core/prompts.py` | `build_chat_context`：日记段（192–197）、小本本段（205–215） | 小本本双区渲染、L4 今日工作记忆槽位、`high_spirits` 引导槽位 | +35 行 |
+| `core/reply_watch.py` | `subscribe`（67 行）、`auto_subscribe`（215 行） | 可选 `min_timeout_seconds`（默认 30 不变） | +8 行 |
+| `core/engine/engine_monitor.py` | `idle_diary_checker`（25–56 行） | 挂 `autonomous_trigger_check()`；非 chat 模式/冻结期间跳过日记总结与破冰 | +12 行 |
+| `core/engine/engine_decision.py` | `decide_to_reply`（64–104 行） | `high_spirits` 欲望 `+bonus`，并跳过 `energy < MIN_ACTIVE` 拒绝分支（留 0.15 底线） | +12 行 |
+| `modules/QQNapcatListen/listen_main.py` | `handle_group_switch`（335–378 行）、`handle_private_command`（381 行）、`start_background_tasks`（40–80 行） | 新增 `/深思`、`/工坊状态`、`/强制放行`、`/自主轮 开\|关`（master 限定，沿用现有 set + 文案风格）；启动 `sweep_stale_runs()` | +60 行 |
+| `core/tools/tools_diary.py` | `search_diary_tool`（11–20 行） | 传 `context.chat_id`，走群归属检索，带 `[本群]` 前缀与降级话术 | +15 行 |
+| `core/maid/maid_tools.py` | `search_diary_fast`（7–80 行） | `chat_id`/`local_ratio` 参数、软比例、群名标注、三段降级话术 | +50 行 |
+| `modules/memory/rag.py` | `search_diaries`（225–347 行） | `chat_id_priority` 参数（只调排序与名额） | +30 行 |
+| `core/tools/tools_notebook.py` + `core/tools/tools.py` | `update_notebook_tool`、`update_notebook` spec（239–254 行） | 可选 `zone`（`daily`/`plans`，默认 `daily`） | +15 行 |
+| `modules/debug/webui_server.py` | 新增 `/api/autonomous` | 模式/阶段/轮次/token/A-B 对话流/五层记忆快照 | P7 |
+| `tests/*`（5 个漂移文件） | 断言 | 只改断言不改实现 | P0 |
+
+### 8.3 只读参考、**明确不改**
+
+| 文件 | 为什么只读 |
+| --- | --- |
+| `core/engine/engine_reply.py` | chat 模式热路径，新循环不复用 |
+| `core/toolchain.py` / `core/tool_markup.py` / `utils/llm_client.py` | 直接调用 |
+| `core/focus/*` | 子聚焦原样复用；`work_finish` 由沙盒自算视图保证 |
+| `core/history_manager.py` | 群历史不改；模式内存流通过 `AdaptorHistory` 接入 |
+| `core/maid/maid_worker.py` | 汇报由路由器投递为内部事件，不改 worker |
+| `core/phone_driver.py` / `phone_agent.py` / `phone_macro.py` | 子聚焦直接复用，只在外层加互斥锁 |
+| `core/prompts.py` 人格正文（1–171 行） | 自进化准则第 1 条硬禁区 |
+| `yuki_memory/chroma.sqlite3` | 只追加写入，不改表结构、不清理 |
+
+---
+
+## 九、分阶段实施计划
 
 ### P0 地基与基线修复（0.5 天）
+`AutonomousConfig` + yaml 生成；修 5 个漂移测试；`storage.py` 骨架与 `data/` 初始化。
+**验收**：`pytest tests -q` → 0 failed；`cfg.autonomous.enabled is False`。
 
-1. `config.py`：新增 `AutonomousConfig` + `cfg.autonomous`；`python config.py sync` 生成 yaml 段。
-2. 修 5 个漂移测试（只改断言）。
-3. `modules/autonomous/storage.py` 骨架 + `data/` 目录初始化（含旧 notebook 迁移读取）。
-4. 验收：`pytest tests -q` → **0 failed**；`cfg.autonomous.enabled is False`。
+### P1 模式层（1 天，chat 模式零行为变化）
+`core/modes/`（base/router/pipeline）；`main.py` 换 `ModeAwarePipeline`。
+**验收**：既有 `test_pipeline` / `test_toolchain` / `test_vision` / `test_napcat` 全绿；
+`test_mode_router_noop_passthrough` 证明 router 空时调用序列与父类一致；
+手写一个 `EchoMode` 假模式验证"该群进入假模式后入站被缓冲、其他群被冻结、退出后补台"。
 
-### P1 沙盒内核：循环 + 双念头 + 投票 + 双出口（2 天，`/深思` 手动跑通）
+### P2 沙盒内核：debate 模式 + `/深思`（2.5 天）
+`SandboxLoop` / `SilentSender` / `AdaptorHistory` / `inner_debate` / `prompts` / `coordinator`；
+`/深思` 跑完把交锋摘要 + 备忘录 `send_master_private` 给机主；`/强制放行` 打通。
+**验收**（连续 5 次 `/深思`）：a) ≥3 次调用 `search_diary` 且带 `[本群]`；
+b) ≥1 次 `do_nothing` 出口且 `data/` 无新文件；c) 辩论期间在群里发消息 → 零回复、消息进缓冲；
+d) 32 轮内收敛；e) `data/chat_history.json` 无任何 debate 记录；f) `/强制放行` 5 秒内回 chat 模式。
 
-1. `sandbox_loop.py`：
-   - `run_step(messages, tools, max_tokens) -> (content, calls)`；内部复用
-     `extract_text_tool_calls`；
-   - `SilentSender`：`send()` 只往 `self.sent` 记录并返回成功（子聚焦域/工具内部可能调用），
-     `parse_cq_codes` 原样透传；
-   - `ToolContext(chat_id=<真实 target_gid>, mode="autonomous",
-     metadata={"autonomous": {"run_id": ..., "session_id": ...},
-               "process_callback": None, "history_manager": adapter})`（见 §2.3）。
-2. `storage.sample_diaries(n_recent=2, n_old=1)`：只读 `MemoryRAG().collection.get(...)`，
-   按 `timestamp` 分桶随机（近 7 天 / 30 天以上），失败则降级为空并写日志，不阻塞。
-3. `inner_debate.py`：三段式旁白注入（第 3 步未检索→提醒；11 步→排雷；23 步→收敛）；
-   `inner_vote` 判定按**步序号**，同批多次投票只认最后一次；`agree_to_end` 单边为真则清零。
-4. `prompts.py`：Phase 1 三个 prompt，A/B 通过 `system` 尾部"当前视角"切换（同一消息流，
-   发言前缀 `【脑海里的直觉】/【冷静下来的念头】` 由 prompt 约束，代码只做校验与补齐）。
-5. `listen_main.py`：`handle_group_switch` 增加 `/深思`、`/工坊状态`（master 限定，
-   沿用现有 set + 提示文案风格）；`/深思` 异步起 coordinator，完成后
-   `send_master_private` 发交锋摘要 + 备忘录全文。
-6. 验收：连续 5 次 `/深思`，日志里能看到 a) 至少 3 次调用 `search_diary`；
-   b) 出现 do_nothing 出口且 `data/` 无任何新文件；c) 36 轮上限内收敛；
-   d) 全程 `data/chat_history.json` 无 `autonomous:` 键、群里零消息。
+### P3 日记群归属检索 + 五层记忆（2 天）
+§5 检索改造；notebook 双区；`conclude_reflection` 三向流转；L1–L5 写入；群名缓存。
+**验收**：`memo_only` 后 `search_diary` 命中自己的备忘录并带群标；`/工坊状态` 列出 active/paused
+与 512 字日志尾；跨群检索出现"本群没有相关记录"。
 
-### P2 五层记忆落盘 + 小本本双区（1.5 天）
+### P4 workshop 模式（2 天）
+60 步上限 / 55 步提醒 / ≥60 步只剩 `work_finish` / 零工具追问（≤2）/ 熔断兜底 / `step_timeout`；
+`work_finish` 512 字软校验；小女仆委托与汇报回流。
+**验收**：两次 `/深思` 接续同一小说 → 第二次 `inspect_work_session` 返回 512 字日志、第三次续写第二章；
+maid 汇报在 workshop 内被读入而非发群。
 
-1. `core/notebook.py`：`load_zone(zone)` / `save_zone(zone, text)`；`load()` 回落
-   `daily` 或旧 `content`；`update_notebook` 保持默认写 `daily`（旧调用语义不变）。
-2. `core/prompts.build_chat_context`：小本本注入改为两区渲染（上区日常、下区
-   `【长期路标】`），并在日记回忆之后新增 L4 槽位（§8 第 1 条）。
-3. Phase 2 `conclude_reflection` 三向流转 + L1/L2/L4/L5 写入 + `work_sessions` 建档。
-4. 验收：`memo_only` 后能 `search_diary` 命中自己的备忘录；`/工坊状态` 能列出
-   active/paused 会话与 512 字日志尾部。
+### P5 子聚焦嵌套（1 天）
+`AdaptorHistory` 接 `focus_manager.exit`；工具视图强制并入 `work_finish`；phone 类全局锁；
+模式退出 `focus_manager.abort()` 兜底。
+**验收**：workshop 内 `phone_start` → 两步 → `phone_finish` → 继续；全程群里零消息、chat_history 零记录。
 
-### P3 自主执行工坊（2 天）
+### P6 补台 + 冷场反哺 + 自动触发（2 天）
+`catchup.py`；`high_spirits` 三件套（brain / decision / reply_watch 窗口）；回归瞬间触发一次破冰；
+`autonomous_trigger_check`（静默/精力/深夜/冷却/日配额持久化）；`sweep_stale_runs`。
+**验收**：a) `enabled_groups` 为空时，任何冷场都不触发、`/深思` 被拒；
+b) 只把 A 群加入白名单并把 `min_group_idle_minutes` 调成 2 分钟 → 只有 A 群触发，B 群冷场不触发；
+c) `/自主轮 关` 后 A 群不再触发且重启后仍为关（运行时覆盖生效）；
+d) 自动进 debate → 回群补台落地 → 1~3 条分享语气消息后自停；一天不超 3 次；重启配额不清零；深夜不触发。
 
-1. `workshop.py`：60 步上限、55 步提醒、≥60 步强制只剩 `work_finish`、
-   零工具追问（≤2 次）、连续零工具熔断兜底 `paused` 日志、`step_timeout` 熔断。
-2. `tools.py`：`work_finish` 校验 ≤512 字（超长截断并回显"已精简到 512"），
-   强制三要素（干了吗/产物路径/怎么接续）——只做软校验 + 提示，不硬拒。
-3. `delegate_to_maid` 衔接：任务里带 `session_id` 写进 `tasks/dsh/*/request.json`
-   之外的旁路文件 `data/work_sessions/<sid>.json.maid`（不改 maid 模块），
-   maid 汇报经 §2.3 分流回到沙盒，若沙盒已结束则记进 L2 并在下次触发时提示。
-4. 验收：两次 `/深思` 接续同一小说 → 第二次 `list_recent_work_sessions` 能看到上次
-   session 且 `inspect_work_session` 返回 512 字日志；第三次能续写第二章。
+### P7 观测与收尾（1 天）
+WebUI `/api/autonomous`；把 §2 的 7 处修正合并回 `docs/autonomous-sandbox-architecture.md`；全量回归。
 
-### P4 真人抢占 + 子聚焦（可选）（1 天）
-
-1. `SessionPipeline.enqueue_message`：真人入站时 `autonomous_coordinator.interrupt(chat_id)`；
-   沙盒每个"步"边界检查 `interrupt.is_set()` → 保存断点 `status=paused` 退出。
-2. 嵌套 `phone_start` / `art_start`：`SandboxHistoryAdapter` + 不注册 domain 的特殊处理；
-   `work_finish` 恒在视图内（先算 `visible`，再 `|= {"work_finish"}`）。
-3. 串行化：沙盒与群聊可能同时用 adb，加一把 `asyncio.Lock` 保护 phone 类重工具（或
-   直接规定沙盒期间 `phone_start` 返回"现在不方便"）。
-4. 验收：沙盒跑第 5 步时群里有人 @她 → 3 秒内沙盒挂起、正常回群、断点可续。
-
-### P5 自动触发与冷场反哺（1.5 天）
-
-1. `engine_monitor.autonomous_trigger_check()`：条件组合 + 冷却 + 日配额持久化
-   （`data/autonomous_state.json`，按自然日重置，04:00 归档）。
-2. `core/brain.py`：`high_spirits_until` / `high_spirits_remaining_turns` +
-   `mark_high_spirits()/high_spirits_active()`。
-3. `engine_decision`：`high_spirits` 时欲望 `+bonus`，并跳过 `energy < MIN_ACTIVE`
-   的拒绝分支（但仍守 `energy > 0.15` 底线）。
-4. `reply_watch`：`min_timeout_seconds` 参数（§2.2）+ `high_spirits_followup` 注册，
-   扣减配额，刷屏 >3 条或精力耗尽即停。
-5. 验收：把 `min_group_idle_minutes` 调成 2 分钟，手动制造冷场 → 自动进入沙盒 →
-   回归后群里出现"分享语气"的 1~3 条消息，且不再继续刷。
-
-### P6 观测与调优（1 天）
-
-1. `modules/debug/webui_server.py` 加 `/api/autonomous`：当前阶段、轮次、token 估算、
-   本次 run 的 A/B 对话流（内存 ring buffer）、五层记忆快照。
-2. `docs/autonomous-sandbox-architecture.md` 定稿（把本文档 §2 的修正合并回设计文档）。
-3. 一次性回归：`pytest tests -q` 全绿 + 新增 `tests/test_autonomous_sandbox.py`。
-
-**总工期估算 9~10 个工作日**（单人、按现有代码风格）。
+**总工期 11~12 人日。**
 
 ---
 
-## 七、待机主拍板的取舍（会改变实现范围）
+## 十、已定/待定取舍
 
-| # | 取舍 | 方案 A | 方案 B | 建议 |
-| --- | --- | --- | --- | --- |
-| T1 | Phase 3 能否直接往群里发消息/文件 | 允许（`send_qq_file`/`poke` 直接生效） | `SilentSender` 记录，回归群聊后才发 | **B**：半夜静默期突然往群里甩文件风险高；回归后由 Phase 4 自然分享 |
-| T2 | 触发目标群 | 固定 `TARGET_GROUPS[0]` | `cfg.autonomous.target_groups` 可配多群，按静默最久的那个 | **B**（默认仍单群，行为可预期） |
-| T3 | v1 是否含 phone/art 嵌套聚焦 | 含（+1 天，需 adapter 与 adb 互斥） | 先在工坊里只给 `bash`/`art_draw` 平铺，不下沉聚焦 | **B 起步，A 放 P4** |
-| T4 | Phase 1 讨论上下文膨胀 | 全量 32 轮历史（token 爆炸，32 轮可达 ~120k） | 每 8 步压成"锚点卡"（保留日记引用、结论、待办），只留最近 6 步原文 | **B，必做** |
-
----
-
-## 八、风险与对策
-
-| 风险 | 触发场景 | 对策 |
+| # | 取舍 | 结论 |
 | --- | --- | --- |
-| 内心独白误发群 | 复用 `engine_reply` 或误注册沙盒工具 | 沙盒独立循环 + `SilentSender` + `/深思` 联调时群里零消息断言 |
-| Token 费用失控 | 32 轮 + 60 步工具 | `debate_max_tokens=600`、8 步压缩、`daily_max_runs=3`、`step_timeout` |
-| 与群聊抢 adb / 抢工具资源 | 沙盒与真实群聊并发 | 中断抢占 + phone 类重工具全局锁（P4） |
-| Chroma 写入被并发破坏 | 日记写入与日常写日记并发 | 只用 `MemoryRAG.save_diary`（线程安全 + 24h 去重），不直接碰 sqlite |
-| 人格漂移 | 长工具链稀释人设 | Phase 2/3 prompt 只读复用 `get_base_setting()`，剥 `<layout>`/`[MEME]`；禁改 `core/prompts.py` 人格正文 |
-| 重启丢状态 | 容器重建（本项目高频操作） | 每阶段至少落一次 checkpoint；启动时 `sweep_stale_runs()` 把 `active` 却无对应内存 run 的会话改 `paused` |
-| 模型把 `work_finish` 参数写超长 | 512 字限制 + 长 work_log | `ToolCallManager` 已有 `finish_reason=length` 提示；`work_finish` 再做一次截断兜底 |
-| 测试无法离线 | RAG / chromadb 需要模型 | 沙盒模块构造函数注入 `rag`/`llm`/`sampler`，测试用 fake；`storage` 全走 tmp_path |
+| T1 | 沙盒内能否直接发群消息 | **已定：不发**（`SilentSender`；产物路径进工作日志，回群后由 Phase 4 分享） |
+| T2 | 触发目标群 | **已定：无默认主群**，候选完全来自 `autonomous.enabled_groups`，按「静默最久 → 精力最高」取第一个 |
+| T3 | 子聚焦（phone/art） | **已定：允许**（配 `AdaptorHistory` + 重工具互斥锁） |
+| T4 | debate 上下文压缩 | **已定：必做**（每 8 步压锚点卡，只留最近 6 步原文） |
+| T5 | 补台摘要方式 | **已定：按量自动切**（≤12 条直拼，>12 条 sub-LLM，失败回落） |
+| T6 | 冻结期间主人私聊 | 待定。推荐**也冻结**（唯一体性优先），主人用 `/深思` `/工坊状态` `/强制放行` 操作 |
+| T7 | 每次 run 的落盘上限 | 待定。推荐：每次 run 最多 1 篇 L1 + 1 条 L2，防刷库 |
+| T8 | 模式作用域 | **已定：全局单活跃**（同时只有 1 个群可处于非 chat 模式，其他群冻结） |
+| T9 | 逃生阀 | **已定：加 `/强制放行`**（断点存 `paused`，立即全面放行 + 补台） |
+| T10 | 群级准入 | **已定：白名单 + 默认全关**；`enabled=false` + `enabled_groups=[]`；运行时 `/自主轮 开\|关` 覆盖，优先级高于配置 |
 
 ---
 
-## 九、测试清单（`tests/test_autonomous_sandbox.py`，全离线）
+## 十一、风险与对策
 
-1. `test_do_nothing_exit_leaves_no_trace`：A/B 连续 do_nothing → 无文件、无 L1 写入、无 high_spirits。
-2. `test_vote_requires_two_consecutive_agree`：单边 agree 后对方 `agree_to_end=False` → 计数清零。
-3. `test_debate_round_cap_and_consensus_from_last_6`：32 轮未收敛 → consensus_note 取最后 6 步。
-4. `test_context_compression_every_8_steps`：第 24 步时消息数 <= 压缩阈值。
-5. `test_zero_tool_retry_then_fuse`：连续 2 轮零工具 → 生成 `paused` 兜底日志并退出。
-6. `test_workshop_60_call_cap_trims_tools_to_finish`：第 60 步 tools == {work_finish}。
-7. `test_work_log_512_truncation`。
-8. `test_session_resume_reads_512_log`：`inspect_work_session` 只返回 work_log。
-9. `test_notebook_zone_backward_compat`：旧 `{"content": ...}` 能读成 daily。
-10. `test_daily_work_memory_ttl_and_archive`：TTL 过期不注入；04:00 后归档。
-11. `test_no_autonomous_key_in_chat_history`：跑完整流程后断言历史文件无虚拟 chat_id。
-12. `test_maid_report_routed_to_coordinator`：`main_process("autonomous:1", ...)` 不进 pipeline。
+| 风险 | 对策 |
+| --- | --- |
+| 冻结太久（60 步工具可跑 10 分钟+） | `max_wall_seconds=900` 强制暂停放行；补台保证她"知道刚才发生了什么"；`/强制放行` |
+| 模式层拖慢/改坏 chat 路径 | P1 单独验收：router 空 → 完全透传；子类不改父类任何一行逻辑 |
+| 漏挡新入站路径 | 路由只在 `ModeAwarePipeline.enqueue_message` 一处；测试断言"冻结期 `sender.send` 零调用" |
+| 内心独白误发群 | 非 chat 模式独立循环 + `SilentSender` + 联调断言群里零消息、chat_history 零记录 |
+| 与群聊抢 adb | 模式锁挡群聊；phone 类全局锁兜残留协程 |
+| Token 费用 | `debate_max_tokens=600`、8 步压缩、`daily_max_runs=3`、`step_timeout` |
+| Chroma 并发写 | 只用 `MemoryRAG.save_diary`（线程安全 + 24h 去重） |
+| 人格漂移 | 各模式 prompt 只读复用 `get_base_setting()`，剥 `<layout>`/`[MEME]`；禁改人格正文 |
+| 重启丢状态 | 每阶段落 checkpoint；`sweep_stale_runs()` 把残留 active 改 `paused` 并放行 |
+| 日记跨群串味 | §5 软比例 + 群标 + 三档降级话术，测试覆盖 |
+
+---
+
+## 十二、测试清单（全离线）
+
+**`tests/test_mode_router.py`**
+1. `test_noop_passthrough`：router 空 → 调用序列与父类一致。
+2. `test_non_chat_mode_buffers_input`：该群处于 debate → 入 buffer、不建 task。
+3. `test_global_single_active_run`：A 群 debate 时 B 群入站 → 冻结；A 结束 → B 收到补台。
+4. `test_inner_event_delivery`：workshop 模式下 `is_maid_report` → 投主循环而非 buffer。
+5. `test_force_release`：`/强制放行` → 模式退出、断点 paused、全部放行。
+
+**`tests/test_autonomous_sandbox.py`**
+6. `test_do_nothing_exit_leaves_no_trace`。
+7. `test_vote_requires_two_consecutive_agree`。
+8. `test_debate_round_cap_and_consensus_from_last_6`。
+9. `test_context_compression_every_8_steps`。
+10. `test_zero_tool_retry_then_fuse`。
+11. `test_workshop_60_call_cap_trims_tools_to_finish`。
+12. `test_work_log_512_truncation` + `test_session_resume_reads_512_log`。
+13. `test_notebook_zone_backward_compat` + `test_daily_work_memory_ttl_and_archive`。
+14. `test_no_debate_trace_in_chat_history`。
+15. `test_catchup_digest_direct_vs_llm`（≤12 直拼、>12 走 sub-LLM、失败回落）。
+16. `test_diary_search_group_ratio_and_fallback`（7:3、本群 0 命中、全空三档）。
+17. `test_group_gate_whitelist`：白名单空 → 不触发且 `/深思` 拒绝；白名单含 A → 只 A 触发；
+    `/自主轮 关` 的运行时覆盖优先于配置，且落盘后重启仍生效。
