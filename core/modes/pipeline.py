@@ -109,6 +109,11 @@ class ModeAwarePipeline(SessionPipeline):
         from modules.autonomous.catchup import build_catchup_event
 
         cid = str(chat_id)
+        if not self.group_active_state.get(cid, True):
+            # 群还在休眠：补台事件会被 prepare_message_batch 直接 pop 掉，消息就白丢了。
+            # 冻结期消息留在缓冲区，等 /开启 后随下一条消息一起被处理。
+            logger.info(f"[Modes] {cid} 仍在休眠，暂不注入补台")
+            return
         event = await build_catchup_event(self, cid)
         if event is None:
             self.mode_router.clear_catchup(cid)

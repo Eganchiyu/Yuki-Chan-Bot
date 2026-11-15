@@ -337,6 +337,7 @@ def _set_group_active(pipeline, gateway, group_id, gid_str, opening: bool) -> No
     """切换群聊的应答开关，群聊 /关闭 /开启 与 /强制关闭 共用。"""
     pipeline.group_active_state[gid_str] = opening
     save_group_state(pipeline.group_active_state)
+    logger.warning(f"[Switch] {gid_str} 群应答开关 -> {'开' if opening else '休眠'}")
     if opening:
         asyncio.create_task(gateway.send(group_id, f"{cfg.ROBOT_NAME.title()} 重新上线", mode="group"))
         return
@@ -450,6 +451,16 @@ def handle_autonomous_command(pipeline, gateway, chat_id, gid_str, user_id, raw_
         return True
 
     # /深思
+    if send_mode == "group" and not pipeline.group_active_state.get(gid_str, True):
+        asyncio.create_task(
+            gateway.send(
+                chat_id,
+                "这个群现在是休眠状态哦，先发 /开启 让我上线，我再去独处想事情～",
+                mode=send_mode,
+            )
+        )
+        return True
+
     async def _start_deep_think():
         result = await coordinator.start_run(gid_str, trigger="manual", mode_arg="group")
         if result.get("ok"):

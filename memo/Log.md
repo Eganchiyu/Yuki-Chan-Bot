@@ -709,3 +709,11 @@
 - 修正：准入优先级改为「TARGET_GROUPS > 运行时覆盖 > 总开关+白名单」；`gate_reason` 同步给出「可用 /自主轮 开 单独开启本群」的提示；线上 `configs/config.yaml` 把 `autonomous.enabled` 置 true（白名单空、自动触发关，行为仍等价全关，只认 /自主轮 开 的群）。
 - 测试：新增 `test_runtime_override_beats_global_switch`；全量 225 passed。
 - 注意：代码与配置都在容器只读挂载里，需重启容器才生效。
+
+## 2026-11-15 排障：静默退出后「群聊不上线」
+- 结论：与自主轮无关。该群 11:34:53 就被 `/强制关闭` 二次确认置为休眠（`data/group_state.json` = false），`prepare_message_batch` 对休眠群直接 stop；`/深思` 能跑是因为指令拦截在休眠判断之前。进程健康（`/health` napcat_online=true，`active_mode` 已清空）。
+- 加固：
+  1. 休眠群发 `/深思` 直接拒绝并提示先 `/开启`；
+  2. `_set_group_active` 增 `[Switch] <gid> 群应答开关 -> 开/休眠` 日志（以后能查到是谁关的）；
+  3. `handle_catchup` 遇休眠群跳过注入（否则补台事件会被管线 pop 掉，冻结期消息白丢），消息留在缓冲区等 `/开启` 后随下一条消息处理。
+- 测试新增 2 项；全量 229 passed。

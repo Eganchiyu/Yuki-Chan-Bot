@@ -32,6 +32,7 @@ from modules.autonomous.storage import (
     truncate_chars,
     work_session_store,
 )
+from modules.autonomous.transcript import transcript_for
 from modules.autonomous.tools import (
     SandboxState,
     build_registry,
@@ -203,10 +204,14 @@ class AutonomousCoordinator:
         chat_label = await self._chat_label(gid, deps)
         run_id = f"run-{int(time.time() * 1000)}"
         state = SandboxState(run_id=run_id, chat_id=gid)
+        transcript = transcript_for(state, mode="debate")
+        transcript.event("gate", trigger=trigger, chat_label=chat_label,
+                         reason=self.gate_reason(gid))
         state_store.set_active_mode(gid, "debate", run_id)
         self._resolve_reply_watch(gid)
         summary = ""
         episode = False      # 只有 memo_only / start_work 才算「带着东西回到群里」
+        outcome_label = "error"
         try:
             debate_mode = DebateMode(
                 chat_id=gid, router=self.router, run_id=run_id, deps=deps,
@@ -220,16 +225,23 @@ class AutonomousCoordinator:
             if debate is None or debate.stopped in {"force", "timeout", "empty"}:
                 summary = self._stalled_summary(debate)
                 logger.warning(f"[Autonomous] {gid} 思考阶段中断：{summary}")
+                outcome_label = "stalled"
                 return {"ok": False, "reason": summary}
 
             if debate.verdict == "do_nothing":
                 logger.warning(f"[Autonomous] {gid} 念头层决定什么都不做，静默退出")
+                outcome_label = "do_nothing"
                 return {"ok": True, "outcome": "do_nothing"}
 
             state.phase = "reflection"
+            transcript.event("phase", phase="reflection", verdict=debate.verdict,
+                             rounds=debate.rounds)
             reflection = await self._reflect(gid, chat_label, state, debate, deps)
+            if reflection:
+                transcript.reflection(reflection)
             if reflection is None or reflection.get("action") == "abandon":
                 logger.warning(f"[Autonomous] {gid} 本尊决定放弃，静默退出")
+                outcome_label = "abandon"
                 return {"ok": True, "outcome": "abandon"}
 
             memo_id = save_autonomous_memo(
@@ -246,10 +258,12 @@ class AutonomousCoordinator:
                 )
                 summary = self._reflection_summary(reflection, memo_id)
                 episode = True
+                outcome_label = "memo_only"
                 return {"ok": True, "outcome": "memo_only", "summary": summary}
 
             # ---- Phase 3：自主执行工坊 ----
             state.phase = "workshop"
+            transcript.event("phase", phase="workshop", title=reflection.get("title"))
             session = self._ensure_work_session(gid, reflection)
             state.session_id = session["session_id"]
             state_store.set_active_mode(gid, "workshop", run_id, session_id=state.session_id)
@@ -265,13 +279,16 @@ class AutonomousCoordinator:
             record_work_memory(state, reflection, status="可接续")
             summary = self._reflection_summary(reflection, memo_id, state)
             episode = True
+            outcome_label = "start_work"
             return {"ok": True, "outcome": "start_work", "summary": summary}
         except ModeBusyError as exc:
             self._last_error[gid] = str(exc)
+            outcome_label = "mode_busy"
             logger.warning(f"[Autonomous] {gid} 模式占用冲突: {exc}")
             return {"ok": False, "reason": str(exc)}
         except Exception as exc:
             self._last_error[gid] = str(exc)
+            outcome_label = "exception"
             logger.error(f"[Autonomous] {gid} 自主轮异常: {exc}")
             return {"ok": False, "reason": f"自主轮异常：{exc}"}
         finally:
@@ -285,6 +302,14 @@ class AutonomousCoordinator:
                 pass
             state_store.clear_active_mode()
             self._runs.pop(gid, None)
+            transcript.finish(
+                outcome_label,
+                summary=summary,
+                high_spirits=episode,
+                session_id=state.session_id,
+                work_log=state.work_log,
+                artifacts=state.artifacts,
+            )
             if notify_master and summary:
                 await self._notify_master(gid, summary)
             await self._after_run(gid, episode=episode)

@@ -18,6 +18,7 @@ from modules.autonomous.sandbox_loop import (
 )
 from modules.autonomous.storage import diary_seed_sampler
 from modules.autonomous.tools import SandboxState, build_registry
+from modules.autonomous.transcript import transcript_for
 from utils.llm_client import llm_chat
 from utils.logger import get_logger
 
@@ -108,6 +109,9 @@ class InnerDebate:
         result = DebateResult()
         seeds = await asyncio.to_thread(diary_seed_sampler.sample, self.chat_id)
         shared = sb_prompts.debate_shared(self.chat_label)
+        transcript = transcript_for(self.state, mode="debate")
+        transcript.event("debate_start", rounds_limit=self.max_rounds,
+                        seeds=[s.get("source") for s in seeds])
         turns: list[dict] = []
         anchor = ""
         used_retrieval = False
@@ -138,6 +142,7 @@ class InnerDebate:
 
             content = strip_tool_call_markup(msg.get("content") or "").strip()
             calls = self.loop.extract_calls(msg, DEBATE_VISIBLE)
+            step_results: list[dict] = []
             if calls:
                 self.context.metadata["debate_role"] = role
                 names = {((c.get("function") or {}).get("name") or "") for c in calls}
@@ -153,15 +158,21 @@ class InnerDebate:
                     result.stopped = "timeout"
                     logger.warning(f"[Debate] {self.chat_id} 第 {step} 步工具超时")
                     break
+                step_results = results
                 for message in results:
                     if message.get("name") == "inner_vote":
                         payload = parse_tool_payload(message)
                         logger.info(
                             f"[Debate] {self.chat_id} step={step} role={role} vote={payload.get('data')}"
                         )
+                        vote = (payload.get("data") or {}).get("vote") or {}
+                        if vote:
+                            transcript.vote(step, role, vote.get("agree"),
+                                            vote.get("verdict"), vote.get("note", ""))
 
             result.rounds = step
             turns.append({"role": role, "content": content or "（先翻了翻旧记录和档案）"})
+            transcript.debate_step(step, role, content, calls, step_results, narration)
 
             consensus = self.state.consensus()
             if consensus:
@@ -183,6 +194,8 @@ class InnerDebate:
         result.transcript = turns[-6:]
         result.anchor = anchor
         result.votes = list(self.state.votes)
+        transcript.event("debate_finish", stopped=result.stopped, verdict=result.verdict,
+                         rounds=result.rounds, note=result.consensus_note)
         return result
 
     def _build_messages(self, shared, role, seeds, turns, anchor, narration, step) -> list[dict]:

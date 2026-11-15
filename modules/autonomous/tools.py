@@ -51,6 +51,7 @@ class SandboxState:
     finish_status: str = ""
     tool_calls: int = 0
     notes: list[str] = field(default_factory=list)
+    transcript: Any = None      # modules.autonomous.transcript.RunTranscript
 
     # -- 投票 --
     def record_vote(self, role: str, agree: bool, verdict: str, note: str = "") -> dict:

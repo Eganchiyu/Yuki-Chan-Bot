@@ -59,6 +59,7 @@ def sandbox_data(tmp_path, monkeypatch):
     """把五层记忆的落盘路径全部指向 tmp_path，避免污染真实 data/。"""
     from modules.autonomous import storage as st
 
+    transcript_dir = tmp_path / "logs" / "autonomous"
     stores = SimpleNamespace(
         state=SimpleNamespace(path=str(tmp_path / "autonomous_state.json")),
         sessions=SimpleNamespace(directory=str(tmp_path / "work_sessions"),
@@ -66,6 +67,7 @@ def sandbox_data(tmp_path, monkeypatch):
         diary=SimpleNamespace(path=str(tmp_path / "work_diary.jsonl")),
         daily=SimpleNamespace(path=str(tmp_path / "daily_work_memory.json"),
                               archive_dir=str(tmp_path / "archive")),
+        transcripts=transcript_dir,
     )
     state_store = storage.AutonomousStateStore(stores.state.path)
     session_store = storage.WorkSessionStore(stores.sessions.directory, stores.sessions.index_path)
@@ -77,6 +79,8 @@ def sandbox_data(tmp_path, monkeypatch):
     notebook_store = NotebookStore(str(tmp_path / "notebook.json"))
     monkeypatch.setattr("core.notebook.notebook_store", notebook_store)
     monkeypatch.setattr("modules.autonomous.coordinator.notebook_store", notebook_store, raising=False)
+
+    monkeypatch.setattr("modules.autonomous.transcript.TRANSCRIPT_DIR", str(transcript_dir))
 
     monkeypatch.setattr("modules.autonomous.tools.work_session_store", session_store)
     monkeypatch.setattr("modules.autonomous.tools.work_diary_store", diary_store)
@@ -90,6 +94,7 @@ def sandbox_data(tmp_path, monkeypatch):
         session_store=session_store,
         diary_store=diary_store,
         daily_store=daily_store,
+        transcripts=transcript_dir,
         root=tmp_path,
     )
 
@@ -729,3 +734,82 @@ async def test_runtime_override_beats_global_switch(sandbox_data, monkeypatch):
         outsider = str(int(cfg.TARGET_GROUPS[0]) + 1)
         sandbox_data.state_store.set_group_override(outsider, True)
         assert coordinator.is_group_enabled(outsider) is False
+
+
+# ==================== 逐轮记录（logs/autonomous/<run_id>.jsonl） ====================
+
+async def test_transcript_records_debate_and_reflection(sandbox_data, monkeypatch):
+    _enable_autonomous(monkeypatch)
+    gid = str(cfg.TARGET_GROUPS[0]) if cfg.TARGET_GROUPS else "1057020972"
+    monkeypatch.setattr(cfg.autonomous, "debate_max_rounds", 4)
+    llm = ScriptedLLM([
+        vote("memo_only", note="想整理一下春天的回忆"),
+        vote("memo_only", note="先写成随想"),
+    ])
+    monkeypatch.setattr("modules.autonomous.sandbox_loop.llm_chat_raw", llm)
+    monkeypatch.setattr(
+        "modules.autonomous.coordinator.save_autonomous_memo",
+        lambda reflection, chat_id, session_id, kind="memo": "mem_t1",
+    )
+
+    pipeline = FakePipeline()
+    coordinator = AutonomousCoordinator(pipeline)
+    coordinator._reflect = AsyncMock(return_value={
+        "action": "memo_only", "title": "春天的回忆",
+        "memo_content": "想起刚建群那会儿的春天。", "work_diary_entry": "", "notebook_pointer": "",
+    })
+    await coordinator._run(gid, trigger="manual", goal="", mode_arg="group", notify_master=False)
+
+    files = sorted((sandbox_data.transcripts).glob("*.jsonl"))
+    assert len(files) == 1
+    records = [json.loads(line) for line in files[0].read_text(encoding="utf-8").splitlines()]
+    kinds = [r["kind"] for r in records]
+    assert kinds[0] == "run_start"
+    assert "debate_step" in kinds and "vote" in kinds
+    assert "reflection" in kinds and kinds[-1] == "run_finish"
+    first_step = next(r for r in records if r["kind"] == "debate_step")
+    assert first_step["role"] == "A" and first_step["content"]
+    assert records[-1]["outcome"] == "memo_only"
+
+
+async def test_transcript_records_workshop_steps(sandbox_data, monkeypatch):
+    script = [
+        {"content": "先看看目录", "tool_calls": [tool_call("bash", command="ls workspace")]},
+        {"content": "收尾", "tool_calls": [tool_call(
+            "work_finish", status="completed", work_log="写好第一章",
+            artifacts=["workspace/a.md"])]},
+    ]
+    workshop, state, llm = _workshop(script, sandbox_data)
+    monkeypatch.setattr("modules.autonomous.sandbox_loop.llm_chat_raw", llm)
+    await workshop.run()
+
+    files = sorted(sandbox_data.transcripts.glob("*.jsonl"))
+    records = [json.loads(line) for line in files[0].read_text(encoding="utf-8").splitlines()]
+    kinds = [r["kind"] for r in records]
+    assert kinds[0] == "run_start" and kinds[-1] == "workshop_finish"
+    steps = [r for r in records if r["kind"] == "workshop_step"]
+    assert any(r.get("calls") and r["calls"][0]["name"] == "bash" and r.get("tools") for r in steps)
+    assert "写好第一章" in records[-1]["work_log"]
+
+
+async def test_deep_think_refused_when_group_sleeping(monkeypatch):
+    """休眠群不该跑自主轮：先提示 /开启。"""
+    from modules.QQNapcatListen import listen_main
+
+    gid = str(cfg.TARGET_GROUPS[0]) if cfg.TARGET_GROUPS else "1057020972"
+    coordinator = SimpleNamespace(
+        status_text=MagicMock(return_value="状态"),
+        start_run=AsyncMock(return_value={"ok": True}),
+        force_release=MagicMock(return_value={"ok": True}),
+    )
+    pipeline = SimpleNamespace(autonomous=coordinator, group_active_state={gid: False})
+    gateway = AsyncMock()
+
+    handled = listen_main.handle_autonomous_command(
+        pipeline, gateway, gid, gid, cfg.MASTER_QQS[0], "/深思",
+    )
+    await asyncio.sleep(0)
+    assert handled is True
+    coordinator.start_run.assert_not_awaited()
+    sent = gateway.send.await_args.args[1]
+    assert "/开启" in sent

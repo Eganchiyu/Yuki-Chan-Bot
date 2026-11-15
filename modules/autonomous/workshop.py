@@ -18,6 +18,7 @@ from modules.autonomous.sandbox_loop import (
 )
 from modules.autonomous.storage import WORK_LOG_MAX_CHARS, truncate_chars, work_session_store
 from modules.autonomous.tools import SandboxState, build_registry
+from modules.autonomous.transcript import transcript_for
 from utils.logger import get_logger
 
 logger = get_logger("autonomous.workshop")
@@ -132,6 +133,9 @@ class Workshop:
             )},
         ]
 
+        transcript = transcript_for(self.state, mode="workshop")
+        transcript.event("workshop_start", session_id=self.state.session_id, goal=goal,
+                         resume_hint=resume_hint)
         zero_streak = 0
         step_no = 0
         while True:
@@ -160,6 +164,8 @@ class Workshop:
 
             content = strip_tool_call_markup(msg.get("content") or "").strip()
             calls = self.loop.extract_calls(msg, visible)
+            transcript.workshop_step(step_no, content, calls, None,
+                                     self.loop.tool_calls_count)
             if not calls:
                 zero_streak += 1
                 messages.append({"role": "assistant", "content": msg.get("content") or ""})
@@ -186,6 +192,8 @@ class Workshop:
                 break
 
             messages.extend(results)
+            transcript.workshop_step(step_no, content, calls, results,
+                                     self.loop.tool_calls_count)
             await self._attach_screenshots(results, messages)
             self._append_budget_reminder(messages)
 
@@ -209,6 +217,9 @@ class Workshop:
             outcome.work_log = self._fallback_work_log()
             outcome.artifacts = list(self.state.artifacts)
             self._save_fallback_session(outcome)
+        transcript.event("workshop_finish", status=outcome.status,
+                         steps=outcome.steps, tool_calls=outcome.tool_calls,
+                         work_log=outcome.work_log, artifacts=outcome.artifacts)
         return outcome
 
     # ------------------------------------------------------------ 收尾辅助

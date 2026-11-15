@@ -234,3 +234,26 @@ async def test_catchup_forces_reply_in_prepare_batch():
     context = await pipeline.prepare_message_batch(context)
     assert context["force_reply"] is True
     assert context.get("stop") is not True
+
+
+async def test_catchup_skipped_while_group_sleeping():
+    """休眠群的补台会被管线直接丢弃，所以这里先跳过注入、把消息留在缓冲区。"""
+    from modules.autonomous import catchup as cp
+
+    pipeline = _make_pipeline()
+    pipeline.group_active_state["12345"] = False
+    pipeline.yuki.pop_buffer = MagicMock(return_value=[{"name": "月白", "content": "在吗"}])
+    called = []
+    original = cp.build_catchup_event
+
+    async def spy(*args, **kwargs):
+        called.append(args)
+        return None
+
+    cp.build_catchup_event = spy
+    try:
+        await pipeline.handle_catchup("12345")
+    finally:
+        cp.build_catchup_event = original
+    assert called == []
+    pipeline.yuki.pop_buffer.assert_not_called()
