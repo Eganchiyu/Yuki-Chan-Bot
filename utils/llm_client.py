@@ -35,6 +35,11 @@ def reset_route_state() -> None:
     _fallback_state["last_fail_time"] = 0.0
 
 
+def get_route_state() -> Dict[str, Any]:
+    """读取当前主备线路状态（给 /查询 之类的状态面板用，只读快照）。"""
+    return dict(_fallback_state)
+
+
 _GEMINI_UNSUPPORTED_PARAMS = (
     "frequency_penalty",
     "presence_penalty",

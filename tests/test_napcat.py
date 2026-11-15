@@ -199,6 +199,19 @@ async def test_poke_enqueues_only_when_target_is_self():
 
 # ==================== /刷新 手动网络探活指令 ====================
 
+def _pipeline_stub():
+    """私聊 /查询 需要读 yuki 状态，其它指令不用它；给个最小替身。"""
+    from types import SimpleNamespace
+
+    return SimpleNamespace(
+        yuki=SimpleNamespace(
+            energy={}, group_activity={}, desire_to_start_topic={},
+            last_message_time={}, maid_task_queue=None, maid_current_tasks={},
+        ),
+        group_active_state={},
+    )
+
+
 class _FakeGateway:
     def __init__(self):
         self.sent = []
@@ -256,20 +269,20 @@ async def test_netforce_command_routing_and_auth(fake_refresh):
 
     # 私聊原会话回复
     gw_priv = _FakeGateway()
-    assert listen_main.handle_private_command(gw_priv, master, "/刷新") is True
+    assert listen_main.handle_private_command(gw_priv, _pipeline_stub(), master, "/刷新") is True
     await _drain()
     assert [m["chat_id"] for m in gw_priv.sent] == [master, master]
     assert all(m["mode"] == "private" for m in gw_priv.sent)
 
     # 非 master 拒绝
     gw_unauth = _FakeGateway()
-    assert listen_main.handle_private_command(gw_unauth, 999999, "/刷新") is True
+    assert listen_main.handle_private_command(gw_unauth, _pipeline_stub(), 999999, "/刷新") is True
     await _drain()
     assert fake_refresh["requests"] == 2
     assert "只有哥哥大人" in gw_unauth.sent[0]["text"]
 
     # 普通消息不拦截
-    assert listen_main.handle_private_command(gw_priv, master, "在吗") is False
+    assert listen_main.handle_private_command(gw_priv, _pipeline_stub(), master, "在吗") is False
     assert listen_main.handle_group_switch(None, gw_group, 1057020972, "1057020972", master, "在吗") is False
 
     # 失败原因格式化
@@ -309,7 +322,7 @@ async def test_switch_command_swaps_route_and_auth(monkeypatch):
 
     # 私聊再切一次：回到主模型
     gw_priv = _FakeGateway()
-    assert listen_main.handle_private_command(gw_priv, master, "/切换") is True
+    assert listen_main.handle_private_command(gw_priv, _pipeline_stub(), master, "/切换") is True
     await _drain()
     assert cfg.LLM_MODEL == "model-main" and cfg.BACKUP_MODEL == "model-backup"
     assert cfg.LLM_BASE_URL == "http://main/v1" and cfg.LLM_API_KEY == "key-main"
@@ -317,7 +330,7 @@ async def test_switch_command_swaps_route_and_auth(monkeypatch):
 
     # 非 master 拒绝且不改线路
     gw_unauth = _FakeGateway()
-    assert listen_main.handle_private_command(gw_unauth, 999999, "/切换") is True
+    assert listen_main.handle_private_command(gw_unauth, _pipeline_stub(), 999999, "/切换") is True
     await _drain()
     assert cfg.LLM_MODEL == "model-main"
     assert "只有哥哥大人" in gw_unauth.sent[0]["text"]

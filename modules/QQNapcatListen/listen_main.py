@@ -12,6 +12,7 @@ import os
 import time
 
 from config import cfg
+from core import status as status_cmd
 from core.session_pipeline import IncomingMessage
 from init import save_group_state
 from modules.shot_memory import shot_live_buffer
@@ -332,6 +333,60 @@ def switch_llm_route() -> str:
     )
 
 
+def _set_group_active(pipeline, gateway, group_id, gid_str, opening: bool) -> None:
+    """切换群聊的应答开关，群聊 /关闭 /开启 与 /强制关闭 共用。"""
+    pipeline.group_active_state[gid_str] = opening
+    save_group_state(pipeline.group_active_state)
+    if opening:
+        asyncio.create_task(gateway.send(group_id, f"{cfg.ROBOT_NAME.title()} 重新上线", mode="group"))
+        return
+    pipeline.yuki.message_buffer[gid_str] = []
+    task = pipeline.yuki.buffer_tasks.get(gid_str)
+    if task and not task.done():
+        task.cancel()
+    asyncio.create_task(
+        gateway.send(group_id, f"{cfg.ROBOT_NAME.title()} 已进入休眠模式，不打扰大家啦~", mode="group")
+    )
+
+
+def handle_status_command(gateway, pipeline, chat_id, gid_str, user_id, raw_msg, send_mode="group") -> bool:
+    """处理 /查询（别名 /状态、/status）：关键词式状态简报，全员可用但分层脱敏。"""
+    if not status_cmd.match_status_command(raw_msg):
+        return False
+    text = status_cmd.build_status_text(
+        pipeline.yuki,
+        gid_str,
+        group_active=bool(pipeline.group_active_state.get(gid_str, True)),
+        is_master=cfg.is_master_qq(user_id),
+    )
+    asyncio.create_task(gateway.send(chat_id, text, mode=send_mode))
+    logger.info(f"[Status] {gid_str} 状态查询 by {user_id}: {text}")
+    return True
+
+
+def handle_force_close_command(gateway, pipeline, group_id, gid_str, raw_msg) -> bool:
+    """处理 /强制关闭：任何人可用，但必须连发两次（60 秒内）才真正休眠本群。"""
+    if not status_cmd.match_force_close_command(raw_msg):
+        return False
+
+    if not status_cmd.is_force_close_confirmed(gid_str):
+        status_cmd.mark_force_close_pending(gid_str)
+        asyncio.create_task(
+            gateway.send(
+                group_id,
+                f"真的要关掉人家吗…60 秒内再发一次 /强制关闭 就睡啦（{cfg.ROBOT_NAME.title()} 会停在这个群不说话）",
+                mode="group",
+            )
+        )
+        logger.info(f"[ForceClose] {gid_str} 第一次确认请求")
+        return True
+
+    status_cmd.clear_force_close(gid_str)
+    logger.warning(f"[ForceClose] {gid_str} 二次确认完成，强制休眠该群")
+    _set_group_active(pipeline, gateway, group_id, gid_str, opening=False)
+    return True
+
+
 def handle_group_switch(pipeline, gateway, group_id, gid_str, user_id, raw_msg):
     """处理群聊开关/重启/刷新/切换指令，返回 True 表示已拦截。"""
     msg_clean = raw_msg.strip()
@@ -362,27 +417,26 @@ def handle_group_switch(pipeline, gateway, group_id, gid_str, user_id, raw_msg):
         asyncio.create_task(_restart_flow(gateway, group_id))
         return True
 
-    opening = msg_clean == "/开启"
-    pipeline.group_active_state[gid_str] = opening
-    save_group_state(pipeline.group_active_state)
-    if opening:
-        asyncio.create_task(gateway.send(group_id, f"{cfg.ROBOT_NAME.title()} 重新上线", mode="group"))
-    else:
-        pipeline.yuki.message_buffer[gid_str] = []
-        task = pipeline.yuki.buffer_tasks.get(gid_str)
-        if task and not task.done():
-            task.cancel()
-        asyncio.create_task(
-            gateway.send(group_id, f"{cfg.ROBOT_NAME.title()} 已进入休眠模式，不打扰大家啦~", mode="group")
-        )
+    _set_group_active(pipeline, gateway, group_id, gid_str, opening=msg_clean == "/开启")
     return True
 
 
-def handle_private_command(gateway, user_id, raw_msg) -> bool:
-    """私聊侧指令：/刷新 与 /切换（/开启 /关闭 /重启 仍只在群里生效）。"""
+def handle_private_command(gateway, pipeline, user_id, raw_msg) -> bool:
+    """私聊侧指令：/刷新、/切换、/查询（/开启 /关闭 /重启 仍只在群里生效）。"""
     msg_clean = raw_msg.strip()
-    if msg_clean not in {"/刷新", "/切换"}:
+    if msg_clean not in {"/刷新", "/切换", "/查询", "/状态", "/status"}:
         return False
+
+    if msg_clean in {"/查询", "/状态", "/status"}:
+        text = status_cmd.build_status_text(
+            pipeline.yuki,
+            user_id,
+            group_active=True,
+            is_master=cfg.is_master_qq(user_id),
+        )
+        asyncio.create_task(gateway.send(user_id, text, mode="private"))
+        return True
+
     if not cfg.is_master_qq(user_id):
         hint = "只有哥哥大人才能刷新网络哦！" if msg_clean == "/刷新" else "只有哥哥大人才能给我换模型哦！"
         asyncio.create_task(gateway.send(user_id, hint, mode="private"))
@@ -480,7 +534,7 @@ async def napcat_listen(gateway, pipeline, mode: str = "mixed"):
                 user_id = data.get("user_id")
 
                 if msg_type == "private" and mode in {"private", "group", "mixed"}:
-                    if handle_private_command(gateway, user_id, raw_msg):
+                    if handle_private_command(gateway, pipeline, user_id, raw_msg):
                         continue
                     await feed_message(
                         pipeline,
@@ -502,6 +556,10 @@ async def napcat_listen(gateway, pipeline, mode: str = "mixed"):
                     gid_str = str(group_id)
 
                     if cfg.TARGET_GROUPS and group_id not in cfg.TARGET_GROUPS:
+                        continue
+                    if handle_status_command(gateway, pipeline, group_id, gid_str, user_id, raw_msg):
+                        continue
+                    if handle_force_close_command(gateway, pipeline, group_id, gid_str, raw_msg):
                         continue
                     if handle_group_switch(pipeline, gateway, group_id, gid_str, user_id, raw_msg):
                         continue

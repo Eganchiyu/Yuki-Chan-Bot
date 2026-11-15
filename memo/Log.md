@@ -630,3 +630,16 @@
 - 新增 `data/art_gacha_pools.json` 与 `core/art_gacha.py`（`ArtGachaStore`）：参考 `anime-prompt-kit` 的结构化槽位拆分思路，构建 6 大风格/穿搭/动作/场景/光影/构图槽位池（R/SR 混搭，支持 `lock` 锁定任意字段）与 6 套 SSR 导演级 `{argument}` 大片蓝图池（天台夕阳原画、偶像应援海报、极简淡彩、恋爱电影海报、VTuber 直播封面、木质道场双人对决）。
 - 接入 `art` 聚焦模式：`core/focus/domains/art.py`、`core/tools/tools.py`、`core/tools/__init__.py`、`core/focus/domains/__init__.py` 注册 `art_gacha` 工具（常态隐藏，聚焦后展开）；抽卡时绑定 `assets` 自动注入外貌/发饰一致性锚点，但**绝不直接生图或上传**，只返回可编辑 Prompt 草稿、推荐 `aspect_ratio` 与修改指引，供 Yuki 审阅润色后再调用 `art_draw`。
 - 测试：`tests/test_art_focus.py` + `tests/test_focus_contract.py` 23 passed。待重启 `yuki` 容器生效。
+
+## 2026-11-15 自主沙盒（Autonomous Sandbox v1）可行性评估与开发规划
+- 通读 `docs/Autonomous Sandbox.md` 并核对代码底座（brain/engine_monitor/toolchain/focus/view/reply_watch/maid_worker/rag/prompts/session_pipeline）。
+- 输出 `docs/autonomous-sandbox-plan.md`：可行（预计 9~10 人日，P0–P6），并记录设计文档与代码事实的 6 处偏差：ToolView 不读 ToolContext.metadata（沙盒工具不注册主 registry）、reply_watch 最小 30s（需可选下限）、chat_id 必须用真实群 ID（隔离靠 SilentSender + metadata，虚拟 chat_id 只用于小女仆汇报分流）、FocusManager.exit 需 history adapter、基线 5 个测试已漂移失败、快照工具靠 context.chat_id。
+- 状态：规划完成，代码未动；待机主拍板 T1~T4 取舍后再开工 P0。
+- 规划修订 v3：范式改为**模式化多主循环**（`core/modes/` 路由 + chat/debate/workshop 三模式各自主循环，`ModeAwarePipeline(SessionPipeline)` 覆写 `enqueue_message`，chat 路径零改动）；新增唯一体性（全局单活跃非聊天模式 + 其它群冻结）、回群补台摘要、`/强制放行` 逃生阀、日记群归属软比例检索（本群 7:3 他群）、群级准入白名单（`enabled=false` + `enabled_groups=[]` 默认全关，运行时 `/自主轮 开|关` 覆盖）。
+
+## 2026-11-15 新增 `/查询` 状态简报与二次确认 `/强制关闭`
+- `core/status.py`（新）：关键词式单行状态简报（模式/精力/静默；主人额外看活跃、欲望、主备线路+模型、小女仆排队、在线时长），全员可用但分层脱敏；`register_mode_provider()` 预留模式系统钩子；正则 `STATUS_CMD_RE`(`/查询|/状态|/status`) 与 `FORCE_CLOSE_CMD_RE`(`/强制关闭|/强制关`，可带"确认")。
+- `modules/QQNapcatListen/listen_main.py`：抽出 `_set_group_active()` 复用 `/关闭`/`/开启` 的落盘+清缓冲：新增 `handle_status_command`、`handle_force_close_command`（60s 内连发两次才休眠，首次仅提示），`handle_private_command` 增加 `/查询` 并补 `pipeline` 参数。
+- `utils/llm_client.get_route_state()`：只读暴露主备熔断状态。
+- 测试：新增 `tests/test_status.py`（26 项），更新 `tests/test_napcat.py` 私聊调用签名；全量 `179 passed / 5 failed`（5 项为既有断言漂移）。
+- 状态：需重启 `yuki` 容器生效。
