@@ -35,8 +35,53 @@ RESULT_MAX_CHARS = 12000
 TRACE_STEP_CHARS = 2500
 
 
+CANCEL_FILE = "cancel.request"
+
+
 def _dsh_task_dir(task_id):
     return os.path.join(DSH_TASKS_DIR, task_id)
+
+
+def write_cancel_request(task_id) -> bool:
+    """往宿主任务目录落取消标记：maid_runner 见到就把 dsh 子进程组 SIGKILL 掉。
+
+    幂等：重复写只会刷新时间戳。目录还不存在说明任务还没派出去，
+    这时返回 False，由 harness 自己的轮询兜住（它会在下一轮发现取消标记）。
+    """
+    if not task_id:
+        return False
+    task_dir = _dsh_task_dir(str(task_id))
+    if not os.path.isdir(task_dir):
+        return False
+    path = os.path.join(task_dir, CANCEL_FILE)
+    tmp = f"{path}.tmp.{os.getpid()}"
+    try:
+        with open(tmp, "w", encoding="utf-8") as f:
+            f.write(datetime.now().isoformat(timespec="seconds") + "\n")
+        os.replace(tmp, path)
+        logger.info(f"[Maid/Harness] 已写入取消标记: {task_id}")
+        return True
+    except OSError as e:
+        logger.warning(f"[Maid/Harness] 写取消标记失败 {task_id}: {e}")
+        return False
+
+
+def _cancel_requested(task_handle) -> bool:
+    return bool(getattr(task_handle, "cancel_requested", False))
+
+
+def _cancelled_result(user_goal, task_id, chat_id, trace_path, started, steps, tools, reason):
+    """叫停的收尾：写进 trace（排查用），不产生汇报。"""
+    elapsed = time.monotonic() - started
+    with open(trace_path, "a", encoding="utf-8") as f:
+        f.write(f"### 任务被叫停（cancelled）\n**原因**: {reason}\n"
+                f"**统计**: {steps} 步 / {elapsed:.1f}s / 工具 {tools[-8:]}\n\n")
+    logger.info(f"[Maid/Harness] {task_id} 已叫停（{steps} 步 / {elapsed:.1f}s）")
+    return {
+        "status": "cancelled", "result": f"任务被 Yuki 叫停（{reason}）", "goal": user_goal,
+        "task_id": task_id, "rounds": steps, "elapsed": round(elapsed, 1),
+        "trace": trace_path, "state": "", "session_id": "", "tools": tools[-20:],
+    }
 
 
 def _write_json_atomic(path, payload):
@@ -99,8 +144,12 @@ def _save_session_state(task_id, goal, session_id, status, steps, chat_id):
 
 
 async def harness_evolution_loop(user_goal: str, chat_id: str = None, approver=None,
-                                 mode: str = None, resume_task_id=None):
-    """执行一个小女仆任务。返回值结构与原 maid_evolution_loop 保持一致。"""
+                                 mode: str = None, resume_task_id=None, task_handle=None):
+    """执行一个小女仆任务。返回值结构与原 maid_evolution_loop 保持一致。
+
+    task_handle：容器侧的运行时记录（core/maid/maid_runtime.py）。给了它就能在
+    开始后回填宿主任务目录名，并在轮询里发现「叫停」标记后自己收手。
+    """
     del approver  # harness 自带沙箱与审批策略，容器侧不再二次拦截
     task_id = _new_task_id()
     task_dir = _dsh_task_dir(task_id)
@@ -124,6 +173,11 @@ async def harness_evolution_loop(user_goal: str, chat_id: str = None, approver=N
 
     logger.info(f"[Maid/Harness] 任务已派发: {task_id}（{user_goal[:80]}）"
                 + (f" 续做 session={resume_session}" if resume_session else ""))
+    if task_handle is not None:
+        try:
+            task_handle.dsh_task_id = task_id
+        except Exception:
+            pass
     with open(trace_path, "w", encoding="utf-8") as f:
         f.write(f"# 小女仆任务追踪: {task_id}\n\n"
                 f"**后端**: deepseek-harness（宿主 maid_runner）\n\n"
@@ -131,15 +185,37 @@ async def harness_evolution_loop(user_goal: str, chat_id: str = None, approver=N
 
     started = time.monotonic()
     deadline = started + int(MAID_MAX_WALL_SECONDS) + 120  # 比 runner 的上限多留收尾时间
-    events_seen = 0
-    events_offset = 0
     steps = 0
     tools = []
     pending_thoughts = []
     open_calls = {}
-    seen_any_life = False
 
+    try:
+        return await _poll_until_done(
+            user_goal, task_id, chat_id, trace_path, events_path, result_path,
+            started, deadline, steps, tools, pending_thoughts, open_calls, task_handle,
+        )
+    except asyncio.CancelledError:
+        # 容器侧协程被 stop_maid 取消：也要保证宿主拿到取消标记，别让 dsh 继续空跑
+        if _cancel_requested(task_handle):
+            write_cancel_request(task_id)
+        raise
+
+
+async def _poll_until_done(user_goal, task_id, chat_id, trace_path, events_path, result_path,
+                          started, deadline, steps, tools, pending_thoughts, open_calls,
+                          task_handle):
+    """轮询事件流直到出结果 / 超时 / 被叫停。被取消时由调用方负责写取消标记。"""
+    events_seen = 0
+    events_offset = 0
+    seen_any_life = False
     while True:
+        # ---- 叫停：宿主的 cancel.request 由容器侧先落，这里只负责自己收手 ----
+        if _cancel_requested(task_handle):
+            write_cancel_request(task_id)
+            return _cancelled_result(user_goal, task_id, chat_id, trace_path, started,
+                                     steps, tools, "收到叫停指令")
+
         # ---- 读增量事件：用于写 trace 和打印进度 ----
         if os.path.exists(events_path):
             seen_any_life = True

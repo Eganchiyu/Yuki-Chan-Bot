@@ -10,7 +10,7 @@ from core.focus.domains.art import (
 from core.phone_focus import phone_finish_tool, phone_start_tool
 from .tools import TOOL_HANDLERS, TOOL_SCHEMAS, TOOL_SPECS
 from .tools_diary import search_diary_tool
-from .tools_maid import delegate_to_maid_tool
+from .tools_maid import delegate_to_maid_tool, stop_maid_tool
 from .tools_media import download_file_tool, generate_image_tool
 from .tools_message import poke_tool, send_master_private_tool, send_qq_file_tool
 from .tools_notebook import update_notebook_tool
@@ -26,6 +26,7 @@ __all__ = [
     "TOOL_HANDLERS",
     "search_diary_tool",
     "delegate_to_maid_tool",
+    "stop_maid_tool",
     "download_file_tool",
     "generate_image_tool",
     "art_start_tool",

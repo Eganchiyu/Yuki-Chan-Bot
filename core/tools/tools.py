@@ -11,7 +11,7 @@ from core.phone_focus import phone_finish_tool, phone_start_tool
 from core.toolchain import MAID_GOAL_BREVITY_HINT, ToolSpec
 
 from .tools_diary import search_diary_tool
-from .tools_maid import delegate_to_maid_tool
+from .tools_maid import delegate_to_maid_tool, stop_maid_tool
 from .tools_media import download_file_tool, generate_image_tool
 from .tools_message import poke_tool, send_master_private_tool, send_qq_file_tool
 from .tools_notebook import update_notebook_tool
@@ -177,6 +177,7 @@ TOOL_SPECS = [
             "将工作任务委托给电脑上的小女仆处理。使用小女仆完成你自己不能完成的任务。"
             "委托后立即返回，她在后台干活，完成后会主动把结果汇报给你——"
             "不要等待结果，也不需要反复询问进度。"
+            "可以连续下发多个任务，她们会各自并行跑（返回里带编号，如 #2），互不等待。"
             f"{MAID_GOAL_BREVITY_HINT}"
         ),
         parameters={
@@ -190,6 +191,29 @@ TOOL_SPECS = [
             "required": ["goal"],
         },
         handler=delegate_to_maid_tool,
+    ),
+    ToolSpec(
+        name="stop_maid",
+        description=(
+            "强制叫停正在干活的小女仆：直接从后台取消，进程会被杀掉，"
+            "任务不会再跑，也不会再给你汇报结果。"
+            "不填参数就停掉本会话全部小女仆任务；只想停某一个时，"
+            "填 task_id（编号如 2 / #2）或 keyword（任务内容关键词）。"
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "task_id": {
+                    "type": "string",
+                    "description": "要叫停的小女仆编号（如 2 或 #2），留空表示不按编号筛选",
+                },
+                "keyword": {
+                    "type": "string",
+                    "description": "按任务内容关键词匹配（如「天气」），留空表示不按关键词筛选",
+                },
+            },
+        },
+        handler=stop_maid_tool,
     ),
     ToolSpec(
         name="search_diary",

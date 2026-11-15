@@ -121,7 +121,15 @@ def build_status_text(yuki, chat_id, *, group_active: bool = True, is_master: bo
             queued = queue.qsize() if queue is not None else 0
         except Exception:
             queued = 0
-        running = len(getattr(yuki, "maid_current_tasks", {}) or {})
+        runtime = getattr(yuki, "maid_runtime", None)
+        counting = getattr(runtime, "running_count", None)
+        if callable(counting):
+            try:
+                running = int(counting())
+            except Exception:
+                running = len(getattr(yuki, "maid_current_tasks", {}) or {})
+        else:
+            running = len(getattr(yuki, "maid_current_tasks", {}) or {})
         parts.append(f"小女仆 {queued}排/{running}跑")
 
         parts.append(f"在线 {_human_duration(uptime_seconds())}")

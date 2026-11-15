@@ -46,7 +46,8 @@
 | `phone_action` | `tools_phone.py` | 手机聚焦模式 | `True` | 通过 adb 操作手机：`inspect/tap/long_press/input/swipe/scroll_to_find/key/back/home/launch/wait`。控件树精简为 `[#编号] + 中心坐标`；文字过少或 `include_screenshot=true` 时附带编号红框截图（Set-of-Mark） |
 | `phone_macro` | `tools_phone_macro.py` | 手机聚焦模式 | `True` | 手机组合技：`list/history/show/save/play/delete`。`save` 支持 Sub-LLM 自动提炼冗余滑动与业务参数（`auto_distill=True`）；`play` 内置 `SystemWatcher` 弹窗清理与 `MacroHealer` 语义自愈进化 |
 | `phone_finish` | `phone_focus.py` | 手机聚焦模式 | `False` | 结束操作手机并退出聚焦模式，清除聚焦期间的所有手机工具调用与阶段思考记录，保留期间群聊消息，并以 `role="user"` 身份注入 `【手机操作总结】{summary}`（连续闲置 > 5 轮也会自动触发） |
-| `delegate_to_maid` | `tools_maid.py` | 常态 | `True` | 经 `MaidCapabilityBoundary.judge()` 校验后将任务放入 `maid_task_queue`，交由宿主 DSH 后台执行 |
+| `delegate_to_maid` | `tools_maid.py` | 常态 | `True` | 经 `MaidCapabilityBoundary.judge()` 校验后登记进 `MaidRuntime`（返回会话内编号 `#n`）并放入 `maid_task_queue`，交由宿主 DSH 后台并行执行 |
+| `stop_maid` | `tools_maid.py` | 常态 | `True` | 强制叫停小女仆：不带参数停本会话全部，`task_id`（编号/`#n`）或 `keyword` 精确挑选。取消容器协程 + 写 `cancel.request` 让宿主杀掉 dsh 进程组，被叫停的任务不再汇报 |
 | `search_diary` | `tools_diary.py` | 常态 | `True` | 按 `date_str` / `keyword` 检索日记（随机抽最多 8 条）；均不填时随机翻看 8 条日记 |
 | `update_notebook` | `tools_notebook.py` | 常态 | `False` | 覆盖更新全局小本本 `data/notebook.json`（上限 512 字），内容在 `build_chat_context` 中作为潜意识注入 |
 | `skip` | `tools_skip.py` | 常态 + 聚焦 | `False` | 群聊中主动保持安静、跳过本轮回复且不留历史痕迹（私聊调用会直接报错拒绝） |

@@ -11,11 +11,15 @@
     <ROOT>/tasks/dsh/<task_id>/events.jsonl   本进程写：dsh --json 的原始事件，逐行追加
     <ROOT>/tasks/dsh/<task_id>/result.json    本进程写：{status, result, session_id, ...}
     <ROOT>/tasks/dsh/<task_id>/stderr.log     本进程写：诊断输出
+    <ROOT>/tasks/dsh/<task_id>/cancel.request 容器写：取消标记，见到即杀掉 dsh 进程组
 
 约定：
-    - 单并发。小女仆任务本来就排队跑，同时开几个只会争同一个 API 配额。
+    - 并发池（默认 3，按 YUKI_MAID_CONCURRENCY 调）：每个任务一个线程，
+      队列里的任务不会被一个长任务堵死。
     - request.json 是「原子文件」：容器用 tmp+rename 写，本进程看到即完整。
     - result.json 同理由 tmp+rename 写出，容器不会读到半截。
+    - 取消是硬中断：启动前见到 cancel.request 就直接落 cancelled 结果不拉起进程；
+      跑的过程中每 0.5s 查一次，见到就 SIGKILL 整个进程组。
 
 用法:
     python3 deploy/maid_runner.py            # 前台守护
@@ -25,9 +29,11 @@ import argparse
 import json
 import os
 import re
+import queue
 import signal
 import subprocess
 import sys
+import threading
 import time
 from datetime import datetime
 
@@ -45,6 +51,11 @@ PROFILE = os.environ.get("YUKI_MAID_PROFILE", "yuki-maid")
 DEFAULT_TIMEOUT = int(os.environ.get("YUKI_MAID_TIMEOUT", "600"))
 MAX_TIMEOUT = int(os.environ.get("YUKI_MAID_MAX_TIMEOUT", "600"))
 POLL_SECONDS = float(os.environ.get("YUKI_MAID_POLL", "2"))
+# 同时在跑的小女仆任务数（与容器侧 core/maid/maid_common.py 的 MAID_MAX_CONCURRENT 对齐）
+MAX_CONCURRENT = max(1, int(os.environ.get("YUKI_MAID_CONCURRENCY", "3")))
+# 跑的过程中多久查一次取消标记 / 超时
+RUN_POLL_SECONDS = float(os.environ.get("YUKI_MAID_RUN_POLL", "0.5"))
+CANCEL_FILE = "cancel.request"
 RUN_LOG = os.path.join(LOGS, "maid_runner.log")
 CREDENTIALS = os.path.expanduser("~/.dsh/.credentials.yaml")
 # 结论文本上限：报告要进 Yuki 的记忆流，不能被一次超长输出淹掉
@@ -110,6 +121,14 @@ class TaskRunner:
         self.steps = 0
         self.final_text = ""
         self.stopped = False
+
+    @property
+    def cancel_path(self):
+        return os.path.join(self.dir, CANCEL_FILE)
+
+    def cancel_requested(self):
+        """Yuki 叫停了没？取消标记是幂等的，看到就杀。"""
+        return os.path.exists(self.cancel_path)
 
     # ---- 收尾 ----
     def partial_summary(self):
@@ -186,6 +205,9 @@ class TaskRunner:
         except (TypeError, ValueError):
             timeout_s = DEFAULT_TIMEOUT
 
+        if self.cancel_requested():
+            return self.finish("cancelled", "启动前已被 Yuki 叫停", time.time())
+
         os.makedirs(self.workdir, exist_ok=True)
         args = [DSH_BIN, "--profile", PROFILE, "--json"]
         resume = str(request.get("session_id") or "").strip()
@@ -220,21 +242,51 @@ class TaskRunner:
             pass  # 进程早期失败时由下面的退出码解释
 
         timed_out = False
+        cancelled = False
         evf = open(self.events_path, "a", encoding="utf-8")
         try:
             assert proc.stdout is not None
-            for line in proc.stdout:
-                line = line.rstrip("\n")
-                if not line:
+            # 读线程 + 队列：主循环才能在等事件的同时定期检查超时与取消标记
+            lines: queue.Queue = queue.Queue()
+
+            def _pump(stream):
+                try:
+                    for raw in stream:
+                        lines.put(raw)
+                except (OSError, ValueError):
+                    pass
+                finally:
+                    lines.put(None)
+
+            threading.Thread(target=_pump, args=(proc.stdout,), daemon=True).start()
+            while True:
+                try:
+                    raw = lines.get(timeout=RUN_POLL_SECONDS)
+                except queue.Empty:
+                    if self.cancel_requested():
+                        cancelled = True
+                        self._kill(proc)
+                        break
+                    if time.time() - started > timeout_s:
+                        timed_out = True
+                        self._kill(proc)
+                        break
                     continue
-                evf.write(line + "\n")
-                evf.flush()
-                self.handle_event(line)
+                if raw is None:
+                    break
+                line = raw.rstrip("\n")
+                if line:
+                    evf.write(line + "\n")
+                    evf.flush()
+                    self.handle_event(line)
+                if self.cancel_requested():
+                    cancelled = True
+                    self._kill(proc)
+                    break
                 if time.time() - started > timeout_s:
                     timed_out = True
+                    self._kill(proc)
                     break
-            if timed_out:
-                self._kill(proc)
         finally:
             evf.close()
 
@@ -244,6 +296,10 @@ class TaskRunner:
             self._kill(proc)
 
         elapsed = time.time() - started
+        if cancelled:
+            return self.finish(
+                "cancelled", f"被 Yuki 叫停，已强制终止（进度：{self.steps} 步）", started
+            )
         if timed_out:
             return self.finish(
                 "timeout", f"超过 {timeout_s}s 上限，已终止（进度：{self.steps} 步）", started
@@ -285,10 +341,13 @@ def peek_request(task_dir):
         return None
 
 
-def scan_once(api_key):
-    """处理一个待办任务。返回 True 表示干过活。"""
+def claim_task():
+    """认领一个待办任务，返回 (task_dir, request) 或 None。
+
+    认领成功会占住 running.lock，保证并发池里不会有两个线程抢同一个任务。
+    """
     if not os.path.isdir(TASKS):
-        return False
+        return None
     for name in sorted(os.listdir(TASKS)):
         d = os.path.join(TASKS, name)
         if not os.path.isdir(d):
@@ -301,6 +360,20 @@ def scan_once(api_key):
         req = peek_request(d)
         if req is None:
             continue  # 写了一半（理论上不会，容器是原子写），下轮再看
+        if os.path.exists(os.path.join(d, CANCEL_FILE)):
+            # 还没开跑就被叫停：落个结论就完事，不浪费一次 dsh 拉起
+            log(f"[{name}] 启动前已被叫停，跳过")
+            write_json_atomic(
+                os.path.join(d, "result.json"),
+                {
+                    "status": "cancelled",
+                    "result": "任务在启动前被 Yuki 叫停",
+                    "task_id": name,
+                    "steps": 0,
+                    "finished_at": datetime.now().isoformat(timespec="seconds"),
+                },
+            )
+            continue
 
         lock = os.path.join(d, "running.lock")
         try:
@@ -309,28 +382,41 @@ def scan_once(api_key):
             os.close(fd)
         except FileExistsError:
             continue
+        return d, req
+    return None
 
+
+def run_claimed(task_dir, request, api_key):
+    """在独立线程里跑一个已认领的任务（并发池的 worker）。"""
+    name = os.path.basename(task_dir.rstrip("/"))
+    try:
+        os.makedirs(LOGS, exist_ok=True)
+        TaskRunner(task_dir, api_key).run(request)
+    except Exception as e:  # 单任务异常不能带崩守护进程
+        log(f"[{name}] 执行异常: {e}")
+        write_json_atomic(
+            os.path.join(task_dir, "result.json"),
+            {
+                "status": "failed",
+                "result": f"执行器异常：{e}",
+                "task_id": name,
+                "finished_at": datetime.now().isoformat(timespec="seconds"),
+            },
+        )
+    finally:
         try:
-            os.makedirs(LOGS, exist_ok=True)
-            TaskRunner(d, api_key).run(req)
-        except Exception as e:  # 单任务异常不能带崩守护进程
-            log(f"[{name}] 执行异常: {e}")
-            write_json_atomic(
-                os.path.join(d, "result.json"),
-                {
-                    "status": "failed",
-                    "result": f"执行器异常：{e}",
-                    "task_id": name,
-                    "finished_at": datetime.now().isoformat(timespec="seconds"),
-                },
-            )
-        finally:
-            try:
-                os.unlink(lock)
-            except OSError:
-                pass
-        return True
-    return False
+            os.unlink(os.path.join(task_dir, "running.lock"))
+        except OSError:
+            pass
+
+
+def scan_once(api_key):
+    """处理一个待办任务。返回 True 表示干过活（调试/--once 用）。"""
+    claimed = claim_task()
+    if claimed is None:
+        return False
+    run_claimed(claimed[0], claimed[1], api_key)
+    return True
 
 
 def main():
@@ -358,14 +444,28 @@ def main():
     os.makedirs(TASKS, exist_ok=True)
     os.makedirs(WORKSPACE, exist_ok=True)
     os.makedirs(LOGS, exist_ok=True)
-    log(f"小女仆执行器启动：profile={PROFILE} 轮询 {TASKS} (every {POLL_SECONDS}s)")
+    log(f"小女仆执行器启动：profile={PROFILE} 轮询 {TASKS} "
+        f"(every {POLL_SECONDS}s, 最多 {MAX_CONCURRENT} 个并行)")
 
     if args.once:
         scan_once(api_key)
         return 0
+    workers: list = []
     while True:
         try:
-            if not scan_once(api_key):
+            workers = [w for w in workers if w.is_alive()]
+            spawned = False
+            while len(workers) < MAX_CONCURRENT:
+                claimed = claim_task()
+                if claimed is None:
+                    break
+                worker = threading.Thread(
+                    target=run_claimed, args=(claimed[0], claimed[1], api_key), daemon=True
+                )
+                worker.start()
+                workers.append(worker)
+                spawned = True
+            if not spawned:
                 time.sleep(POLL_SECONDS)
         except KeyboardInterrupt:
             log("收到中断，退出")

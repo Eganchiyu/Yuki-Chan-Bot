@@ -14,7 +14,7 @@ Yuki 是基于 NapCat（OneBot 11 正向 WebSocket）的 QQ AI 助手。线上�
 │   └── HTTP 探针 (127.0.0.1:8778 /health, /notify) & Debug WebUI (127.0.0.1:8777)
 └── 宿主 Systemd 服务 (deploy/)
     ├── yuki-supervisor.service  (轮询 staging/，执行 模型审查→快照→5道校验门→重启容器→失败回滚)
-    ├── yuki-maid-runner.service (轮询 tasks/dsh/，拉起 DeepSeek Harness 执行小女仆任务)
+    ├── yuki-maid-runner.service (轮询 tasks/dsh/，并发池里拉起 DeepSeek Harness，支持 cancel.request 硬中断)
     └── yuki-netwatch.service    (30s 探活 direct/proxy，自动重载 mihomo；配合 yuki-netforce.path 响应 /刷新)
 ```
 
@@ -49,7 +49,7 @@ Yuki 是基于 NapCat（OneBot 11 正向 WebSocket）的 QQ AI 助手。线上�
 │   │   └── engine_monitor.py    #   后台空闲日记巡检、破冰巡检
 │   ├── tools/                   # 主模型挂载的 12 个 Function Call 工具
 │   │   ├── tools.py             #   TOOL_SPECS 汇总声明
-│   │   ├── tools_maid.py        #   delegate_to_maid (后台委托小女仆)
+│   │   ├── tools_maid.py        #   delegate_to_maid / stop_maid (后台委托与叫停)
 │   │   ├── tools_diary.py       #   search_diary (按日期/关键词或随机翻看日记)
 │   │   ├── tools_notebook.py    #   update_notebook (覆盖更新小本本，persist_result=False)
 │   │   ├── tools_skip.py        #   skip (群聊主动跳过本轮回复且不留痕，persist_result=False)
@@ -147,7 +147,9 @@ Yuki 是基于 NapCat（OneBot 11 正向 WebSocket）的 QQ AI 助手。线上�
 
 ### 3.2 小女仆委托与自进化流 (`core/maid/` + `deploy/`)
 
-- **日常任务**：`delegate_to_maid` → 入队 `yuki.maid_task_queue` → `maid_worker` 调用 `maid_harness.harness_evolution_loop()` → 写 `tasks/dsh/<id>/request.json` → 宿主 `deploy/maid_runner.py` 在 `workspace/dsh_<id>/` 下拉起 `dsh --profile yuki-maid --json` → 结果写回 `result.json` → `maid_worker` 注入会话历史并唤醒管线汇报。
+- **日常任务**：`delegate_to_maid` → 登记进 `yuki.maid_runtime`（会话内编号 `#1 #2 …`）并入队 `yuki.maid_task_queue` → `maid_worker` 每个任务开一个独立协程（最多 `MAID_MAX_CONCURRENT`=3 个并行）→ `maid_harness.harness_evolution_loop()` 写 `tasks/dsh/<id>/request.json` → 宿主 `deploy/maid_runner.py` 的**并发池**（`YUKI_MAID_CONCURRENCY`，默认 3）在 `workspace/dsh_<id>/` 下拉起 `dsh --profile yuki-maid --json` → 结果写回 `result.json` → `maid_worker` 注入会话历史并唤醒管线汇报。
+- **强制叫停**：`stop_maid`（不带参=本会话全部；可给 `task_id` 编号或 `keyword`）→ `MaidRuntime.request_cancel()` 取消容器侧等待协程 + 写 `tasks/dsh/<id>/cancel.request` → 宿主 runner 见到即 `SIGKILL` 整个 dsh 进程组（启动前见到则根本不拉起）。被叫停的任务**不写会话历史、不汇报**，同时打 `reported.ok` 让补报巡检跳过。
+- **进行中提示**：`build_chat_context` 在本会话有小女仆在跑时，会给最后一条 user 消息前置 `【任务进行中】#1「…」…要叫停就用 stop_maid`。
 - **跨重启补报**：若任务期间容器因自改或 `/重启` 重建，`core/maid/maid_resume.py` 启动后巡检 `tasks/dsh/*/result.json`（未带 `reported.ok` 的任务）自动补报。
 
 ---
@@ -177,6 +179,7 @@ Yuki 是基于 NapCat（OneBot 11 正向 WebSocket）的 QQ AI 助手。线上�
 | 普通图片原生多模态输入、表情包 VLM 转写、入站预取 | `modules/vision/processor.py`、`prefetch.py`、`image_store.py` |
 | LLM 请求、主备熔断、空回复重试、`thinking_effort`、DNS 池 | `utils/llm_client.py`、`utils/http_client.py` |
 | 小女仆任务派发、DSH 事件解析、重启后补报 | `core/maid/maid_harness.py`、`maid_worker.py`、`maid_resume.py` |
+| 小女仆并行登记、会话内编号、叫停与上下文提示 | `core/maid/maid_runtime.py`、`core/tools/tools_maid.py` |
 | 小女仆人设、行为准则与自改文件协议 | `deploy/dsh-home/AGENTS.md`、`core/maid/maid_charter.py` |
 | 自主轮触发/准入/状态机、模式路由与冻结补台 | `modules/autonomous/coordinator.py`、`core/modes/router.py`、`docs/autonomous-architecture.md` |
 | 双念头交锋 / 自主执行工坊 / 五层记忆 | `modules/autonomous/inner_debate.py`、`workshop.py`、`storage.py` |
