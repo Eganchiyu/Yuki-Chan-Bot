@@ -702,3 +702,10 @@
 - `docs/autonomous-sandbox-plan.md` 追加「十三、实现落地记录」：文件职责、3 处与规划不同的口径、指令与上线开关、验证与残余风险。
 - 全量：`pytest tests -q` 223 passed；`deploy/verify.sh` 5 门 ALL_GATES_PASSED。
 - 状态：P0–P7 代码已落地，默认 `autonomous.enabled=false` 不影响线上；等待机主决定是否重启容器生效并跑人工验收（5 次 /深思）。
+
+## 2026-11-15 修正：/自主轮 开 后 /深思 仍提示未开启
+- 现象：12:31:44 `/自主轮 开` 已写 `group_overrides: {"1057020972": true}`，12:31:56 `/深思` 仍被拒。
+- 原因：`is_group_enabled()` 先判 `cfg.autonomous.enabled`（当时 false），运行时覆盖排在总开关之后。
+- 修正：准入优先级改为「TARGET_GROUPS > 运行时覆盖 > 总开关+白名单」；`gate_reason` 同步给出「可用 /自主轮 开 单独开启本群」的提示；线上 `configs/config.yaml` 把 `autonomous.enabled` 置 true（白名单空、自动触发关，行为仍等价全关，只认 /自主轮 开 的群）。
+- 测试：新增 `test_runtime_override_beats_global_switch`；全量 225 passed。
+- 注意：代码与配置都在容器只读挂载里，需重启容器才生效。

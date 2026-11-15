@@ -539,13 +539,20 @@ autonomous:
   auto_trigger_enabled: false
 ```
 
-`/深思` 与自动触发共用同一个准入函数 `AutonomousCoordinator.is_group_enabled()`：
+`/深思` 与自动触发共用同一个准入函数 `AutonomousCoordinator.is_group_enabled()`，
+优先级从高到低：
 
 ```
-cfg.autonomous.enabled
-  and gid ∈ TARGET_GROUPS（若配置了）
-  and (运行时覆盖 or gid ∈ enabled_groups)
+gid ∈ TARGET_GROUPS（若配置了，否则一律不许）
+  > 运行时覆盖（data/autonomous_state.json 的 group_overrides）
+  > cfg.autonomous.enabled 且 gid ∈ enabled_groups
 ```
+
+**2026-11-15 修正**：运行时 `/自主轮 开` 是主人当场的显式授权，必须能越过
+`autonomous.enabled=false`（否则会出现「刚 /自主轮 开 完，/深思 却提示没开」）。
+总开关仍管自动触发（`auto_trigger_enabled` 另外还要开）与默认策略。线上
+`configs/config.yaml` 已把 `autonomous.enabled` 置 true，白名单仍为空、
+自动触发仍关，所以只有被 `/自主轮 开` 的群才会用。
 
 ### 13.5 验证与残余风险
 

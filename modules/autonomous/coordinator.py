@@ -87,21 +87,24 @@ class AutonomousCoordinator:
 
     # ------------------------------------------------------------ 群级准入
     def is_group_enabled(self, chat_id) -> bool:
-        """唯一准入函数：自动触发与 /深思 共用。"""
+        """唯一准入函数：自动触发与 /深思 共用。
+
+        优先级（高→低）：非目标群一律不许 > 运行时 `/自主轮 开|关` 覆盖 >
+        总开关 + 白名单。运行时覆盖是主人当场的显式授权，应该能越过默认策略，
+        否则「刚 /自主轮 开 完却提示没开」这种自相矛盾很容易踩。
+        """
         gid = str(chat_id)
-        if not cfg.autonomous.enabled:
-            return False
         if cfg.TARGET_GROUPS and not _in_target_groups(gid):
             return False
         override = state_store.get_group_override(gid)
         if override is not None:
             return bool(override)
+        if not cfg.autonomous.enabled:
+            return False
         return gid in {str(g) for g in (cfg.autonomous.enabled_groups or [])}
 
     def gate_reason(self, chat_id) -> str:
         gid = str(chat_id)
-        if not cfg.autonomous.enabled:
-            return "总开关 autonomous.enabled 未开启"
         if cfg.TARGET_GROUPS and not _in_target_groups(gid):
             return "不属于目标群（TARGET_GROUPS）"
         override = state_store.get_group_override(gid)
@@ -109,9 +112,11 @@ class AutonomousCoordinator:
             return "已开启（来源：运行时覆盖）"
         if override is False:
             return "未开启（来源：运行时覆盖）"
+        if not cfg.autonomous.enabled:
+            return "未开启（总开关 autonomous.enabled 未开启；可用 /自主轮 开 单独开启本群）"
         if gid in {str(g) for g in (cfg.autonomous.enabled_groups or [])}:
             return "已开启（来源：配置白名单）"
-        return "未开启（不在 enabled_groups 白名单里）"
+        return "未开启（不在 enabled_groups 白名单里；可用 /自主轮 开 单独开启本群）"
 
     def enabled_group_ids(self) -> list[str]:
         groups = {str(g) for g in (cfg.autonomous.enabled_groups or [])}

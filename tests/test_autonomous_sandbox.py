@@ -702,3 +702,30 @@ async def test_do_nothing_does_not_mark_high_spirits(sandbox_data, monkeypatch):
     pipeline.yuki.mark_high_spirits.assert_not_called()
     pipeline.engine.process_callback.assert_not_awaited()
     assert pipeline.handle_catchup.await_count == 0
+
+
+async def test_runtime_override_beats_global_switch(sandbox_data, monkeypatch):
+    """`/自主轮 开` 是主人当场授权：即使总开关关着，本群也应该能用 /深思。"""
+    gid = str(cfg.TARGET_GROUPS[0]) if cfg.TARGET_GROUPS else "1057020972"
+    monkeypatch.setattr(cfg.autonomous, "enabled", False)
+    monkeypatch.setattr(cfg.autonomous, "enabled_groups", [])
+
+    pipeline = FakePipeline()
+    coordinator = AutonomousCoordinator(pipeline)
+    assert coordinator.is_group_enabled(gid) is False
+    assert "总开关" in coordinator.gate_reason(gid)
+
+    sandbox_data.state_store.set_group_override(gid, True)
+    assert coordinator.is_group_enabled(gid) is True
+    assert "运行时覆盖" in coordinator.gate_reason(gid)
+
+    # 总开关即使开着，运行时 `/自主轮 关` 仍然优先
+    monkeypatch.setattr(cfg.autonomous, "enabled", True)
+    sandbox_data.state_store.set_group_override(gid, False)
+    assert coordinator.is_group_enabled(gid) is False
+
+    # 非目标群：运行时覆盖也救不了（本来就不收这个群的消息）
+    if cfg.TARGET_GROUPS:
+        outsider = str(int(cfg.TARGET_GROUPS[0]) + 1)
+        sandbox_data.state_store.set_group_override(outsider, True)
+        assert coordinator.is_group_enabled(outsider) is False
