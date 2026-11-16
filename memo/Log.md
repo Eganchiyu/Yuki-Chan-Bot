@@ -796,3 +796,11 @@
 - 只认成功提交的生图任务，`art_gacha`/`art_asset`/`art_finish` 与资产解析失败都不加。
 - 测试：容器内 `pytest tests -q` = 231 passed（与基线一致）。
 - 状态：代码已提交，**待重启容器生效**。
+
+## 2026-11-16 双参考图「指令偏移」修复（图序绑定）
+- 排查证据：日志 `[ImageGen] 参考图: yuki_reference.png` + `master_reference.png` 都在，HTTP 200，`quality/background/input_fidelity=high` 齐全，**无 400 降级**；MockTransport 拦截 SDK 请求确认 multipart 发出两个 `image[]` part。→ 上传/参数/接口都没坏。
+- 真因：`art_draw` 只把 `assets` 展开成图片列表，没告诉模型「第几张图是谁」。模型自己写 prompt 时把 yuki 写成 `long black twintails with green ribbons, green eyes`（master 的特征，12:11/12:15 两次都这样），画图模型照 prompt 走 → 看着像参考图偏移/特征串味。单图无歧义所以还能用。
+- 对照实验（中转 gpt-image-2.6-sunburst，同一双图）：prompt 首部写「image 1 = 白发蓝瞳雪花发饰女孩、image 2 = 黑长发绿瞳黑绿夹克的人」→ 两人精准还原；用线上那条错误 prompt + 注入绑定说明 → 依然是白发蓝瞳 yuki + 黑发绿瞳 master。结论：加绑定说明即可纠偏。
+- 改动：`core/focus/domains/art.py` 新增 `_asset_label()`/`_build_reference_legend()`；`art_draw` 拼参考图时同步记录 `ref_labels`（资产用 `key（owner）：description`，临时图用占位标签），**≥2 张**时把「【参考图对应关系（务必遵守）】image N = …」+「特征不得互换融合、prompt 与参考图冲突时以参考图为准」前置到传给生图模型的 prompt；单图不注入。`job.prompt`/失败汇报仍是模型原文。导演指南第 3 条补「多参考图必须写明 image 1/2 对应谁」。
+- 测试：新增 `test_art_draw_injects_reference_legend_for_multiple_assets`（多图注入、单图不注入、job.prompt 保持原文）；容器内 `pytest tests -q` = **232 passed**。
+- 状态：代码已提交，**待重启容器生效**。

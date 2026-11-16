@@ -251,6 +251,49 @@ async def test_art_draw_resolves_multiple_assets_and_aspect_ratio(monkeypatch):
     assert bad_res.error == "asset_not_found"
 
 
+async def test_art_draw_injects_reference_legend_for_multiple_assets(monkeypatch):
+    """多张参考图时自动在 prompt 前注入「image N = 谁」的绑定说明，单图不注入。"""
+    captured: list[str] = []
+
+    async def fake_gen(
+        context,
+        prompt,
+        size="1024*1024",
+        image_paths=None,
+        aspect_ratio=None,
+        seed=None,
+        quality=None,
+        background=None,
+        input_fidelity=None,
+        output_format=None,
+    ):
+        captured.append(prompt)
+        return ToolResult(
+            success=True,
+            content="图像已生成并保存: /tmp/out.png",
+            data={"file_path": "/tmp/out.png", "prompt": prompt, "size": "1024x1536"},
+        )
+
+    monkeypatch.setattr("core.tools.tools_media.generate_image_tool", fake_gen)
+    ctx = _make_ctx("c_legend")
+    focus_manager.enter("c_legend", "art", goal="双人同框")
+
+    many = await art_draw_tool(ctx, prompt="two girls on the beach", assets=["yuki", "master"])
+    await art_gen_store.wait(many.data["job_id"])
+    legend_prompt = captured[-1]
+    assert legend_prompt.startswith("【参考图对应关系")
+    assert "image 1 = yuki（Yuki）：白长发" in legend_prompt
+    assert "image 2 = master（主人）：黑长发" in legend_prompt
+    assert legend_prompt.endswith("two girls on the beach")
+    # 原始 prompt 仍保留在任务记录里，便于排障
+    job = art_gen_store.get(many.data["job_id"])
+    assert job is not None and job.prompt == "two girls on the beach"
+
+    one = await art_draw_tool(ctx, prompt="solo yuki", assets=["yuki"])
+    await art_gen_store.wait(one.data["job_id"])
+    assert captured[-1] == "solo yuki"
+
+
 async def test_art_start_contains_director_guide_and_async_draw_delivery(monkeypatch, tmp_path):
     """art_start 返回导演指南与默认禁透明规则；art_draw 后台画完后自动发图并注入带预览的汇报。"""
     ctx_start = _make_ctx("c_guide")

@@ -55,6 +55,37 @@ ART = FocusDomain(
 register_domain(ART)
 
 
+_TEMP_REF_LABEL = "临时参考图（对话里的图片或本地路径，未登记资产）"
+
+
+def _asset_label(item: dict) -> str:
+    """把已登记资产压成一句「角色名（主人）：外观描述」，供多图绑定说明使用。"""
+    key = item.get("key") or ""
+    owner = item.get("owner") or key
+    desc = (item.get("description") or "").strip()
+    head = f"{key}（{owner}）" if owner and owner != key else f"{key}"
+    return f"{head}：{desc}" if desc else head
+
+
+def _build_reference_legend(refs: list[str], labels: dict[str, str]) -> str:
+    """多张参考图时生成「第几张图是谁」的绑定说明；单图无需说明，返回空串。"""
+    if len(refs) < 2:
+        return ""
+    parts = [
+        f"image {idx} = {labels.get(ref) or _TEMP_REF_LABEL}"
+        for idx, ref in enumerate(refs, start=1)
+    ]
+    return (
+        "【参考图对应关系（务必遵守）】本次共传入 "
+        f"{len(refs)} 张输入参考图，顺序如下：\n"
+        + "\n".join(f"- {p}" for p in parts)
+        + "\n"
+        "画图时每个角色必须严格保持「自己那一张」参考图的脸型、发色瞳色、发饰与服饰，"
+        "禁止把不同参考图里的人物特征互换或融合；prompt 里描述角色时也按上面的 image 序号对应写。"
+        "若 prompt 的文字描写与某张参考图实际外观冲突，一律以参考图为准。"
+    )
+
+
 def _looks_like_path_or_img_tag(val: str) -> bool:
     text = _clean_ref(val)
     if not text:
@@ -76,6 +107,9 @@ _ART_DIRECTOR_GUIDE = (
     "   - 版面文字与减法约束：有字时写明字色/排向/气泡位置；极简图结尾加 no extra objects, no detailed background。\n"
     "2. 背景铁律（极其重要）：默认必须使用 `background=\"opaque\"` 生成完整实底/纯色背景；仅在用户明确要求“透明背景/免抠/透明贴纸”时才传 `background=\"transparent\"`。\n"
     "3. 角色一致性与换装：用 `assets` 时默认 `input_fidelity=\"high\"` 锁定五官与发饰；换装时在 prompt 明写保留参考图的脸型、发色瞳色与标志性发饰并替换服装；若要跨画风重绘（如精绘转极简 Q 版表情包）可设 `input_fidelity=\"low\"`。\n"
+    "    - 多参考图：一次传 2 张以上 `assets` 时，prompt 里必须写明哪张图对应哪个角色"
+    "（如 image 1 = yuki、image 2 = master），并按各自参考图写发色瞳色与服饰；"
+    "系统会自动在 prompt 前附上「参考图对应关系」，你按它来写即可，别把两人的特征写串。\n"
     "4. 异步出图与自检：`art_draw` 只是提交任务、立刻返回，**不要空等**——这期间可以继续聊天或准备下一张；"
     "画好后成品会自动发到会话里，并在下一轮把成品预览交给你，那时先看一眼构图/文字/手指；"
     "若局部瑕疵可用 `art_draw(image_paths=[该file_path], prompt=\"Keep everything else identical, only fix...\", input_fidelity=\"high\")` 精修；"
@@ -170,13 +204,16 @@ async def art_draw_tool(
         )
 
     combined_refs: list[str] = []
+    ref_labels: dict[str, str] = {}
     for item in matched_assets:
         ref = item.get("reference")
         if ref and ref not in combined_refs:
             combined_refs.append(ref)
+            ref_labels[ref] = _asset_label(item)
     for ref in extra_from_assets:
         if ref not in combined_refs:
             combined_refs.append(ref)
+            ref_labels[ref] = _TEMP_REF_LABEL
 
     if image_paths:
         raw_paths = [image_paths] if isinstance(image_paths, str) else list(image_paths)
@@ -188,6 +225,9 @@ async def art_draw_tool(
                 resolved_ref = asset_item["reference"] if asset_item else p_clean
                 if resolved_ref not in combined_refs:
                     combined_refs.append(resolved_ref)
+                    ref_labels[resolved_ref] = (
+                        _asset_label(asset_item) if asset_item else _TEMP_REF_LABEL
+                    )
 
     from core.tools.tools_media import resolve_image_size
 
@@ -200,8 +240,11 @@ async def art_draw_tool(
     if fid_mode not in ("low", "high"):
         fid_mode = "high"
 
+    legend = _build_reference_legend(combined_refs, ref_labels)
+    gen_prompt = f"{legend}\n\n{prompt}" if legend else prompt
+
     gen_kwargs: dict[str, Any] = {
-        "prompt": prompt,
+        "prompt": gen_prompt,
         "size": target_size,
         "image_paths": combined_refs if combined_refs else None,
         "aspect_ratio": aspect_ratio,
