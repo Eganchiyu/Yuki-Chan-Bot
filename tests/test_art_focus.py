@@ -427,8 +427,32 @@ async def test_generate_image_openai_gpt_image_params_and_400_fallback(monkeypat
         os.remove(res2.data["file_path"])
 
 
-async def test_art_gacha_draws_prompt_draft_without_generating_image(monkeypatch):
-    """art_gacha 只返回可编辑的抽卡提示词草稿，绝不直接触发生图。"""
+class _StubPool:
+    """替代真实语料库的抽样桩。"""
+
+    def __init__(self, available: bool):
+        self._available = available
+        self.calls: list[dict] = []
+
+    def available(self) -> bool:
+        return self._available
+
+    def sample(self, rng=None, ratings=("G", "S"), topic="", exclude_topics=()):
+        self.calls.append({"ratings": ratings, "topic": topic, "exclude_topics": exclude_topics})
+        if not self._available:
+            return None
+        return {
+            "tag_text": "1girl, apron, kitchen, smile, sunlight",
+            "post_id": "123",
+            "rating": "G",
+            "topic": "【优质】日常治愈",
+        }
+
+
+async def test_art_gacha_returns_single_random_prompt(monkeypatch):
+    """art_gacha 无参数，只回一句提示词灵感，绝不触发生图。"""
+    from core import art_gacha as gacha_mod
+
     called = False
 
     async def forbid_gen(*args, **kwargs):
@@ -440,53 +464,34 @@ async def test_art_gacha_draws_prompt_draft_without_generating_image(monkeypatch
     ctx = _make_ctx("c_gacha")
     focus_manager.enter("c_gacha", "art", goal="盲盒抽卡")
 
-    # 1. 槽位混搭 + lock + 绑定 yuki 资产
-    res_slot = await art_gacha_tool(
-        ctx,
-        pool="slot",
-        assets=["yuki"],
-        lock={"style": "千禧初高精剧场版原画", "setting": "at a snowy train station"},
-        note="冬日车站盲盒",
-    )
-    assert res_slot.success is True
+    # 1. 语料库不可用：回落到内置词条池，仍是一句 prompt
+    monkeypatch.setattr(gacha_mod, "zako_prompt_pool", _StubPool(False))
+    res = await art_gacha_tool(ctx)
+    assert res.success is True
     assert called is False
-    assert res_slot.data["mode"] == "slot"
-    assert res_slot.data["assets"] == ["yuki"]
-    assert "Yuki" in res_slot.data["prompt"]
-    assert "at a snowy train station" in res_slot.data["prompt"]
-    assert "early-2000s high-end anime key visual" in res_slot.data["prompt"]
-    assert "尚未生图" in res_slot.content
-    assert "art_draw" in res_slot.content
+    assert res.data["source"] in ("slot", "blueprint")
+    assert res.data["prompt"] and res.content == res.data["prompt"]
 
-    # 2. SSR 蓝图抽卡 + 变量覆写
-    res_bp = await art_gacha_tool(
-        ctx,
-        pool="blueprint",
-        blueprint_id="vtuber-stream-thumbnail",
-        assets=["yuki"],
-        lock={"line 1": "深夜", "line 2": "杂谈"},
-    )
-    assert res_bp.success is True
-    assert called is False
-    assert res_bp.data["rarity"] == "SSR"
-    assert res_bp.data["aspect_ratio"] == "16:9"
-    assert "深夜" in res_bp.data["prompt"] and "杂谈" in res_bp.data["prompt"]
+    # 2. 语料库可用：直接返回标签串
+    stub = _StubPool(True)
+    monkeypatch.setattr(gacha_mod, "zako_prompt_pool", stub)
+    monkeypatch.setattr(cfg.tools, "art_gacha_zako_share", 1.0)
+    res_zako = await art_gacha_tool(ctx)
+    assert res_zako.success is True
+    assert res_zako.data["source"] == "zako"
+    assert res_zako.content == "1girl, apron, kitchen, smile, sunlight"
+    assert stub.calls and stub.calls[0]["ratings"] == cfg.tools.art_gacha_zako_ratings
 
-    # 3. 多人资产不再按人数锁死蓝图（历史 bug：多人抽卡 100% 出 martial-dojo-duel）
-    res_multi = await art_gacha_tool(ctx, pool="blueprint", assets=["yuki", "master"])
-    assert res_multi.success is True
-    drawn_ids = {res_multi.data["card_id"]}
-    for _ in range(30):
-        again = await art_gacha_tool(ctx, pool="blueprint", assets=["yuki", "master"])
-        drawn_ids.add(again.data["card_id"])
-    assert len(drawn_ids) > 1, f"多人抽卡仍锁死在单张蓝图: {drawn_ids}"
-
-    # 4. 未知资产 / 未知蓝图清晰报错
-    bad_asset = await art_gacha_tool(ctx, assets=["不存在的角色"])
-    assert bad_asset.success is False and bad_asset.error == "asset_not_found"
-
-    bad_bp = await art_gacha_tool(ctx, blueprint_id="non-existent-bp")
-    assert bad_bp.success is False and bad_bp.error == "invalid_gacha_param"
+    # 3. 内置池：多次抽取覆盖到槽位与蓝图两种来源
+    monkeypatch.setattr(gacha_mod, "zako_prompt_pool", _StubPool(False))
+    sources = set()
+    prompts = set()
+    for _ in range(40):
+        r = await art_gacha_tool(ctx)
+        sources.add(r.data["source"])
+        prompts.add(r.data["prompt"])
+    assert {"slot", "blueprint"} <= sources
+    assert len(prompts) > 5
 
 
 async def test_generate_image_native_400_compatibility_fallback(monkeypatch, tmp_path):
@@ -594,55 +599,25 @@ async def test_art_draw_failure_report_explains_reason(monkeypatch):
     assert "去掉 assets / image_paths 再画" in report
 
 
-async def test_art_gacha_zako_corpus_draw_and_fallback(monkeypatch):
-    """外部语料库：存在时抽标签串，缺失时静默回落原有抽卡。"""
+async def test_art_gacha_uses_zako_corpus_when_enabled(monkeypatch):
+    """外部语料库开启时 art_gacha 吐标签串；关掉总开关就回落内置词条池。"""
     from core import art_gacha as gacha_mod
 
-    class _FakePool:
-        def __init__(self, available: bool):
-            self._available = available
-            self.calls = []
+    ctx = _make_ctx("c_gacha_src")
+    focus_manager.enter("c_gacha_src", "art", goal="语料库抽卡")
 
-        def available(self) -> bool:
-            return self._available
-
-        def sample(self, rng=None, ratings=("G", "S"), topic="", exclude_topics=()):
-            self.calls.append({"ratings": ratings, "topic": topic, "exclude_topics": exclude_topics})
-            if not self._available:
-                return None
-            return {
-                "tag_text": "1girl, apron, kitchen, smile, sunlight",
-                "post_id": "123",
-                "rating": "G",
-                "topic": "【优质】日常治愈",
-            }
-
-    store = gacha_mod.ArtGachaStore()
-
-    # 1. 语料缺失：pool="zako" 回落，不报错
-    monkeypatch.setattr(gacha_mod, "zako_prompt_pool", _FakePool(False))
-    fallback = store.draw(pool="zako", lock={"setting": "at a snowy station"})
-    assert fallback["mode"] in ("slot", "blueprint")
-    assert fallback["card_id"] != gacha_mod.ZAKO_CARD_ID
-
-    # 2. 语料存在：抽到标签串，并带上参考资产前缀
-    fake = _FakePool(True)
+    fake = _StubPool(True)
     monkeypatch.setattr(gacha_mod, "zako_prompt_pool", fake)
-    drawn = store.draw(pool="zako", matched_assets=[{"key": "yuki", "owner": "Yuki"}])
-    assert drawn["mode"] == "zako"
-    assert drawn["card_id"] == gacha_mod.ZAKO_CARD_ID
-    assert "apron, kitchen" in drawn["prompt"]
-    assert "Yuki" in drawn["prompt"]
-    assert drawn["source"]["post_id"] == "123"
-    assert fake.calls and fake.calls[0]["ratings"] == cfg.tools.art_gacha_zako_ratings
+    monkeypatch.setattr(cfg.tools, "art_gacha_zako_share", 1.0)
 
-    text = store.format_result(drawn)
-    assert "Danbooru" in text and "art_draw" in text
+    res = await art_gacha_tool(ctx)
+    assert res.data["source"] == "zako"
+    assert fake.calls[0]["ratings"] == cfg.tools.art_gacha_zako_ratings
+    assert fake.calls[0]["exclude_topics"] == cfg.tools.art_gacha_zako_exclude_topics
 
-    # 3. auto 模式下语料关闭时行为不变（仍然只有 slot/blueprint）
     monkeypatch.setattr(cfg.tools, "art_gacha_zako_enabled", False)
-    modes = {store.draw(pool="auto")["mode"] for _ in range(20)}
-    assert "zako" not in modes
+    res2 = await art_gacha_tool(ctx)
+    assert res2.data["source"] in ("slot", "blueprint")
 
 
 def test_zako_clean_tags_strips_disambiguation_and_duplicates(tmp_path):

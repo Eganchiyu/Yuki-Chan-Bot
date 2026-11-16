@@ -833,3 +833,10 @@
 - 私聊/通用兜底：新增 `handle_sft_quote_label()`，主人引用 Yuki 消息发送 `/good`、`/perfect`、`/赞` 或 `/bad`、`/差`、`/踩` 时静默打标并拦截，不进入聊天上下文。
 - 测试：`tests/test_napcat.py` +1、`tests/test_sft_logger.py` +1（覆盖多段 `message_id` 索引、跨实例恢复、非主人拦截、正负/撤回贴表情、未追踪消息忽略、引用指令兜底）。容器内全量 `pytest tests -q` = **240 passed**。
 - 状态：代码已提交，**待重启容器生效**。
+
+2026-11-16 19:5x art_gacha 大幅简化：改成无参数、只回一句提示词
+- 机主反馈「模型不会用这个工具，太复杂」，要求删掉参数与多余功能，只保留「从 zako 和其他语料库抽 prompt 灵感」。
+- `core/art_gacha.py` 重写：`ArtGachaStore.draw()` 无参数，返回 `{"source": "zako"|"slot"|"blueprint", "prompt": str}`；删除 `lock` 锁定槽位、`blueprint_id` 指定卡、`assets` 绑定锚点、`format_result` 结构化回显、`SLOT_LABELS`/`_build_asset_prefix`。来源只剩两类：外部语料库（`art_gacha_zako_share` 默认 0.9）与内置 `data/art_gacha_pools.json`（槽位混搭/蓝图模板各半）。
+- `core/focus/domains/art.py::art_gacha_tool(context)` 只剩 context 入参，`content` 就是那句 prompt（`data` 仅留 `source`/`prompt`）；`core/tools/tools.py` 的 spec `parameters.properties` 清空，描述改成「无参数，抽到的是素材，改写成完整场景再 art_draw」。
+- **未动**：`art_draw` 参数、`art_start`/`art_finish` 外壳、`art_asset` 全部保持原样（机主明确要求）。
+- 测试：`test_art_gacha_returns_single_random_prompt`（无参调用、不出图、回落内置池、覆盖 slot/blueprint）与 `test_art_gacha_uses_zako_corpus_when_enabled`（语料开启吐标签串、关掉总开关回落）替换旧 lock/blueprint_id 用例；`pytest tests -q` = **240 passed**，`verify.sh` = ALL_GATES_PASSED。

@@ -458,79 +458,31 @@ async def art_asset_tool(
     )
 
 
-async def art_gacha_tool(
-    context,
-    pool: str = "auto",
-    assets: list[str] | str | None = None,
-    blueprint_id: str = "",
-    lock: dict[str, str] | str | None = None,
-    note: str = "",
-) -> ToolResult:
-    """提示词抽卡：抽一发二次元 Prompt 灵感草稿返回给模型审阅与修改，不直接生图。"""
-    matched_assets: list[dict[str, Any]] = []
-    if assets:
-        matched_assets, missing = art_asset_store.resolve_many(assets)
-        if missing:
-            available = "、".join(
-                f"{a['key']}({a['owner']})" for a in art_asset_store.list()
-            ) or "暂无已登记资产"
-            return ToolResult(
-                success=False,
-                content=(
-                    f"未找到已登记的艺术资产: {', '.join(missing)}。\n"
-                    f"当前可用资产: {available}。"
-                ),
-                error="asset_not_found",
-                name="art_gacha",
-            )
-
-    lock_dict: dict[str, str] | None = None
-    if isinstance(lock, dict):
-        lock_dict = {str(k): str(v) for k, v in lock.items()}
-    elif isinstance(lock, str) and lock.strip():
-        try:
-            import json
-            parsed = json.loads(lock)
-            if isinstance(parsed, dict):
-                lock_dict = {str(k): str(v) for k, v in parsed.items()}
-        except Exception:
-            lock_dict = None
-
-    try:
-        drawn = art_gacha_store.draw(
-            pool=pool,
-            blueprint_id=blueprint_id,
-            lock=lock_dict,
-            matched_assets=matched_assets,
-        )
-    except ValueError as exc:
+async def art_gacha_tool(context) -> ToolResult:
+    """提示词抽卡：随机抽一句提示词灵感返回给模型润色，不直接生图（无参数）。"""
+    drawn = art_gacha_store.draw()
+    prompt = str(drawn.get("prompt") or "").strip()
+    if not prompt:
         return ToolResult(
             success=False,
-            content=str(exc),
-            error="invalid_gacha_param",
+            content="这轮没抽到内容，再调用一次试试。",
+            error="empty_draw",
             name="art_gacha",
         )
 
     focus_manager.record_step(
         context.chat_id,
-        f"提示词抽卡 [{drawn.get('rarity')}] {drawn.get('card_name')}",
-        note or drawn.get("card_id", ""),
+        "提示词抽卡",
+        drawn.get("source", ""),
         domain=ART.name,
     )
 
-    content = art_gacha_store.format_result(drawn)
     return ToolResult(
         success=True,
-        content=content,
+        content=prompt,
         data={
-            "gacha_card": drawn.get("card_name", ""),
-            "card_id": drawn.get("card_id", ""),
-            "rarity": drawn.get("rarity", ""),
-            "mode": drawn.get("mode", ""),
-            "aspect_ratio": drawn.get("aspect_ratio", "2:3"),
-            "assets": drawn.get("assets", []),
-            "prompt": drawn.get("prompt", ""),
-            "note": note or "",
+            "source": drawn.get("source", ""),
+            "prompt": prompt,
             "no_persist": False,
         },
         name="art_gacha",

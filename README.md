@@ -177,7 +177,7 @@ sudo bash deploy/install-service.sh
 
 ### 5. 提示词抽卡语料库（可选）
 
-艺术创作聚焦模式的提示词抽卡（`art_gacha`）支持接入外部 Danbooru 标签语料库，把抽卡素材从「几十条内置词条」扩到「十六万条标签」，避免翻来覆去抽到同几张卡。
+艺术创作聚焦模式的提示词抽卡（`art_gacha`）**无参数**：调一次就随机回一句提示词灵感（内部按概率从外部 Danbooru 标签语料库或内置词条池里抽），由模型自己改写后交给 `art_draw`。接入外部语料库后，素材从「几十条内置词条」扩到「十六万条标签」。
 
 - **语料来源**：[Zako-Prompt-Tools](https://github.com/xiaoshengyvlin/Zako-Prompt-Tools)（MIT License，作者 萧）。语料数据**不随本仓库分发**，需要时请自行下载。
 - **放置方式**：
@@ -195,11 +195,11 @@ cp /tmp/Zako-Prompt-Tools/LICENSE data/zako/LICENSE-zako-prompt-tools.txt
 - 抽到的标签会先用 `tag_map.sqlite` 的分类过滤：只保留通用/情绪类标签，丢掉画师、作品名、他人角色名以及 Danbooru 消歧义标签（`xxx (yyy)`）。
 - **相关配置**（`config.py` → `tools`）：
   - `art_gacha_zako_enabled`：总开关（默认 `true`）
-  - `art_gacha_zako_share`：`auto` 抽卡命中语料库的概率（默认 `0.9`，其余分给内置蓝图/槽位池）
+  - `art_gacha_zako_share`：命中外部语料库的概率（默认 `0.9`，其余给内置词条池）
   - `art_gacha_zako_ratings`：允许抽取的分级，默认 `G,S,Q`（`E` 为露骨级，默认不抽）
   - `art_gacha_zako_topic`：限定主题名，留空＝全部主题
   - `art_gacha_zako_exclude_topics`：排除的主题，默认 `高点赞TAG`（整帖标签堆，几乎全是他人角色名）
-- 抽到的是 Danbooru 风格**标签串**，抽卡结果会明确要求 Yuki 先扩写成完整自然语言提示词，再调用 `art_draw`。
+- 抽到的可能是 Danbooru 风格**标签串**（外部语料库）或现成英文描述（内置词条池）；工具描述里已要求模型先扩写/改写成完整场景描述，再调用 `art_draw`。
 
 ---
 

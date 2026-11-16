@@ -515,41 +515,14 @@ TOOL_SPECS = [
     ToolSpec(
         name="art_gacha",
         description=(
-            "二次元提示词抽卡（盲盒灵感生成器）：抽取一组槽位混搭、SSR 导演级蓝图 Prompt 草稿，"
-            "或从外部语料库（data/zako，Zako-Prompt-Tools 的十六万条 Danbooru 标签）随机抽一串标签灵感给你参考与润色。"
-            "注意：本工具只返回抽到的提示词草稿与推荐画幅/资产，不会直接生成或发送图片；"
-            "你可以根据角色人设与群友要求对抽到的 Prompt 进行修改、换字或精简后，再传给 art_draw 出图。"
+            "随机抽一句二次元提示词灵感（来自 Danbooru 标签语料库或内置词条池）。"
+            "无参数调用即可。它只给素材、不生成图片：把它改写成完整的场景描述"
+            "（角色、动作、服装、场景、光影、构图，别人物的名字一律丢掉），"
+            "再传给 art_draw 出图。"
         ),
         parameters={
             "type": "object",
-            "properties": {
-                "pool": {
-                    "type": "string",
-                    "enum": ["auto", "slot", "blueprint", "zako"],
-                    "description": (
-                        "卡池模式：auto=随机混搭/SSR蓝图/外部语料库(默认)；slot=槽位盲盒混搭；"
-                        "blueprint=必出SSR导演大片蓝图；zako=从外部标签语料库抽一串标签灵感（语料缺失时自动回落到内置卡池）"
-                    ),
-                    "default": "auto",
-                },
-                "assets": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "description": "可选，绑定已登记的角色资产（如 [\"yuki\"]、[\"yuki\", \"master\"]），会自动在草稿前附带特征锚点提示",
-                },
-                "blueprint_id": {
-                    "type": "string",
-                    "description": "可选，指定抽取某张 SSR 蓝图（如 sunset-rooftop-keyvisual / glossy-idol-poster / minimalist-pastel-chibi / romance-movie-poster / vtuber-stream-thumbnail / martial-dojo-duel）",
-                },
-                "lock": {
-                    "type": "object",
-                    "description": "可选，锁定部分槽位或覆写蓝图变量（如 {\"style\": \"千禧初高精剧场版原画\", \"setting\": \"...\" }）",
-                },
-                "note": {
-                    "type": "string",
-                    "description": "顺手记一句这次抽卡主题",
-                },
-            },
+            "properties": {},
         },
         handler=art_gacha_tool,
     ),
