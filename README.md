@@ -195,7 +195,7 @@ cp /tmp/Zako-Prompt-Tools/LICENSE data/zako/LICENSE-zako-prompt-tools.txt
 - 抽到的标签会先用 `tag_map.sqlite` 的分类过滤：只保留通用/情绪类标签，丢掉画师、作品名、他人角色名以及 Danbooru 消歧义标签（`xxx (yyy)`）。
 - **相关配置**（`config.py` → `tools`）：
   - `art_gacha_zako_enabled`：总开关（默认 `true`）
-  - `art_gacha_zako_share`：`auto` 抽卡命中语料库的概率（默认 `0.5`，其余分给内置蓝图/槽位池）
+  - `art_gacha_zako_share`：`auto` 抽卡命中语料库的概率（默认 `0.9`，其余分给内置蓝图/槽位池）
   - `art_gacha_zako_ratings`：允许抽取的分级，默认 `G,S,Q`（`E` 为露骨级，默认不抽）
   - `art_gacha_zako_topic`：限定主题名，留空＝全部主题
   - `art_gacha_zako_exclude_topics`：排除的主题，默认 `高点赞TAG`（整帖标签堆，几乎全是他人角色名）

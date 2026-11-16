@@ -816,3 +816,5 @@
 - 工具 spec `pool` enum 增 `zako` 并改写描述；README 加「5. 提示词抽卡语料库（可选）」，写清来源/下载命令/缺失回落/全部配置项。
 - 测试：新增 `test_art_gacha_zako_corpus_draw_and_fallback`（缺失回落、存在则抽标签并带资产前缀、auto 关闭时不出现 zako）+ `test_zako_clean_tags_strips_disambiguation_and_duplicates`；`pytest tests -q` = **234 passed**；`deploy/verify.sh` = ALL_GATES_PASSED。
 - 状态：语料与索引已在宿主 `data/zako/`（json 84MB + prompts.db 95MB + tag_map.sqlite 30MB，均不入库）。容器需重启后代码生效。
+
+- 2026-11-16 调参：`art_gacha_zako_share` 0.5 → **0.9**（机主要求），实测 auto 分配 zako 91% / 槽位 6% / 蓝图 3%；README 同步。

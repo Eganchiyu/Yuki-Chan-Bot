@@ -538,7 +538,7 @@ class ToolsConfig:
         section="tools"
     )
     art_gacha_zako_share: float = config_field(
-        0.5,
+        0.9,
         comment="auto 抽卡时命中外部语料库的概率（0~1，语料缺失或关闭时忽略）",
         section="tools"
     )
