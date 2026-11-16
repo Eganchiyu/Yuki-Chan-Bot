@@ -9,12 +9,16 @@ import re
 from typing import Any
 
 from core.art_gacha_defaults import BUILTIN_GACHA_POOLS
+from core.zako_prompt_pool import zako_prompt_pool
 from utils import BASE_DIR
 from utils.logger import get_logger
 
 logger = get_logger("tools")
 
 DEFAULT_GACHA_POOLS_PATH = os.path.join(BASE_DIR, "data", "art_gacha_pools.json")
+POOL_MODES = ("auto", "slot", "blueprint", "zako")
+ZAKO_CARD_ID = "zako-tags"
+ZAKO_CARD_NAME = "Zako 标签灵感库"
 SLOT_ORDER = ("composition", "style", "outfit", "action", "setting", "lighting")
 SLOT_LABELS = {
     "composition": "镜头构图",
@@ -129,6 +133,31 @@ class ArtGachaStore:
             "strictly preserving each character's exact face, hair color, eye color, hairstyle, and signature accessories."
         )
 
+    @staticmethod
+    def _zako_settings() -> dict[str, Any] | None:
+        """外部语料库抽卡配置；未启用或语料缺失时返回 None。"""
+        try:
+            from config import cfg
+
+            tools = cfg.tools
+            enabled = bool(getattr(tools, "art_gacha_zako_enabled", True))
+            share = float(getattr(tools, "art_gacha_zako_share", 0.5) or 0.0)
+            ratings = getattr(tools, "art_gacha_zako_ratings", "G,S")
+            topic = getattr(tools, "art_gacha_zako_topic", "")
+            exclude = getattr(tools, "art_gacha_zako_exclude_topics", "")
+        except Exception:
+            enabled, share, ratings, topic, exclude = True, 0.5, "G,S", "", ""
+        if not enabled or share <= 0:
+            return None
+        if not zako_prompt_pool.available():
+            return None
+        return {
+            "share": max(0.0, min(1.0, share)),
+            "ratings": ratings,
+            "topic": topic,
+            "exclude_topics": exclude,
+        }
+
     def draw(
         self,
         *,
@@ -147,21 +176,55 @@ class ArtGachaStore:
         assets_list = list(matched_assets or [])
 
         pool_mode = str(pool or "auto").strip().lower()
-        if pool_mode not in ("auto", "slot", "blueprint"):
+        if pool_mode not in POOL_MODES:
             pool_mode = "auto"
+        zako_cfg = self._zako_settings()
 
         if blueprint_id:
             pool_mode = "blueprint"
         elif lock_map and pool_mode == "auto":
             pool_mode = "slot"
         elif pool_mode == "auto":
-            if blueprints and r.random() < 0.35:
+            if zako_cfg and r.random() < zako_cfg["share"]:
+                pool_mode = "zako"
+            elif blueprints and r.random() < 0.35:
                 pool_mode = "blueprint"
             else:
                 pool_mode = "slot"
+        if pool_mode == "zako" and not zako_cfg:
+            # 外部语料库缺失：静默回落原有抽卡方式
+            pool_mode = "blueprint" if (blueprints and r.random() < 0.35) else "slot"
 
         asset_prefix = self._build_asset_prefix(assets_list)
         asset_keys = [str(a.get("key")) for a in assets_list if a.get("key")]
+
+        if pool_mode == "zako" and zako_cfg:
+            picked = zako_prompt_pool.sample(
+                rng=r,
+                ratings=zako_cfg["ratings"],
+                topic=zako_cfg["topic"],
+                exclude_topics=zako_cfg.get("exclude_topics", ""),
+            )
+            if picked:
+                tag_text = str(picked.get("tag_text") or "").strip()
+                final_prompt = f"{asset_prefix} {tag_text}".strip() if asset_prefix else tag_text
+                return {
+                    "mode": "zako",
+                    "rarity": "SR",
+                    "card_id": ZAKO_CARD_ID,
+                    "card_name": ZAKO_CARD_NAME,
+                    "aspect_ratio": "2:3",
+                    "chosen_args": {},
+                    "slots": {},
+                    "assets": asset_keys,
+                    "prompt": final_prompt,
+                    "source": {
+                        "rating": picked.get("rating", ""),
+                        "topic": picked.get("topic", ""),
+                        "post_id": picked.get("post_id", ""),
+                    },
+                }
+            pool_mode = "blueprint" if (blueprints and r.random() < 0.35) else "slot"
 
         if pool_mode == "blueprint" and blueprints:
             target_bp = None
@@ -175,10 +238,8 @@ class ArtGachaStore:
                     avail = ", ".join(str(b.get("id")) for b in blueprints)
                     raise ValueError(f"未找到蓝图模板: {blueprint_id}（可选: {avail}）")
             else:
-                multi = len(assets_list) >= 2
-                preferred = [b for b in blueprints if bool(b.get("multi_character")) == multi]
-                candidates = preferred or blueprints
-                target_bp = r.choice(candidates)
+                # 不再按参考资产人数筛蓝图（曾导致多人抽卡 100% 锁死在同一张卡）
+                target_bp = r.choice(blueprints)
 
             rendered_prompt, chosen_args = self._render_blueprint(target_bp, lock_map, r)
             if asset_prefix:
@@ -244,13 +305,27 @@ class ArtGachaStore:
 
         lines = [
             f"【抽卡结果 [{rarity}] {card_name}】"
-            + (f" (模板ID: `{card_id}`)" if card_id and card_id != "slot-mix" else ""),
+            + (f" (模板ID: `{card_id}`)" if card_id and card_id not in ("slot-mix", ZAKO_CARD_ID) else ""),
             f"- 推荐画幅 `aspect_ratio`: `{aspect_ratio}`",
         ]
         if assets:
             lines.append(f"- 绑定参考资产 `assets`: {assets}（建议 `input_fidelity=\"high\"`）")
 
-        if result.get("mode") == "slot":
+        if result.get("mode") == "zako":
+            source = result.get("source") or {}
+            if source:
+                lines.append(
+                    f"- 语料来源：分级 {source.get('rating', '-')} / 主题 {source.get('topic', '-')}"
+                    + (f" / post {source.get('post_id')}" if source.get("post_id") else "")
+                )
+            lines.append(
+                "- 这是一串 Danbooru 风格标签，只是灵感素材：请把它扩写成完整的自然语言提示词"
+                "（补角色、动作、服装、场景、光影、构图，去掉不适合的标签），再交给 `art_draw`。"
+            )
+            lines.append(
+                "- 标签里若出现别人物的名字或作品名（如某角色、某游戏名），一律丢掉，只留场景/氛围/光影/构图灵感。"
+            )
+        elif result.get("mode") == "slot":
             lines.append("- 抽中词条拆解：")
             slots = result.get("slots") or {}
             for key in SLOT_ORDER:

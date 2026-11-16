@@ -805,3 +805,14 @@
 - 测试：新增 `test_art_draw_injects_reference_legend_for_multiple_assets`（多图注入、单图不注入、job.prompt 保持原文）；容器内 `pytest tests -q` = **232 passed**。
 - 状态：代码已提交，**待重启容器生效**。
 2026-11-16 12:40 彩蛋：模型补全为 "Filtered"（content_filter）时不发这两个字，改发 output/reference/filtered.png 表情包（CQ sub_type=1）；图片缺失则回落发送 "Filtered"。改动仅 core/session_pipeline.py send_reply 入口。测试 232 passed。
+
+2026-11-16 17:0x art_gacha 道场霸榜排查 + 接入 Zako 语料库
+- 根因：`data/art_gacha_pools.json` 六个 SSR 蓝图里只有 `martial-dojo-duel` 是 `multi_character=true`，`draw()` 按「参考资产人数」筛 `preferred` → 带 ≥2 个角色资产时蓝图分支 100% 抽到道场；带 0~1 个资产时道场被完全排除。实测概率：单人 ~8%（只来自 setting 槽位 1/8），多人 ~43%。
+- 修复 1：删掉按人数组筛蓝图的逻辑（`r.choice(blueprints)`），旧测试 `martial-dojo-duel` 断言改成「多人抽卡不再锁死单张」（30 次抽卡 >1 张卡）。
+- 修复 2：接入 [Zako-Prompt-Tools](https://github.com/xiaoshengyvlin/Zako-Prompt-Tools)（MIT）语料库：`data/zako/json/{G,S,Q,E}/*.json`（84MB / 16.5 万条 Danbooru 标签）+ `data/zako/tag_map.sqlite`（标签分类表）。语料不入 git（`data/` 本就整目录 ignore），缺语料时 `available()` 为 False，`pool="zako"` 静默回落原有 slot/blueprint 抽卡。
+- 新增 `core/zako_prompt_pool.py`：`ZakoPromptPool`（懒构建 `data/zako/prompts.db` sqlite 索引，state 文件比对 size/mtime；`sample()` 按分级/主题/排除主题抽样；`clean_tags()` 去掉 `xxx (yyy)` 消歧义标签，再按 `tag_map.sqlite` 的 category 只保留 0=通用 / 5=meta，丢掉 1=画师 / 3=作品 / 4=角色）。
+- `ArtGachaStore.draw()`：新增 `pool="zako"` 与 auto 三分支（语料存在时 `art_gacha_zako_share` 默认 0.5 命中语料，其余 35%/65% 分给蓝图/槽位）；`format_result` 对 zako 结果输出「这是标签灵感素材，先扩写成自然语言再 art_draw」「别人物名字/作品名一律丢掉」。
+- 配置（`config.py` → tools）：`art_gacha_zako_enabled=True`、`share=0.5`、`ratings="G,S,Q"`（机主选的尺度）、`topic=""`、`exclude_topics="高点赞TAG"`。
+- 工具 spec `pool` enum 增 `zako` 并改写描述；README 加「5. 提示词抽卡语料库（可选）」，写清来源/下载命令/缺失回落/全部配置项。
+- 测试：新增 `test_art_gacha_zako_corpus_draw_and_fallback`（缺失回落、存在则抽标签并带资产前缀、auto 关闭时不出现 zako）+ `test_zako_clean_tags_strips_disambiguation_and_duplicates`；`pytest tests -q` = **234 passed**；`deploy/verify.sh` = ALL_GATES_PASSED。
+- 状态：语料与索引已在宿主 `data/zako/`（json 84MB + prompts.db 95MB + tag_map.sqlite 30MB，均不入库）。容器需重启后代码生效。

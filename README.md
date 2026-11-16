@@ -175,6 +175,32 @@ sudo bash deploy/install-service.sh
 2. 运行可视化打标工具：`python scripts/06_sticker_manager/label.py`
 3. 导入向量库：`python scripts/04_meme_cache_tools/reset_and_import_meme.py`
 
+### 5. 提示词抽卡语料库（可选）
+
+艺术创作聚焦模式的提示词抽卡（`art_gacha`）支持接入外部 Danbooru 标签语料库，把抽卡素材从「几十条内置词条」扩到「十六万条标签」，避免翻来覆去抽到同几张卡。
+
+- **语料来源**：[Zako-Prompt-Tools](https://github.com/xiaoshengyvlin/Zako-Prompt-Tools)（MIT License，作者 萧）。语料数据**不随本仓库分发**，需要时请自行下载。
+- **放置方式**：
+
+```bash
+cd /tmp && git clone --depth 1 https://github.com/xiaoshengyvlin/Zako-Prompt-Tools
+mkdir -p data/zako
+cp -r /tmp/Zako-Prompt-Tools/data/json data/zako/json          # 语料本体（约 84MB / 16.5 万条）
+cp /tmp/Zako-Prompt-Tools/mapping/tag.sqlite data/zako/tag_map.sqlite   # 标签分类表（用于过滤他人角色/作品/画师）
+cp /tmp/Zako-Prompt-Tools/LICENSE data/zako/LICENSE-zako-prompt-tools.txt
+```
+
+- 首次抽卡会自动构建索引 `data/zako/prompts.db`（约 95MB，16.5 万条，数秒完成）；`data/zako/` 已在 `.gitignore` 中，不会进版本库。
+- **缺失时自动跳过**：`data/zako/json` 不存在就完全回落到内置卡池 `data/art_gacha_pools.json`，功能不受影响；缺 `tag_map.sqlite` 时只跳过分类过滤，仍可抽卡。
+- 抽到的标签会先用 `tag_map.sqlite` 的分类过滤：只保留通用/情绪类标签，丢掉画师、作品名、他人角色名以及 Danbooru 消歧义标签（`xxx (yyy)`）。
+- **相关配置**（`config.py` → `tools`）：
+  - `art_gacha_zako_enabled`：总开关（默认 `true`）
+  - `art_gacha_zako_share`：`auto` 抽卡命中语料库的概率（默认 `0.5`，其余分给内置蓝图/槽位池）
+  - `art_gacha_zako_ratings`：允许抽取的分级，默认 `G,S,Q`（`E` 为露骨级，默认不抽）
+  - `art_gacha_zako_topic`：限定主题名，留空＝全部主题
+  - `art_gacha_zako_exclude_topics`：排除的主题，默认 `高点赞TAG`（整帖标签堆，几乎全是他人角色名）
+- 抽到的是 Danbooru 风格**标签串**，抽卡结果会明确要求 Yuki 先扩写成完整自然语言提示词，再调用 `art_draw`。
+
 ---
 
 ## 🤖 Agent 自动化部署指南（Agent向文档）

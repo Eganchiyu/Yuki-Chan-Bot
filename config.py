@@ -532,6 +532,31 @@ class ToolsConfig:
         comment="艺术创作聚焦模式下单轮对话允许的最大工具调用轮次",
         section="tools"
     )
+    art_gacha_zako_enabled: bool = config_field(
+        True,
+        comment="提示词抽卡是否启用外部语料库 data/zako（Zako-Prompt-Tools，缺失时自动回落原有抽卡）",
+        section="tools"
+    )
+    art_gacha_zako_share: float = config_field(
+        0.5,
+        comment="auto 抽卡时命中外部语料库的概率（0~1，语料缺失或关闭时忽略）",
+        section="tools"
+    )
+    art_gacha_zako_ratings: str = config_field(
+        "G,S,Q",
+        comment="外部语料库抽样允许的分级（逗号分隔，可选 G/S/Q/E）",
+        section="tools"
+    )
+    art_gacha_zako_topic: str = config_field(
+        "",
+        comment="外部语料库抽样限定的主题名（留空=全部主题）",
+        section="tools"
+    )
+    art_gacha_zako_exclude_topics: str = config_field(
+        "高点赞TAG",
+        comment="外部语料库抽样要排除的主题（逗号分隔；高点赞TAG 是整帖标签堆，几乎全是他人角色名）",
+        section="tools"
+    )
 
 
 @dataclass
