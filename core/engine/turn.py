@@ -43,5 +43,6 @@ class TurnState:
     pending_thought: str = ""
     batch_focus_domain: str | None = None
     debug_snap_id: str | None = None
+    art_draw_submitted: bool = False  # 本轮是否提交过 art_draw 生图任务（用于回复带 🎨）
     outcome: str = ""              # "reply" | "skip" | "filtered" | "exhausted"
     final: tuple[str, str] | None = None

@@ -779,3 +779,20 @@
 - 确证异常 2：`⚙️ Yuki 进程重启中…` 现在发到 1034986009。链路：`deploy/supervisor.notify_restart()` → POST /notify → `main._send_restart_notice()`，优先 `yuki.maid_active_chats`，为空则回落 `_last_maid_chat()` = `tasks/dsh/` 最近一次 request.json 的 chat_id（现为 20261116_085703_001 → 1034986009）。
 - 开机自动初始化只有 `main.warmup_groups()`：preload 历史 + 给 TARGET_GROUPS 打 last_message_time/精力/欲望；**不动 group_active_state，也没有全群开启**。破冰巡检遍历全部 TARGET_GROUPS 不过休眠筛，但管线入口 `mode=="group" and not group_active_state.get(...)` 会拦掉。
 - 当前有效状态：活跃 1057020972 / 1034986009 / 495881825 / 818038143 / 742134223 / 1121099281（后四个无条目=默认活跃）；休眠 920735739 / 1059307259。
+
+## 2026-11-16 群开关缺省改休眠 + 重启提示固定私聊主人（36093cb）
+- `init.py` 新增 `default_group_active()=False` 与 `ensure_group_state(state, groups)`：启动时把 `TARGET_GROUPS` 全量补齐并落盘，**缺条目=休眠**（旧行为缺条目=True，是「休眠群重启后复活」的总根源）。
+- `main.py`：`group_active_state` 不再在 import 时就 `load_group_state()`，改在启动流程里 `ensure_group_state(load_group_state(), cfg.TARGET_GROUPS)`；`_send_restart_notice()` 固定发 `target.qq` 私聊，删掉 `_last_maid_chat()` 与 `maid_active_chats` 回落链（原逻辑把重启提示发到"最近一次小女仆委托"的群 → 实测跑到 1034986009）。
+- 7 处 `group_active_state.get(gid, True)` → `default_group_active()`（`core/modes/pipeline.py`、`core/session_pipeline.py` ×2、`listen_main.py` ×3、`context_snapshot.py`），新增 `from init import default_group_active`。
+- **副作用修复**：`pytest` 的 `/关闭`、`/强制关闭` 用例会走 `_set_group_active → save_group_state`，在容器里跑测试时把生产 `data/group_state.json` 覆盖成 `{"1057020972": false}`（本次排查中已发生并手工恢复）。`tests/conftest.py` 加 autouse fixture `isolate_group_state`，把 `init.GROUP_STATE_FILE` 指到 `tmp_path`。
+- 现存文件按「升级不改行为」冻结成 8 个群全量：活跃 1057020972/1034986009/495881825/818038143/742134223/1121099281，休眠 920735739/1059307259；以后丢键才落到休眠。
+- 测试：容器内 `pytest tests -q` = **231 passed**；`deploy/verify.sh` ALL_GATES_PASSED。
+- 状态：代码已提交（36093cb），**待重启容器生效**。
+
+## 2026-11-16 art_draw 工作指示 🎨
+- 需求：开始画画（调用工具）时在说话后面加 🎨，仅提交 art_draw 的那一条回复带一次（机主选定：代码硬加 + 单条范围）。
+- `core/engine/turn.py`：`TurnState.art_draw_submitted`（默认 False）。
+- `core/engine/engine_reply.py`：`ART_WORK_MARK="🎨"`、`_with_art_mark()`（末尾已有 🎨 不重复）、`_apply_art_mark()`（skip 标记不处理）、`_is_art_draw_submit()`（name==art_draw 且 data.art_job=="queued"，失败结果不加）。`_execute_batch` 命中则置位；`_finalize_turn` 与 `_close_exhausted` 两条收尾路径都套上，只改「实际发送文本」，写回历史的 raw 不变。
+- 只认成功提交的生图任务，`art_gacha`/`art_asset`/`art_finish` 与资产解析失败都不加。
+- 测试：容器内 `pytest tests -q` = 231 passed（与基线一致）。
+- 状态：代码已提交，**待重启容器生效**。

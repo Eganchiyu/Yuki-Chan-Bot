@@ -34,6 +34,9 @@ logger = get_logger("engine")
 # 已开始执行工具、但最终回复被清洗干净时的占位文案
 WORKING_NOTICE = "工作中......"
 
+# 提交过 art_draw 生图任务的那一条回复，末尾追加的画画工作指示
+ART_WORK_MARK = "🎨"
+
 
 class EngineReplyService:
     """负责 LLM 回复生成与工具链对话。"""
@@ -85,6 +88,22 @@ class EngineReplyService:
             logger.info("[ToolChain] 回复被清洗为空但本轮已执行工具，发送工作中占位")
             visible = WORKING_NOTICE
         return normalize_reply_markup(raw_content), visible
+
+    @staticmethod
+    def _with_art_mark(text: str) -> str:
+        """在回复末尾补一个 🎨，已有则不再重复追加。"""
+        stripped = (text or "").rstrip()
+        if not stripped or stripped.endswith(ART_WORK_MARK):
+            return stripped
+        return f"{stripped}{ART_WORK_MARK}"
+
+    def _apply_art_mark(self, st: TurnState, answer: tuple[str, str]) -> tuple[str, str]:
+        if not st.art_draw_submitted:
+            return answer
+        raw_answer, visible_answer = answer
+        if visible_answer == SKIP_REPLY_MARKER:
+            return answer
+        return raw_answer, self._with_art_mark(visible_answer)
 
     async def _resolve_pending_image(self, meme_processor, img):
         """工具调用期间新增图片，按与主管线一致的开关处理，并复用预取结果。"""
@@ -244,6 +263,15 @@ class EngineReplyService:
             return {}
         return payload if isinstance(payload, dict) else {}
 
+    def _is_art_draw_submit(self, tool_message: dict) -> bool:
+        """判断这条工具结果是否是成功提交的 art_draw 生图任务。"""
+        if not isinstance(tool_message, dict):
+            return False
+        if (tool_message.get("name") or "") != "art_draw":
+            return False
+        data = self._tool_payload(tool_message).get("data")
+        return isinstance(data, dict) and data.get("art_job") == "queued"
+
     @staticmethod
     def _is_tool_screenshot_msg(msg: dict) -> bool:
         if not isinstance(msg, dict) or msg.get("role") != "user":
@@ -396,10 +424,10 @@ class EngineReplyService:
             logger.warning(f"[ToolChain] {st.chat_id} 回复被内容安全过滤")
             st.outcome = "filtered"
             return "Filtered", "Filtered"
-        raw_ans, clean_ans = self.finalize_answer(
+        raw_ans, clean_ans = self._apply_art_mark(st, self.finalize_answer(
             strip_tool_call_markup(msg.get("content")),
             st.tools_executed,
-        )
+        ))
         st.tool_trace.append({
             "round": st.round_idx,
             "llm_ms": llm_ms,
@@ -456,6 +484,8 @@ class EngineReplyService:
             finish_reason=msg.get("_finish_reason") or "",
         )
         exec_ms = int((time.monotonic() - t_exec0) * 1000)
+        if any(self._is_art_draw_submit(r) for r in results):
+            st.art_draw_submitted = True
         st.tool_trace.append({
             "round": st.round_idx,
             "llm_ms": llm_ms,
@@ -540,7 +570,7 @@ class EngineReplyService:
             fallback_messages_factory=st.fallback_factory,
         )
         st.outcome = "exhausted"
-        return self.finalize_answer(fallback_raw, st.tools_executed)
+        return self._apply_art_mark(st, self.finalize_answer(fallback_raw, st.tools_executed))
 
     async def chat_with_tools(self, chat_id, combined_text, session, mode, messages, message_objs=None):
         """执行支持多轮工具调用的 LLM 对话。"""
