@@ -1,5 +1,6 @@
 # core/engine/engine_reply.py
 import asyncio
+import copy
 import json
 import re
 import time
@@ -74,6 +75,7 @@ class EngineReplyService:
             self.trace_hook,
             self.snapshot_hook,
         ])
+        self._last_sft_capture: dict[str, dict[str, Any]] = {}
 
     @staticmethod
     def clean_visible_reply(content):
@@ -575,6 +577,7 @@ class EngineReplyService:
     async def chat_with_tools(self, chat_id, combined_text, session, mode, messages, message_objs=None):
         """执行支持多轮工具调用的 LLM 对话。"""
         st = await self._begin_turn(chat_id, combined_text, session, mode, messages, message_objs)
+        initial_count = len(st.tool_messages)
         self.hooks.on_turn_start(st)
         try:
             while st.round_idx < st.max_rounds:
@@ -602,6 +605,18 @@ class EngineReplyService:
             return st.final
         finally:
             self.hooks.on_turn_end(st)
+            self._last_sft_capture[st.chat_id] = {
+                "input_messages": copy.deepcopy(st.tool_messages[:initial_count]),
+                "turn_messages": copy.deepcopy(st.tool_messages[initial_count:]),
+                "tools_used": list(st.tools_used),
+                "tool_trace": copy.deepcopy(st.tool_trace),
+                "outcome": st.outcome,
+                "llm_rounds": st.round_idx,
+            }
+
+    def pop_sft_capture(self, chat_id: str) -> Optional[dict[str, Any]]:
+        """取出并消费最近一次对话轮次的 SFT 采集快照。"""
+        return self._last_sft_capture.pop(str(chat_id), None)
 
     async def api_reply(self, chat_id: str, combined_text: str, session: list, mode,
                         relevant_diaries: list[Any],
@@ -651,6 +666,14 @@ class EngineReplyService:
             return yuki_answer_raw, yuki_answer, ""
         except Exception as e:
             logger.error(f"[Engine] LLM 调用失败: {e}")
+            self._last_sft_capture[str(chat_id)] = {
+                "input_messages": copy.deepcopy(combined_api_message),
+                "turn_messages": [],
+                "tools_used": [],
+                "tool_trace": [],
+                "outcome": "error",
+                "llm_rounds": 0,
+            }
             return "暂时连接不上网络", "暂时连接不上网络", ""
         finally:
             self._debug_snapshot_by_chat.pop(str(chat_id), None)

@@ -60,6 +60,10 @@ class YukiEngine:
         """生成回复，保留原 YukiEngine 调用入口。"""
         return await self.reply_service.api_reply(*args, **kwargs)
 
+    def pop_sft_capture(self, chat_id: str):
+        """取出最近一次回复生成的完整 SFT 轨迹快照。"""
+        return self.reply_service.pop_sft_capture(chat_id)
+
     async def decide_to_reply(self, *args, **kwargs):
         """判断群聊是否回复，保留原 YukiEngine 调用入口。"""
         return await self.decision_service.decide_to_reply(*args, **kwargs)

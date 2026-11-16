@@ -29,5 +29,7 @@ def isolate_group_state(tmp_path, monkeypatch):
     这里把落盘路径指到临时文件。
     """
     import init
+    from core import sft_logger
 
     monkeypatch.setattr(init, "GROUP_STATE_FILE", str(tmp_path / "group_state.json"))
+    monkeypatch.setattr(sft_logger.sft_trace_logger, "base_dir", str(tmp_path / "sft"))

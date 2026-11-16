@@ -16,6 +16,7 @@ from core.history_filter import dialogue_length
 from core.recall_cache import recall_cache_store
 from core.reply_format import clean_visible_reply
 from core.reply_watch import auto_subscribe, is_human_incoming, resolve, subscribe
+from core.sft_logger import sft_trace_logger
 from core.toolchain import SKIP_REPLY_MARKER
 from init import default_group_active
 from modules.debug.context_snapshot import PIPELINE_STAGES, context_snapshot_store
@@ -40,7 +41,7 @@ _MEME_RANDOM_KEEP_PROB = 0.6   # 非最后一个表情包保留概率
 _ALWAYS_REPLY_MODES = frozenset({"private", "master_private"})
 
 # 彩蛋：模型补全被内容安全过滤（正文恒为 "Filtered"）时，不发这两个字，改发这张表情包
-_FILTERED_EGG_IMAGE = os.path.join(BASE_DIR, "output", "reference", "filtered.png")
+_FILTERED_EGG_IMAGE = os.path.join(BASE_DIR, "output", "reference", "Filtered.jpg")
 _FILTERED_EGG_CQ = f"[CQ:image,file=file:///{os.path.abspath(_FILTERED_EGG_IMAGE)},sub_type=1]"
 _REPLYABLE_MODES = frozenset({"group", "private", "master_private"})
 
@@ -122,6 +123,7 @@ class SessionPipeline:
         self.engine = components["engine"]
         self.sticker_manager = components.get("sticker_manager")
         self.image_store = components.get("image_store")
+        self.sft_logger = components.get("sft_logger") or sft_trace_logger
         self.group_active_state = group_active_state
 
         # --- 防抖与锁机制 ---
@@ -693,6 +695,54 @@ class SessionPipeline:
         ]
         return snapshot + kept_users
 
+    def _pop_engine_sft_capture(self, chat_id: str) -> dict:
+        pop_fn = getattr(self.engine, "pop_sft_capture", None)
+        if not callable(pop_fn):
+            return {}
+        try:
+            capture = pop_fn(chat_id)
+        except Exception:
+            return {}
+        return capture if isinstance(capture, dict) else {}
+
+    def _record_sft_turn(self, context: dict, *, outcome_override: str | None = None,
+                         answer_raw: str = "", answer_text: str = ""):
+        if not self.sft_logger:
+            return None
+        try:
+            capture = context.get("sft_capture")
+            if not isinstance(capture, dict):
+                capture = self._pop_engine_sft_capture(context["chat_id"])
+            senders = []
+            for m in (context.get("message_objs") or context.get("incoming_messages") or []):
+                if isinstance(m, dict):
+                    nm = str(m.get("name") or m.get("user_id") or "").strip()
+                    if nm and nm not in senders:
+                        senders.append(nm)
+            outcome = outcome_override or capture.get("outcome") or "reply"
+            return self.sft_logger.record_turn({
+                "turn_id": context.get("debug_snapshot_id") or context.get("turn_id"),
+                "chat_id": context.get("chat_id", ""),
+                "mode": context.get("mode", ""),
+                "model": cfg.LLM_MODEL,
+                "ice_break": bool(context.get("ice_break", False)),
+                "outcome": outcome,
+                "llm_rounds": capture.get("llm_rounds", 0),
+                "senders": senders,
+                "combined_text": context.get("combined_text", ""),
+                "relevant_diaries": context.get("relevant_diaries") or [],
+                "input_messages": capture.get("input_messages") or [],
+                "turn_messages": capture.get("turn_messages") or [],
+                "tools_used": capture.get("tools_used") or [],
+                "tool_trace": capture.get("tool_trace") or [],
+                "answer_raw": answer_raw,
+                "answer_text": answer_text,
+                "sent_message_ids": list(context.get("sent_message_ids") or []),
+            })
+        except Exception as exc:
+            logger.debug(f"[SFT] 记录训练轨迹异常: {exc}")
+            return None
+
     async def generate_reply(self, context):
         """调用引擎生成回复。"""
         chat_id = context["chat_id"]
@@ -706,6 +756,7 @@ class SessionPipeline:
             debug_snapshot_id=context.get("debug_snapshot_id"),
             message_objs=context.get("message_objs", []),
         )
+        context["sft_capture"] = self._pop_engine_sft_capture(chat_id)
         logger.debug(f"[Pipeline] {cfg.ROBOT_NAME.title()} 回复生成完成")
 
         # 模型用 skip 工具主动保持安静：本轮工具链痕迹全部丢弃，不发送也不写入 assistant 回复
@@ -715,6 +766,7 @@ class SessionPipeline:
             logger.info(f"[Pipeline] {cfg.ROBOT_NAME.title()} 调用 skip，本轮保持安静")
             context["skip_reply"] = True
             context["stop"] = True
+            self._record_sft_turn(context, outcome_override="skip", answer_raw="", answer_text="")
             self._update_snapshot(context, should_reply=False, answer_text="", skip_reply=True)
             return context
 
@@ -1037,6 +1089,11 @@ class SessionPipeline:
         self.history_manager.append_to_log(chat_id, cfg.ROBOT_NAME.title(), answer_text)
         session = self.history_manager.append_session_message(
             chat_id, "assistant", context["answer_raw"], time=context["current_time_str"]
+        )
+        self._record_sft_turn(
+            context,
+            answer_raw=context.get("answer_raw", ""),
+            answer_text=answer_text,
         )
         self._update_snapshot(context, answer_text=answer_text, message_count=len(session))
         logger.debug("[Pipeline] 上下文保存完成")

@@ -7,6 +7,9 @@
 ## [未发布]
 
 ### 新增
+- **SFT 全量交互轨迹采集 Phase 1 (`core/sft_logger.py` + `core/engine/engine_reply.py` + `core/session_pipeline.py`)**：
+  - 新增 `SFTTraceLogger`，每轮对话（含 `skip` 主动沉默轮次）将完整输入上下文 `input_messages`、轮内 `tool_calls`/工具结果 `turn_messages`、保留 `<layout>` 与 `[MEME:...]` 的 `answer_raw` 及出站 `sent_message_ids` 槽位以单行 JSON Block 追加落盘至 `data/sft/traces_YYYY-MM.jsonl`
+  - 自动剥离 base64 图片载荷并脱敏密钥/token，I/O 异常不阻断主会话管线
 - **运行状态查询与强制休眠指令 (`core/status.py` + `modules/QQNapcatListen/listen_main.py`)**：
   - `/查询`（别名 `/状态`、`/status`，正则匹配）输出关键词式单行简报：模式、精力、静默时长；
     主人额外看到活跃度、回复欲、主备线路与模型名、小女仆排队/运行、进程在线时长

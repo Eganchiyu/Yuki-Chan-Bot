@@ -818,3 +818,10 @@
 - 状态：语料与索引已在宿主 `data/zako/`（json 84MB + prompts.db 95MB + tag_map.sqlite 30MB，均不入库）。容器需重启后代码生效。
 
 - 2026-11-16 调参：`art_gacha_zako_share` 0.5 → **0.9**（机主要求），实测 auto 分配 zako 91% / 槽位 6% / 蓝图 3%；README 同步。
+
+## 2026-11-16 SFT 训练轨迹落盘 Phase 1：全量 Block 采集
+- 动机：为后续本地模型 LoRA 微调长期攒真实数据；`data/yuki_log.txt` 仅记清洗后的可见文本，缺少完整上下文、`tool_calls` 与 `<layout>` 内心布局原文。
+- 新增 `core/sft_logger.py`：`SFTTraceLogger`（默认写入 `data/sft/traces_YYYY-MM.jsonl`，支持 `YUKI_SFT_DIR` 与实例化覆写），每轮落盘自包含 JSON Block（`turn_id`/`ts`/`chat_id`/`mode`/`model`/`ice_break`/`outcome`/`llm_rounds`/`senders`/`combined_text`/`relevant_diaries`/`input_messages`/`turn_messages`/`tools_used`/`tool_trace`/`answer_raw`/`answer_text`/`sent_message_ids`）。
+- 隐私与体积防护：`strip_media_and_sanitize()` 剥离 `data:image/` base64 图片块为 `<image_omitted>` 并复用 `sanitize_value()` 脱敏密钥/token；I/O 异常仅警告不阻断主管道。
+- 接入点：`core/engine/engine_reply.py`（`chat_with_tools` 结束后缓存本轮 `input_messages`、`turn_messages`、`tools_used`、`tool_trace`、`outcome`，`YukiEngine.pop_sft_capture()` 消费）与 `core/session_pipeline.py`（`finalize_conversation` 记正常/异常回复，`generate_reply` 在 `skip` 早停分支同步记录负样本）。
+- 测试隔离与验证：`tests/conftest.py` 自动将 `sft_trace_logger.base_dir` 隔离到 `tmp_path/sft`；新增 `tests/test_sft_logger.py`（脱敏、落盘、工具调用+`<layout>` 联调、`skip` 分支、异常容错）。容器内全量 `pytest tests -q` = **238 passed**。
