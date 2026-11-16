@@ -30,6 +30,8 @@ async def _fake_napcat(ws):
             data = {"card": "群名片", "nickname": "昵称"}
         elif action in ("get_group_detail_info", "get_group_info"):
             data = {"group_name": "测试群", "group_remark": "备注"}
+        elif action in ("send_group_msg", "send_private_msg"):
+            data = {"message_id": 778899}
         else:
             data = {"action": action}
         await ws.send(json.dumps({
@@ -93,6 +95,18 @@ async def test_gateway_cq_parsing_and_member_cache(napcat_url):
         calls_before = gateway.stats["calls"]
         await gateway.get_member_name("1057020972", "123")
         assert gateway.stats["calls"] == calls_before
+    finally:
+        await gateway.close()
+
+
+async def test_gateway_send_returns_message_id(napcat_url):
+    """send() 通过 call() 拿回 NapCat 返回的 message_id，供 SFT 表情打标关联。"""
+    gateway = NapCatGateway(napcat_url, "")
+    try:
+        mid_group = await gateway.send("1057020972", "你好喵", mode="group")
+        mid_priv = await gateway.send("123456", "私聊测试", mode="private")
+        assert mid_group == 778899
+        assert mid_priv == 778899
     finally:
         await gateway.close()
 

@@ -7,9 +7,11 @@
 ## [未发布]
 
 ### 新增
-- **SFT 全量交互轨迹采集 Phase 1 (`core/sft_logger.py` + `core/engine/engine_reply.py` + `core/session_pipeline.py`)**：
-  - 新增 `SFTTraceLogger`，每轮对话（含 `skip` 主动沉默轮次）将完整输入上下文 `input_messages`、轮内 `tool_calls`/工具结果 `turn_messages`、保留 `<layout>` 与 `[MEME:...]` 的 `answer_raw` 及出站 `sent_message_ids` 槽位以单行 JSON Block 追加落盘至 `data/sft/traces_YYYY-MM.jsonl`
+- **SFT 全量交互轨迹采集与贴表情自动打标 (`core/sft_logger.py` + `core/engine/engine_reply.py` + `core/session_pipeline.py` + `network/napcat.py` + `modules/QQNapcatListen/listen_main.py`)**：
+  - 新增 `SFTTraceLogger`，每轮对话（含 `skip` 主动沉默轮次）将完整输入上下文 `input_messages`、轮内 `tool_calls`/工具结果 `turn_messages`、保留 `<layout>` 与 `[MEME:...]` 的 `answer_raw` 及出站 `sent_message_ids` 追加落盘至 `data/sft/traces_YYYY-MM.jsonl`，并写入 `data/sft/msg_index.jsonl` 持久化 `message_id -> turn_id` 映射
   - 自动剥离 base64 图片载荷并脱敏密钥/token，I/O 异常不阻断主会话管线
+  - `NapCatGateway.send()` 改为通过 `call()` 取回出站 `message_id`
+  - 新增 `handle_emoji_like_event()` 监听群贴表情 `notice/group_msg_emoji_like` 与引用指令兜底 `handle_sft_quote_label()`（`/good`、`/bad`），仅采信主人 QQ 并追加写入 `data/sft/labels.jsonl`（区分 `perfect` / `bad` / `reaction` / `removed`）
 - **运行状态查询与强制休眠指令 (`core/status.py` + `modules/QQNapcatListen/listen_main.py`)**：
   - `/查询`（别名 `/状态`、`/status`，正则匹配）输出关键词式单行简报：模式、精力、静默时长；
     主人额外看到活跃度、回复欲、主备线路与模型名、小女仆排队/运行、进程在线时长

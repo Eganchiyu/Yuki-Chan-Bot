@@ -200,3 +200,141 @@ async def test_pipeline_records_skip_turn_in_sft_logger(tmp_path):
     assert row["outcome"] == "skip"
     assert row["tools_used"] == ["skip"]
     assert row["answer_raw"] == ""
+
+
+async def test_send_reply_indexes_message_ids_and_emoji_like_labels(tmp_path, monkeypatch):
+    from config import cfg
+    from modules.QQNapcatListen.listen_main import handle_emoji_like_event, handle_sft_quote_label
+
+    sft_writer = SFTTraceLogger(base_dir=str(tmp_path))
+    sticker_mgr = MagicMock()
+    sticker_mgr.get_suitable_sticker = AsyncMock(return_value={
+        "id": "st-1",
+        "image_ref": "data/stickers/happy.png",
+    })
+
+    sender = AsyncMock()
+    sender.send = AsyncMock(side_effect=[70001, 70002])
+
+    yuki = MagicMock()
+    yuki.lock = asyncio.Lock()
+    yuki.energy = {"1057020972": 90.0}
+    yuki.last_sent_meme = {}
+    yuki.ice_break_fail_count = {}
+    yuki.user_mapping = SimpleNamespace(tick=lambda cid: None)
+    yuki.consume_energy = MagicMock()
+
+    history = MagicMock()
+    history.append_to_log = MagicMock()
+    history.append_session_message = MagicMock(return_value=[{"role": "system", "content": "人设"}])
+
+    pipeline = SessionPipeline({
+        "sender": sender,
+        "meme_processor": MagicMock(),
+        "yuki": yuki,
+        "history_manager": history,
+        "memory_rag": MagicMock(),
+        "engine": MagicMock(),
+        "sticker_manager": sticker_mgr,
+        "sft_logger": sft_writer,
+    }, {"1057020972": True})
+
+    ctx = {
+        "chat_id": "1057020972",
+        "mode": "group",
+        "combined_text": '【"池宇健"】说: 摸摸头',
+        "answer_raw": "<layout>哥哥摸头了好开心。</layout>嘿嘿～[MEME:开心]",
+        "answer_text": "嘿嘿～[MEME:开心]",
+        "current_time_str": "2026年11月16日21:40",
+        "debug_snapshot_id": "turn-react-01",
+        "sft_capture": {
+            "input_messages": [{"role": "user", "content": "摸摸头"}],
+            "turn_messages": [],
+            "tools_used": [],
+            "tool_trace": [],
+            "outcome": "reply",
+            "llm_rounds": 1,
+        },
+    }
+    monkeypatch.setattr("core.session_pipeline._TEXT_SENT_SLEEP", 0)
+    monkeypatch.setattr("core.session_pipeline._MEME_SENT_SLEEP", 0)
+
+    await pipeline.send_reply(ctx)
+    assert ctx["sent_message_ids"] == ["70001", "70002"]
+    await pipeline.finalize_conversation(ctx)
+
+    # 模拟重启后的新 SFTTraceLogger 实例，验证能从 msg_index.jsonl 反查 turn_id
+    sft_reloaded = SFTTraceLogger(base_dir=str(tmp_path))
+    pipeline_reloaded = SimpleNamespace(sft_logger=sft_reloaded)
+    monkeypatch.setattr(cfg, "is_master_qq", lambda uid: str(uid) == "10001")
+
+    # 1) 非主人贴表情：忽略
+    assert handle_emoji_like_event(pipeline_reloaded, {
+        "post_type": "notice",
+        "notice_type": "group_msg_emoji_like",
+        "group_id": 1057020972,
+        "user_id": 99999,
+        "message_id": 70002,
+        "likes": [{"emoji_id": "76", "count": 1}],
+        "is_add": True,
+    }) == []
+
+    # 2) 主人贴点赞表情 (76) -> perfect；点踩 (77) -> bad；取消 -> removed
+    res_pos = handle_emoji_like_event(pipeline_reloaded, {
+        "post_type": "notice",
+        "notice_type": "group_msg_emoji_like",
+        "group_id": 1057020972,
+        "user_id": 10001,
+        "message_id": 70002,
+        "likes": [{"emoji_id": "76", "count": 1}],
+        "is_add": True,
+    })
+    assert len(res_pos) == 1
+    assert res_pos[0]["turn_id"] == "turn-react-01"
+    assert res_pos[0]["label"] == "perfect"
+
+    res_neg = handle_emoji_like_event(pipeline_reloaded, {
+        "post_type": "notice",
+        "notice_type": "group_msg_emoji_like",
+        "group_id": 1057020972,
+        "user_id": 10001,
+        "message_id": 70001,
+        "likes": [{"emoji_id": "77", "count": 1}],
+        "is_add": True,
+    })
+    assert len(res_neg) == 1 and res_neg[0]["label"] == "bad"
+
+    res_rm = handle_emoji_like_event(pipeline_reloaded, {
+        "post_type": "notice",
+        "notice_type": "group_msg_emoji_like",
+        "group_id": 1057020972,
+        "user_id": 10001,
+        "message_id": 70002,
+        "likes": [{"emoji_id": "76", "count": 1}],
+        "is_add": False,
+    })
+    assert len(res_rm) == 1 and res_rm[0]["label"] == "removed"
+
+    # 3) 未跟踪的别人消息 ID：忽略
+    assert handle_emoji_like_event(pipeline_reloaded, {
+        "post_type": "notice",
+        "notice_type": "group_msg_emoji_like",
+        "group_id": 1057020972,
+        "user_id": 10001,
+        "message_id": 888888,
+        "likes": [{"emoji_id": "76", "count": 1}],
+        "is_add": True,
+    }) == []
+
+    # 4) 私聊/群聊引用指令兜底 /good
+    assert handle_sft_quote_label(
+        pipeline_reloaded, 10001, 10001, "[CQ:reply,id=70001] /good",
+        segments=[{"type": "reply", "data": {"id": "70001"}}],
+    ) is True
+    assert handle_sft_quote_label(
+        pipeline_reloaded, 10001, 10001, "[CQ:reply,id=70001] 正常聊天",
+        segments=[{"type": "reply", "data": {"id": "70001"}}],
+    ) is False
+
+    labels_lines = (tmp_path / "labels.jsonl").read_text(encoding="utf-8").splitlines()
+    assert len(labels_lines) == 4

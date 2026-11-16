@@ -825,3 +825,11 @@
 - 隐私与体积防护：`strip_media_and_sanitize()` 剥离 `data:image/` base64 图片块为 `<image_omitted>` 并复用 `sanitize_value()` 脱敏密钥/token；I/O 异常仅警告不阻断主管道。
 - 接入点：`core/engine/engine_reply.py`（`chat_with_tools` 结束后缓存本轮 `input_messages`、`turn_messages`、`tools_used`、`tool_trace`、`outcome`，`YukiEngine.pop_sft_capture()` 消费）与 `core/session_pipeline.py`（`finalize_conversation` 记正常/异常回复，`generate_reply` 在 `skip` 早停分支同步记录负样本）。
 - 测试隔离与验证：`tests/conftest.py` 自动将 `sft_trace_logger.base_dir` 隔离到 `tmp_path/sft`；新增 `tests/test_sft_logger.py`（脱敏、落盘、工具调用+`<layout>` 联调、`skip` 分支、异常容错）。容器内全量 `pytest tests -q` = **238 passed**。
+
+## 2026-11-16 SFT 训练轨迹落盘 Phase 2：NapCat 出站 `message_id` 回传与贴表情自动打标
+- 出站关联：`network/napcat.py` 的 `NapCatGateway.send()` 改为通过 `call()` 发送并提取返回 `data.message_id`（`send_local_image`/`send_local_file`/`send_local_voice` 同步透传返回值；非成功或超时返回 `None` 不重发避免重复消息）。
+- 管线索引：`core/session_pipeline.py` 的 `send_reply()` 收集本轮所有分段气泡（文本 / `[MEME:]` / 语音 / Filtered 彩蛋）的 `sent_message_ids` 并同步回填 `shot_live_buffer` 的 `message_id`；`core/sft_logger.py` 新增 `index_messages()` / `resolve_turn_id()`，持久化 `data/sft/msg_index.jsonl`（进程重启后仍可从磁盘恢复映射）。
+- 贴表情打标：`modules/QQNapcatListen/listen_main.py` 新增 `handle_emoji_like_event()` 监听 `notice/group_msg_emoji_like`，仅采信 `cfg.is_master_qq(user_id)`；`classify_emoji_label()` 将赞/爱心等映射为 `perfect`、踩映射为 `bad`、撤回映射为 `removed`、其余保留为 `reaction`（支持 `YUKI_SFT_POSITIVE_EMOJIS` / `YUKI_SFT_NEGATIVE_EMOJIS` 环境变量扩展），追加写盘 `data/sft/labels.jsonl`（未匹配到 Yuki 轨迹的 `message_id` 自动忽略）。
+- 私聊/通用兜底：新增 `handle_sft_quote_label()`，主人引用 Yuki 消息发送 `/good`、`/perfect`、`/赞` 或 `/bad`、`/差`、`/踩` 时静默打标并拦截，不进入聊天上下文。
+- 测试：`tests/test_napcat.py` +1、`tests/test_sft_logger.py` +1（覆盖多段 `message_id` 索引、跨实例恢复、非主人拦截、正负/撤回贴表情、未追踪消息忽略、引用指令兜底）。容器内全量 `pytest tests -q` = **240 passed**。
+- 状态：代码已提交，**待重启容器生效**。

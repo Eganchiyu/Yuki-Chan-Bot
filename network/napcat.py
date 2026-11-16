@@ -311,30 +311,27 @@ class NapCatGateway:
     # ==================== 出站动作 ====================
 
     async def send(self, chat_id, message, mode="private"):
-        """发送文本或 CQ 码。流式回复走这里：发完即返回，不等响应。"""
+        """发送文本或 CQ 码；通过 call() 取回 NapCat 返回的 message_id（失败返回 None）。"""
         is_private = _is_private(mode)
         action = "send_private_msg" if is_private else "send_group_msg"
         params = {"message": message, "user_id" if is_private else "group_id": int(chat_id)}
-        for attempt in range(cfg.MAX_RETRIES):
-            try:
-                ws = await self._connect()
-                await ws.send(json.dumps({"action": action, "params": params}, ensure_ascii=False))
-                return
-            except Exception as exc:
-                logger.error(f"[NapCat] 发送失败（第 {attempt + 1} 次）: {exc}")
-                self.websocket = None
-                if attempt == cfg.MAX_RETRIES - 1:
-                    raise
-                await asyncio.sleep(1)
+        resp = await self.call(action, params)
+        if not isinstance(resp, dict):
+            return None
+        if resp.get("status") not in (None, "ok"):
+            logger.warning(f"[NapCat] {action} 返回非成功状态: {resp.get('status')} {resp.get('message', '')}")
+            return None
+        data = resp.get("data")
+        return data.get("message_id") if isinstance(data, dict) else None
 
     async def send_local_image(self, chat_id, local_path, mode="private"):
-        await self.send(chat_id, f"[CQ:image,file=file:///{os.path.abspath(local_path)}]", mode=mode)
+        return await self.send(chat_id, f"[CQ:image,file=file:///{os.path.abspath(local_path)}]", mode=mode)
 
     async def send_local_file(self, chat_id, local_path, mode="private"):
-        await self.send(chat_id, f"[CQ:file,file=file:///{os.path.abspath(local_path)}]", mode=mode)
+        return await self.send(chat_id, f"[CQ:file,file=file:///{os.path.abspath(local_path)}]", mode=mode)
 
     async def send_local_voice(self, chat_id, local_path, mode="group"):
-        await self.send(chat_id, f"[CQ:record,file=file:///{os.path.abspath(local_path)}]", mode=mode)
+        return await self.send(chat_id, f"[CQ:record,file=file:///{os.path.abspath(local_path)}]", mode=mode)
 
     async def send_poke(self, user_id, group_id):
         """戳一戳（仅群聊）。返回 NapCat 响应字典。"""

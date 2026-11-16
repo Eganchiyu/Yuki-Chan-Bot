@@ -720,7 +720,7 @@ class SessionPipeline:
                     if nm and nm not in senders:
                         senders.append(nm)
             outcome = outcome_override or capture.get("outcome") or "reply"
-            return self.sft_logger.record_turn({
+            record = self.sft_logger.record_turn({
                 "turn_id": context.get("debug_snapshot_id") or context.get("turn_id"),
                 "chat_id": context.get("chat_id", ""),
                 "mode": context.get("mode", ""),
@@ -739,6 +739,13 @@ class SessionPipeline:
                 "answer_text": answer_text,
                 "sent_message_ids": list(context.get("sent_message_ids") or []),
             })
+            if record and record.get("sent_message_ids") and hasattr(self.sft_logger, "index_messages"):
+                self.sft_logger.index_messages(
+                    record["turn_id"],
+                    record["sent_message_ids"],
+                    chat_id=record.get("chat_id", ""),
+                )
+            return record
         except Exception as exc:
             logger.debug(f"[SFT] 记录训练轨迹异常: {exc}")
             return None
@@ -802,7 +809,23 @@ class SessionPipeline:
         except Exception as exc:
             logger.debug(f"[ShotMemory] 记录到截屏缓冲失败: {exc}")
 
-    async def _send_meme_segment(self, chat_id, send_mode, meme_match, shot_live_buffer):
+    @staticmethod
+    def _valid_message_id(mid: Any) -> str | None:
+        if isinstance(mid, bool) or mid is None:
+            return None
+        if isinstance(mid, (int, str)):
+            val = str(mid).strip()
+            return val if val else None
+        return None
+
+    def _record_sent_message_id(self, context: dict, mid: Any) -> str | None:
+        valid = self._valid_message_id(mid)
+        if valid is not None:
+            context.setdefault("sent_message_ids", []).append(valid)
+        return valid
+
+    async def _send_meme_segment(self, chat_id, send_mode, meme_match, shot_live_buffer,
+                                 context: dict | None = None):
         if not getattr(self, "sticker_manager", None):
             return
         search_query = meme_match.group(1).strip()
@@ -814,7 +837,8 @@ class SessionPipeline:
         self.yuki.last_sent_meme[chat_id] = best["id"]
 
         cq_code = f"[CQ:image,file=file:///{image_path},sub_type=1]"
-        await self.sender.send(chat_id, cq_code, mode=send_mode)
+        sent_raw = await self.sender.send(chat_id, cq_code, mode=send_mode)
+        sent_id = self._record_sent_message_id(context, sent_raw) if context is not None else self._valid_message_id(sent_raw)
 
         self._record_bot_message_to_shot_buffer(
             shot_live_buffer, chat_id,
@@ -822,12 +846,15 @@ class SessionPipeline:
             raw_text="[表情包]",
             content="[表情包]",
             segments=[{"type": "image", "data": {"file": image_path}}],
+            message_id=sent_id,
         )
         # 因为检索已经耗时，这里的强制睡眠可以大幅缩短
         await asyncio.sleep(_MEME_SENT_SLEEP)
 
-    async def _send_text_segment(self, chat_id, send_mode, part, shot_live_buffer):
-        await self.sender.send(chat_id, part, mode=send_mode)
+    async def _send_text_segment(self, chat_id, send_mode, part, shot_live_buffer,
+                                 context: dict | None = None):
+        sent_raw = await self.sender.send(chat_id, part, mode=send_mode)
+        sent_id = self._record_sent_message_id(context, sent_raw) if context is not None else self._valid_message_id(sent_raw)
 
         bot_name = cfg.ROBOT_NAME.title()
         self._record_bot_message_to_shot_buffer(
@@ -836,7 +863,7 @@ class SessionPipeline:
             raw_text=part,
             content=f'【"{bot_name}"】说: {part}',
             segments=[{"type": "text", "data": {"text": part}}],
-            message_id=None,
+            message_id=sent_id,
         )
         await asyncio.sleep(_TEXT_SENT_SLEEP)
 
@@ -844,6 +871,7 @@ class SessionPipeline:
         """发送文本、表情包分段或语音回复。"""
         chat_id = context["chat_id"]
         mode = context["mode"]
+        context.setdefault("sent_message_ids", [])
         # 发送前再做一次标记归一化：兼容模型把 <layout>/[MEME] 括号写错的情况
         answer_text = clean_visible_reply(context["answer_text"])
         voice = context.get("voice")
@@ -861,7 +889,7 @@ class SessionPipeline:
 
         # === 1. 语音直接发送 ===
         if voice:
-            await self.sender.send(chat_id, voice, mode=send_mode)
+            self._record_sent_message_id(context, await self.sender.send(chat_id, voice, mode=send_mode))
             logger.info("[Pipeline] 发送语音完成")
             return context
 
@@ -869,18 +897,18 @@ class SessionPipeline:
         if answer_text.strip() == "Filtered":
             if os.path.isfile(_FILTERED_EGG_IMAGE):
                 logger.info(f"[Pipeline] {cfg.ROBOT_NAME.title()} 回复被过滤，改发 filtered 表情包")
-                await self.sender.send(chat_id, _FILTERED_EGG_CQ, mode=send_mode)
+                self._record_sent_message_id(context, await self.sender.send(chat_id, _FILTERED_EGG_CQ, mode=send_mode))
             else:
                 logger.warning(
                     f"[Pipeline] filtered 彩蛋图片缺失，回落发送原文本: {_FILTERED_EGG_IMAGE}"
                 )
-                await self.sender.send(chat_id, "Filtered", mode=send_mode)
+                self._record_sent_message_id(context, await self.sender.send(chat_id, "Filtered", mode=send_mode))
             return context
 
         # deepseek 等模型有时返回空字符串，拦截并发送占位提示，避免静默无回复
         if not answer_text or not answer_text.strip():
             logger.warning(f"[Pipeline] {cfg.ROBOT_NAME.title()} 回复内容为空，拦截并发送占位提示")
-            await self.sender.send(chat_id, "Yuki回复了空字符", mode=send_mode)
+            self._record_sent_message_id(context, await self.sender.send(chat_id, "Yuki回复了空字符", mode=send_mode))
             return context
 
         # === 2. 流式发送文本与表情包 ===
@@ -905,9 +933,9 @@ class SessionPipeline:
                     logger.debug(f"[Pipeline] 表情包被随机丢弃: {part}")
                     await asyncio.sleep(_MEME_DISCARD_SLEEP)
                     continue
-                await self._send_meme_segment(chat_id, send_mode, meme_match, shot_live_buffer)
+                await self._send_meme_segment(chat_id, send_mode, meme_match, shot_live_buffer, context=context)
             else:
-                await self._send_text_segment(chat_id, send_mode, part, shot_live_buffer)
+                await self._send_text_segment(chat_id, send_mode, part, shot_live_buffer, context=context)
 
         logger.info(f"[Pipeline] 发送完成，内容: {answer_text[:80]}")
         return context

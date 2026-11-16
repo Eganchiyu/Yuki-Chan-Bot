@@ -9,14 +9,16 @@
 import asyncio
 import json
 import os
+import re
 import time
 
 from config import cfg
 from core import status as status_cmd
 from core.session_pipeline import IncomingMessage
+from core.sft_logger import sft_trace_logger
 from init import default_group_active, save_group_state
 from modules.shot_memory import shot_live_buffer
-from network.napcat import mentions_self, smart_truncate
+from network.napcat import extract_reply_ids, mentions_self, smart_truncate
 from utils.logger import get_logger
 
 logger = get_logger("napcat_listen")
@@ -591,6 +593,90 @@ async def handle_poke_event(gateway, pipeline, data: dict, mode: str):
     )
 
 
+def _resolve_sft_logger(pipeline):
+    sft_logger = getattr(pipeline, "sft_logger", None)
+    return sft_logger if sft_logger is not None and hasattr(sft_logger, "record_label") else sft_trace_logger
+
+
+def handle_emoji_like_event(pipeline, data: dict) -> list[dict]:
+    """处理 NapCat 群贴表情通知（group_msg_emoji_like），仅采信主人打标。"""
+    user_id = data.get("user_id")
+    if not cfg.is_master_qq(user_id):
+        return []
+
+    group_id = str(data.get("group_id") or "")
+    message_id = data.get("message_id")
+    is_add = bool(data.get("is_add", True))
+    likes = data.get("likes")
+    if not isinstance(likes, list) or not likes:
+        if data.get("emoji_id") is not None:
+            likes = [{"emoji_id": data.get("emoji_id")}]
+        else:
+            likes = []
+
+    logger.info(
+        f"[NapCat] 收到主人贴表情事件: group={group_id} mid={message_id} "
+        f"is_add={is_add} likes={likes}"
+    )
+    sft_logger = _resolve_sft_logger(pipeline)
+    recorded = []
+    for item in likes:
+        if not isinstance(item, dict):
+            continue
+        emoji_id = item.get("emoji_id")
+        if emoji_id is None:
+            continue
+        rec = sft_logger.record_label(
+            message_id=message_id,
+            chat_id=group_id,
+            user_id=user_id,
+            emoji_id=emoji_id,
+            is_add=is_add,
+            source="emoji_like",
+        )
+        if rec:
+            recorded.append(rec)
+    return recorded
+
+
+def _extract_quoted_message_id(raw_msg: str, segments) -> str | None:
+    for seg in segments or []:
+        if isinstance(seg, dict) and seg.get("type") == "reply":
+            mid = (seg.get("data") or {}).get("id")
+            if mid is not None and str(mid).strip():
+                return str(mid).strip()
+    ids = extract_reply_ids(raw_msg or "")
+    return ids[0] if ids else None
+
+
+def handle_sft_quote_label(pipeline, chat_id, user_id, raw_msg: str, segments=None) -> bool:
+    """私聊/群聊备用打标：主人引用 Yuki 消息发 /good 或 /bad 时静默记录，不进聊天上下文。"""
+    if not cfg.is_master_qq(user_id):
+        return False
+    reply_id = _extract_quoted_message_id(raw_msg, segments)
+    if not reply_id:
+        return False
+    cmd = re.sub(r"\[CQ:[^\]]+\]", "", raw_msg or "").strip().lower()
+    if cmd in {"/good", "/perfect", "/赞"}:
+        label = "perfect"
+    elif cmd in {"/bad", "/差", "/踩"}:
+        label = "bad"
+    else:
+        return False
+
+    sft_logger = _resolve_sft_logger(pipeline)
+    rec = sft_logger.record_label(
+        message_id=reply_id,
+        chat_id=str(chat_id),
+        user_id=user_id,
+        emoji_id=cmd,
+        is_add=True,
+        label=label,
+        source="quote_cmd",
+    )
+    return rec is not None
+
+
 async def napcat_listen(gateway, pipeline, mode: str = "mixed"):
     """NapCat 输入适配层：接收 QQ 事件并 feed 到会话管道。"""
     engine = pipeline.engine
@@ -621,6 +707,12 @@ async def napcat_listen(gateway, pipeline, mode: str = "mixed"):
                     asyncio.create_task(handle_poke_event(gateway, pipeline, data, mode))
                     continue
 
+                # 群贴表情（notice/group_msg_emoji_like）-> 主人 SFT 样本打标
+                if (data.get("post_type") == "notice"
+                        and data.get("notice_type") == "group_msg_emoji_like"):
+                    handle_emoji_like_event(pipeline, data)
+                    continue
+
                 if data.get("post_type") != "message":
                     continue
 
@@ -630,6 +722,8 @@ async def napcat_listen(gateway, pipeline, mode: str = "mixed"):
 
                 if msg_type == "private" and mode in {"private", "group", "mixed"}:
                     if handle_private_command(gateway, pipeline, user_id, raw_msg):
+                        continue
+                    if handle_sft_quote_label(pipeline, user_id, user_id, raw_msg, data.get("message")):
                         continue
                     await feed_message(
                         pipeline,
@@ -661,6 +755,8 @@ async def napcat_listen(gateway, pipeline, mode: str = "mixed"):
                     ):
                         continue
                     if handle_group_switch(pipeline, gateway, group_id, gid_str, user_id, raw_msg):
+                        continue
+                    if handle_sft_quote_label(pipeline, group_id, user_id, raw_msg, data.get("message")):
                         continue
                     if not pipeline.group_active_state.get(gid_str, default_group_active()):
                         continue
