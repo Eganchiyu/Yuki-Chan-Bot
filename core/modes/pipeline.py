@@ -13,6 +13,7 @@ from core.modes.router import (
     ModeRouter,
 )
 from core.session_pipeline import IncomingMessage, SessionPipeline
+from init import default_group_active
 from utils.logger import get_logger
 
 logger = get_logger("modes.pipeline")
@@ -109,7 +110,7 @@ class ModeAwarePipeline(SessionPipeline):
         from modules.autonomous.catchup import build_catchup_event
 
         cid = str(chat_id)
-        if not self.group_active_state.get(cid, True):
+        if not self.group_active_state.get(cid, default_group_active()):
             # 群还在休眠：补台事件会被 prepare_message_batch 直接 pop 掉，消息就白丢了。
             # 冻结期消息留在缓冲区，等 /开启 后随下一条消息一起被处理。
             logger.info(f"[Modes] {cid} 仍在休眠，暂不注入补台")

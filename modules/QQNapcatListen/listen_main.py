@@ -14,7 +14,7 @@ import time
 from config import cfg
 from core import status as status_cmd
 from core.session_pipeline import IncomingMessage
-from init import save_group_state
+from init import default_group_active, save_group_state
 from modules.shot_memory import shot_live_buffer
 from network.napcat import mentions_self, smart_truncate
 from utils.logger import get_logger
@@ -357,7 +357,7 @@ def handle_status_command(gateway, pipeline, chat_id, gid_str, user_id, raw_msg,
     text = status_cmd.build_status_text(
         pipeline.yuki,
         gid_str,
-        group_active=bool(pipeline.group_active_state.get(gid_str, True)),
+        group_active=bool(pipeline.group_active_state.get(gid_str, default_group_active())),
         is_master=cfg.is_master_qq(user_id),
     )
     asyncio.create_task(gateway.send(chat_id, text, mode=send_mode))
@@ -451,7 +451,7 @@ def handle_autonomous_command(pipeline, gateway, chat_id, gid_str, user_id, raw_
         return True
 
     # /深思
-    if send_mode == "group" and not pipeline.group_active_state.get(gid_str, True):
+    if send_mode == "group" and not pipeline.group_active_state.get(gid_str, default_group_active()):
         asyncio.create_task(
             gateway.send(
                 chat_id,
@@ -560,7 +560,7 @@ async def handle_poke_event(gateway, pipeline, data: dict, mode: str):
         return
 
     gid_str = str(group_id)
-    if not pipeline.group_active_state.get(gid_str, True):
+    if not pipeline.group_active_state.get(gid_str, default_group_active()):
         return
 
     # 群聊白名单兜底：非白名单群直接丢弃
@@ -662,7 +662,7 @@ async def napcat_listen(gateway, pipeline, mode: str = "mixed"):
                         continue
                     if handle_group_switch(pipeline, gateway, group_id, gid_str, user_id, raw_msg):
                         continue
-                    if not pipeline.group_active_state.get(gid_str, True):
+                    if not pipeline.group_active_state.get(gid_str, default_group_active()):
                         continue
 
                     sender_info = data.get("sender", {})

@@ -226,6 +226,7 @@ async def test_catchup_forces_reply_in_prepare_batch():
     from config import cfg
 
     gid = str(cfg.TARGET_GROUPS[0]) if cfg.TARGET_GROUPS else "12345"
+    pipeline.group_active_state[gid] = True  # 2026-11-16 起缺省=休眠
     pipeline.yuki.pop_buffer = MagicMock(return_value=[{
         "name": "系统", "content": "【你刚才在独处】…", "is_catchup": True,
     }])

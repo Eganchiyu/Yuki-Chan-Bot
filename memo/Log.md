@@ -772,3 +772,10 @@
 - 离线演练 runner：3 任务真并发完成、启动前取消跳过、运行中取消 2.0s 内 SIGKILL 且无残留进程。
 - 状态：代码已提交（3c4e9a3）。**待机主**：`sudo systemctl restart yuki-maid-runner`（宿主侧改动生效）+ 重启容器（Yuki 进程加载新代码），本次会话内无 sudo 密码未执行。
 - 备注：工作树里另有上个 session 未提交的「心情高涨连发护栏」改动（config.py / engine_decision.py / reply_watch.py / session_pipeline.py / autonomous/* / brain.py / prompts.py / test_pipeline.py），本次未触碰、未提交。
+
+## 2026-11-16 群开关状态 / 重启提示错群 排查（只诊断，未改码）
+- 映射检查：全程 `str(group_id)` 为键，读写同一份 `data/group_state.json`，无 id 错位；但该文件是「部分映射」，`group_active_state.get(gid, True)` 缺条目默认**活跃**。
+- 确证异常 1：`logs/yuki_20261115_160232.log` 14:11:42 有 `[Switch] 1034986009 群应答开关 -> 休眠`，但 `data/group_state.json` 里没有 1034986009 条目（只剩 1057020972=true / 1059307259=false / 920735739=false，等于 16:02 重启后那三次切换），所以该群重启后按默认 True 复活。当前 `/api/status` 的 active_chats 就是 1034986009。代码路径（`_set_group_active`→`save_group_state` 全量 dump、无 chdir/reload/二次重建 dict）逐条看过，没有会丢键的写入点，成因无法从日志复现（最可能是某次落盘时进程内字典已缺该键）。
+- 确证异常 2：`⚙️ Yuki 进程重启中…` 现在发到 1034986009。链路：`deploy/supervisor.notify_restart()` → POST /notify → `main._send_restart_notice()`，优先 `yuki.maid_active_chats`，为空则回落 `_last_maid_chat()` = `tasks/dsh/` 最近一次 request.json 的 chat_id（现为 20261116_085703_001 → 1034986009）。
+- 开机自动初始化只有 `main.warmup_groups()`：preload 历史 + 给 TARGET_GROUPS 打 last_message_time/精力/欲望；**不动 group_active_state，也没有全群开启**。破冰巡检遍历全部 TARGET_GROUPS 不过休眠筛，但管线入口 `mode=="group" and not group_active_state.get(...)` 会拦掉。
+- 当前有效状态：活跃 1057020972 / 1034986009 / 495881825 / 818038143 / 742134223 / 1121099281（后四个无条目=默认活跃）；休眠 920735739 / 1059307259。

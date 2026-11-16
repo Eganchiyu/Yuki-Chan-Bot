@@ -16,6 +16,7 @@ from core.recall_cache import recall_cache_store
 from core.reply_format import clean_visible_reply
 from core.reply_watch import auto_subscribe, is_human_incoming, resolve, subscribe
 from core.toolchain import SKIP_REPLY_MARKER
+from init import default_group_active
 from modules.debug.context_snapshot import PIPELINE_STAGES, context_snapshot_store
 from modules.vision.prefetch import prefetch_images, resolve_image
 from utils.logger import get_logger
@@ -282,7 +283,7 @@ class SessionPipeline:
                     # 获取锁后进行空载检查
                     if not self.yuki.message_buffer.get(chat_id_str) and not force_reply and not ice_break:
                         return
-                    if mode == "group" and not self.group_active_state.get(chat_id_str, True):
+                    if mode == "group" and not self.group_active_state.get(chat_id_str, default_group_active()):
                         return
 
                     # 执行唯一的一次流转，不使用 while True 死循环
@@ -361,7 +362,7 @@ class SessionPipeline:
             await self.yuki.boost_activity(chat_id)
             return context
 
-        if mode == "group" and not self.group_active_state.get(str(chat_id), True):
+        if mode == "group" and not self.group_active_state.get(str(chat_id), default_group_active()):
             self.yuki.pop_buffer(chat_id)
             context["stop"] = True
             return context

@@ -18,6 +18,36 @@ def load_group_state():
     return {}
 
 
+def default_group_active() -> bool:
+    """群应答开关的缺省值：**休眠**。
+
+    历史教训（2026-11-16）：以前缺省 True，`data/group_state.json` 只要丢掉一个
+    键，那个被 `/关闭` 过的群就会在重启后复活。缺省改成休眠后，任何丢失都只会
+    变成「安静」，不会变成「乱说话」。
+    """
+    return False
+
+
+def ensure_group_state(state: dict, groups) -> dict:
+    """把目标群全量补齐并落盘：缺条目按休眠处理。
+
+    `group_state.json` 是「部分映射」（只有被显式切过的群才有键），这里在启动时
+    把 `TARGET_GROUPS` 全部写进去，既固化缺省值，也让文件本身可读、可人工核对。
+    只在内容有变化时落盘。
+    """
+    state = dict(state or {})
+    changed = False
+    for gid in groups or []:
+        key = str(gid)
+        if key not in state:
+            state[key] = default_group_active()
+            changed = True
+    if changed:
+        save_group_state(state)
+        logger.info(f"[System] 群开关状态已补齐到 {len(state)} 个群（缺省=休眠）")
+    return state
+
+
 def save_group_state(state):
     try:
         os.makedirs("data", exist_ok=True)

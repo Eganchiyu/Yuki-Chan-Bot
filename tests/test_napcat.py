@@ -182,6 +182,8 @@ async def test_poke_enqueues_only_when_target_is_self():
     gateway = AsyncMock()
     gateway.get_member_info = AsyncMock(return_value={"card": "小明"})
     pipeline, enqueued = _make_pipeline()
+    # 2026-11-16 起群应答开关缺省=休眠，这里显式打开本群
+    pipeline.group_active_state[str(group_id)] = True
 
     await listen_main.handle_poke_event(
         gateway, pipeline, {"group_id": group_id, "user_id": 123456, "target_id": cfg.SELF_QQ}, "mixed"

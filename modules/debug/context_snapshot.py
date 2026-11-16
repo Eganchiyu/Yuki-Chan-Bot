@@ -6,6 +6,7 @@ import re
 import threading
 import uuid
 from collections import Counter, defaultdict, deque
+from init import default_group_active
 from typing import Any, Optional
 
 
@@ -386,7 +387,7 @@ class ContextSnapshotStore:
                 "activity_pct": round(min(100.0, activity_val * 10.0), 1),
                 "desire": desire_val,
                 "ice_break_fails": ice_fails,
-                "enabled": bool(group_state.get(cid, True)) if isinstance(group_state, dict) else True,
+                "enabled": bool(group_state.get(cid, default_group_active())) if isinstance(group_state, dict) else default_group_active(),
             })
 
         try:

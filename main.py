@@ -14,7 +14,7 @@ from core.prompts import sync_system_prompts
 from core.modes import ModeAwarePipeline, router as mode_router
 from modules.autonomous import init_data_dir
 from modules.autonomous.coordinator import AutonomousCoordinator
-from init import load_group_state
+from init import ensure_group_state, load_group_state
 from modules.QQNapcatListen.listen_main import napcat_listen
 from modules.vision.processor import MemeProcessor
 from network.napcat import NapCatGateway
@@ -23,7 +23,7 @@ from utils.logger import get_logger, setup_logging
 setup_logging(debug=cfg.DEBUG)
 logger = get_logger("main")
 
-group_active_state = load_group_state()
+group_active_state = None  # 启动时由 ensure_group_state() 全量补齐（缺省=休眠）
 session_pipeline = None
 
 
@@ -140,57 +140,29 @@ def start_context_debug_webui_if_enabled():
         logger.error(f"[ContextDebug] WebUI 启动失败: {exc}")
 
 
-def _last_maid_chat():
-    """从 tasks/dsh 里找最近一次委托的 (chat_id, mode)，作为通知的兜底目标。"""
-    import glob
-
-    base = os.path.join(os.path.dirname(os.path.abspath(__file__)), "tasks", "dsh")
-    try:
-        dirs = [d for d in glob.glob(os.path.join(base, "*")) if os.path.isdir(d)]
-        dirs.sort(key=lambda d: os.path.getmtime(os.path.join(d, "request.json"))
-                  if os.path.exists(os.path.join(d, "request.json")) else 0, reverse=True)
-    except Exception:
-        return None
-    for d in dirs[:5]:
-        try:
-            with open(os.path.join(d, "request.json"), encoding="utf-8") as f:
-                req = json.load(f)
-        except Exception:
-            continue
-        chat_id = str(req.get("chat_id") or "").strip()
-        if chat_id:
-            return chat_id, str(req.get("mode") or "group")
-    return None
-
-
 async def _send_restart_notice(payload) -> tuple:
-    """容器内收到「即将重启」通知：往正在等结果的小女仆会话里喊一声。
+    """容器内收到「即将重启」通知：私聊告诉主人一声。
 
     为什么由容器自己发：supervisor 在宿主机，手里只有 HTTP 探针端口，
-    没有 NapCat 的 WS 连接。借 Yuki 自己的连接发，消息才能落到正确的会话。
+    没有 NapCat 的 WS 连接。借 Yuki 自己的连接发，消息才能落到达。
+
+    目标固定是主人私聊（2026-11-16 改）：旧逻辑走「活跃小女仆会话 → 最近一次
+    委托的群」的回落链，重启提示会莫名其妙跑到某个群（案例：1034986009）。
+    重启只有主人能做，通知也只该去找主人。
     """
     text = str(payload.get("text") or "⚙️ Yuki 进程重启中，稍等十几秒…")
-    chats = dict(getattr(components.get("yuki"), "maid_active_chats", {}) or {})
-    if not chats:
-        # 没有正在跑的任务时（手动重启、或任务刚好做完），退回到最近一次委托的会话：
-        # 重启这件事本身也需要让人知道，不能因为队列空了就闷声不响。
-        fallback = _last_maid_chat()
-        if fallback:
-            chats = {fallback[0]: fallback[1]}
     sender = getattr(components.get("engine"), "sender", None)
-    if not chats:
-        return True, "没有活跃或近期的小女仆会话，跳过通知"
     if sender is None:
         return False, "sender 不可用"
-    sent, failed = 0, 0
-    for chat_id, mode in chats.items():
-        try:
-            await sender.send(str(chat_id), text, mode=mode or "group")
-            sent += 1
-        except Exception as e:
-            failed += 1
-            logger.warning(f"[System] 重启通知发送失败 chat={chat_id}: {e}")
-    return (sent > 0 or failed == 0), f"已通知 {sent} 个会话，失败 {failed}"
+    master = str(getattr(cfg.target, "qq", "") or "").strip()
+    if not master:
+        return False, "未配置主人 QQ（target.qq）"
+    try:
+        await sender.send(master, text, mode="private")
+    except Exception as e:
+        logger.warning(f"[System] 重启通知发送失败 master={master}: {e}")
+        return False, f"私聊主人失败: {e}"
+    return True, f"已私聊通知主人 {master}"
 
 
 def _install_restart_notifier() -> None:
@@ -322,6 +294,7 @@ if __name__ == "__main__":
 
     try:
         components = initialize_components()
+        group_active_state = ensure_group_state(load_group_state(), cfg.TARGET_GROUPS)
         session_pipeline = ModeAwarePipeline(components, group_active_state, mode_router)
         components["engine"].process_callback = main_process
         init_data_dir()
