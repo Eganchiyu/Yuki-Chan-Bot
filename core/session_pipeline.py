@@ -10,6 +10,7 @@ from typing import Any
 
 from config import cfg
 from core.brain import YukiState
+from utils import BASE_DIR
 from core.focus import focus_manager
 from core.history_filter import dialogue_length
 from core.recall_cache import recall_cache_store
@@ -37,6 +38,10 @@ _TEXT_SENT_SLEEP = 0.5         # 文本已发送后的节奏延迟
 _MEME_RANDOM_KEEP_PROB = 0.6   # 非最后一个表情包保留概率
 
 _ALWAYS_REPLY_MODES = frozenset({"private", "master_private"})
+
+# 彩蛋：模型补全被内容安全过滤（正文恒为 "Filtered"）时，不发这两个字，改发这张表情包
+_FILTERED_EGG_IMAGE = os.path.join(BASE_DIR, "output", "reference", "filtered.png")
+_FILTERED_EGG_CQ = f"[CQ:image,file=file:///{os.path.abspath(_FILTERED_EGG_IMAGE)},sub_type=1]"
 _REPLYABLE_MODES = frozenset({"group", "private", "master_private"})
 
 
@@ -806,6 +811,18 @@ class SessionPipeline:
         if voice:
             await self.sender.send(chat_id, voice, mode=send_mode)
             logger.info("[Pipeline] 发送语音完成")
+            return context
+
+        # 彩蛋：被内容安全过滤的回复（正文恒为 "Filtered"）直接删掉，替换成表情包
+        if answer_text.strip() == "Filtered":
+            if os.path.isfile(_FILTERED_EGG_IMAGE):
+                logger.info(f"[Pipeline] {cfg.ROBOT_NAME.title()} 回复被过滤，改发 filtered 表情包")
+                await self.sender.send(chat_id, _FILTERED_EGG_CQ, mode=send_mode)
+            else:
+                logger.warning(
+                    f"[Pipeline] filtered 彩蛋图片缺失，回落发送原文本: {_FILTERED_EGG_IMAGE}"
+                )
+                await self.sender.send(chat_id, "Filtered", mode=send_mode)
             return context
 
         # deepseek 等模型有时返回空字符串，拦截并发送占位提示，避免静默无回复

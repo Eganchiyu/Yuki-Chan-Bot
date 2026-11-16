@@ -804,3 +804,4 @@
 - 改动：`core/focus/domains/art.py` 新增 `_asset_label()`/`_build_reference_legend()`；`art_draw` 拼参考图时同步记录 `ref_labels`（资产用 `key（owner）：description`，临时图用占位标签），**≥2 张**时把「【参考图对应关系（务必遵守）】image N = …」+「特征不得互换融合、prompt 与参考图冲突时以参考图为准」前置到传给生图模型的 prompt；单图不注入。`job.prompt`/失败汇报仍是模型原文。导演指南第 3 条补「多参考图必须写明 image 1/2 对应谁」。
 - 测试：新增 `test_art_draw_injects_reference_legend_for_multiple_assets`（多图注入、单图不注入、job.prompt 保持原文）；容器内 `pytest tests -q` = **232 passed**。
 - 状态：代码已提交，**待重启容器生效**。
+2026-11-16 12:40 彩蛋：模型补全为 "Filtered"（content_filter）时不发这两个字，改发 output/reference/filtered.png 表情包（CQ sub_type=1）；图片缺失则回落发送 "Filtered"。改动仅 core/session_pipeline.py send_reply 入口。测试 232 passed。
