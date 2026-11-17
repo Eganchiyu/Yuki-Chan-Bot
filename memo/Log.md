@@ -840,3 +840,14 @@
 - `core/focus/domains/art.py::art_gacha_tool(context)` 只剩 context 入参，`content` 就是那句 prompt（`data` 仅留 `source`/`prompt`）；`core/tools/tools.py` 的 spec `parameters.properties` 清空，描述改成「无参数，抽到的是素材，改写成完整场景再 art_draw」。
 - **未动**：`art_draw` 参数、`art_start`/`art_finish` 外壳、`art_asset` 全部保持原样（机主明确要求）。
 - 测试：`test_art_gacha_returns_single_random_prompt`（无参调用、不出图、回落内置池、覆盖 slot/blueprint）与 `test_art_gacha_uses_zako_corpus_when_enabled`（语料开启吐标签串、关掉总开关回落）替换旧 lock/blueprint_id 用例；`pytest tests -q` = **240 passed**，`verify.sh` = ALL_GATES_PASSED。
+- 2026-11-17 11:10:02 将 configs/config.yaml 主模型 gemini-3.1-flash-lite → gemini-3.7-flash；重启后已生效（/查询显示主线 gemini-3.7-flash）。查 logs/yuki_20261117_110819.log 无 [LLM] 主线路失效/熔断/降级记录，仅 10:29 一次 HTTP 会话重建（TimeoutError 瞬时）。00:47 与 10:01 的 /切换 对调属运行时内存态，已随重启复位。
+- 2026-11-17 14:59:59 换主模型通道：configs/config.yaml 的 api.llm_api_key 换成新 rua.chat Key（sk-q4lV…），model.llm 改为 `[按次]gemini-3.7-flash`。原因：新 Key 渠道无裸名 gemini-3.7-flash（model_not_found），只有按次计费版，实测可用。base_url 仍 https://api.rua.chat/v1（代码会拼 /chat/completions）。容器内 cfg 已能读到新值，运行进程需重启生效。
+- 2026-11-17 18:57 新增规划文档 `docs/frostcore-architecture.md`：整理 Yuki 核心设计哲学，并沉淀独立开源微内核 SDK `FrostCore` 的架构蓝图、技术规范（`FrostSeed` 单实例锁、`F(TurnInput)->TurnOutput`、`FocusPort` 统一出入口、默认常数 1.0/自定义生物钟曲线、水位线两阶段无长锁 `DiaryEngine`、可自定义消息流中间件）与 6 条扩展公约。仅文档沉淀，未改动生产代码。
+- 2026-11-17 19:42 对齐修订 `docs/frostcore-architecture.md` 并在同级目录 `/home/asumi/FrostCore` 完成 Clean-Room 独立仓库 M0–M2 MVP 开发（3 个阶段 commit：`7df88ed` / `9c7dc39` / `02c4c3b`）。核心仅依赖 `pydantic` + `aiohttp`，实现显式 DI 多 Bot 装配（无全局单例）、`FrostSeed` 双层防冲突锁（进程内路径守卫 + `fcntl.flock` + `instance_lease`）与 `seed.sqlite` + `history/<chat_id>.jsonl` 混合存储、CJK-friendly FTS5 召回、两阶段水位线 `DiaryEngine`、`FocusPort`/`ModeRouter`/`TurnEvaluator(F)`、`ConstantClock(1.0)`/`GaussianClockPreset`、`OpenAICompatLLMClient`、`SessionPipeline`、`FrostApp`、`EventSink`/`HealthProbeServer`/`FROSTCORE_DRY_RUN` 及 `examples/01~03` + `examples/deploy/`；`/home/asumi/FrostCore` 下 34 项离线测试、`compileall`、`mypy --strict`（46 个源文件）与 `ruff` 全部通过，Yuki 生产代码未作任何改动。
+
+## 2026-11-17 SFT 负反馈与图片归档
+- `core/sft_logger.py` 将 `❔`/`10068` 与 `💦`/`128166` 映射为 `bad`，并补充单测；以后主人贴这两类表情会作为负样本记录。
+- `core/session_pipeline.py` 在 SFT 轨迹落盘时归档本轮可用原生图片；`core/sft_logger.py` 写入 `image_assets`（相对路径、SHA-256、字节数、MIME、图片索引），图片保存于 `data/sft/images/<turn_id>/`，原有 `input_messages` 仍脱敏 base64。
+- `docs/finetune_label.md` 已写入 2026-11-17 采集质量快照、筛选建议、负样本定义及图片迁移说明。
+- 容器内 `pytest tests/test_sft_logger.py -q`：7 passed；随后 `pytest tests -q`：242 passed；宿主 compileall 与 `git diff --check` 通过。代码已提交 `22f739f`，容器已重启并健康。
+- 重启前旧进程将 4 条 `10068/128166` 事件记为 `reaction`，已按只追加原则补写 4 条 `bad` 纠正事件；当前有效标签为 `perfect` 81、`bad` 4。
