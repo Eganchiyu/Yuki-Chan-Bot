@@ -10,7 +10,9 @@
 from __future__ import annotations
 
 import datetime
+import hashlib
 import json
+import mimetypes
 import os
 import threading
 import uuid
@@ -41,6 +43,10 @@ NEGATIVE_EMOJI_IDS = frozenset({
     "77",     # QQ 踩
     "128078", # Unicode 👎
     "👎",
+    "❔",      # 主人疑惑/不认可
+    "10068",   # Unicode ❔
+    "💦",      # 主人尴尬/出戏/不满意
+    "128166",  # Unicode 💦
 })
 
 
@@ -120,6 +126,52 @@ class SFTTraceLogger:
     def labels_path(self) -> str:
         return os.path.join(self.resolve_dir(), "labels.jsonl")
 
+    def image_dir(self, turn_id: str) -> str:
+        safe_id = "".join(
+            char if char.isalnum() or char in "-_" else "_"
+            for char in str(turn_id)
+        ) or "unknown"
+        return os.path.join(self.resolve_dir(), "images", safe_id)
+
+    def archive_images(self, turn_id: str, attachments: list[Any], image_store: Any) -> list[dict[str, Any]]:
+        """复制本轮可用的原生图片附件，并返回可随轨迹迁移的元数据。"""
+        if not attachments or not image_store:
+            return []
+        archived = []
+        target_dir = self.image_dir(turn_id)
+        for position, attachment in enumerate(attachments, 1):
+            if not isinstance(attachment, dict):
+                continue
+            try:
+                source = image_store.resolve_attachment_path(attachment)
+                if not source or not os.path.isfile(source):
+                    continue
+                with open(source, "rb") as src:
+                    payload = src.read()
+                digest = hashlib.sha256(payload).hexdigest()
+                ext = os.path.splitext(source)[1].lower() or ".bin"
+                if not ext.startswith("."):
+                    ext = ".bin"
+                os.makedirs(target_dir, exist_ok=True)
+                filename = f"{position:03d}-{digest[:16]}{ext}"
+                destination = os.path.join(target_dir, filename)
+                if not os.path.exists(destination):
+                    temp = destination + ".tmp"
+                    with open(temp, "wb") as dst:
+                        dst.write(payload)
+                    os.replace(temp, destination)
+                relpath = os.path.relpath(destination, self.resolve_dir())
+                archived.append({
+                    "path": relpath,
+                    "sha256": digest,
+                    "bytes": len(payload),
+                    "mime": mimetypes.guess_type(source)[0] or "application/octet-stream",
+                    "source_index": str(attachment.get("index") or ""),
+                })
+            except Exception as exc:
+                logger.warning(f"[SFT] 归档图片失败: {exc}")
+        return archived
+
     def _ensure_index_loaded_locked(self) -> None:
         cur_dir = self.resolve_dir()
         if self._loaded_index_dir == cur_dir:
@@ -180,6 +232,7 @@ class SFTTraceLogger:
             "turn_messages": strip_media_and_sanitize(data.get("turn_messages") or []),
             "tools_used": list(data.get("tools_used") or []),
             "tool_trace": strip_media_and_sanitize(data.get("tool_trace") or []),
+            "image_assets": list(data.get("image_assets") or []),
             "answer_raw": sanitize_value(data.get("answer_raw") or ""),
             "answer_text": sanitize_value(data.get("answer_text") or ""),
             "sent_message_ids": sent_ids,

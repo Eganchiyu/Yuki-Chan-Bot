@@ -720,6 +720,33 @@ class SessionPipeline:
                     if nm and nm not in senders:
                         senders.append(nm)
             outcome = outcome_override or capture.get("outcome") or "reply"
+            image_assets = []
+            archive_images = getattr(self.sft_logger, "archive_images", None)
+            if callable(archive_images):
+                image_attachments = []
+                seen_attachments = set()
+                for message in context.get("session") or []:
+                    if not isinstance(message, dict):
+                        continue
+                    for attachment in message.get("image_attachments") or []:
+                        if not isinstance(attachment, dict):
+                            continue
+                        key = (str(attachment.get("index") or ""), str(attachment.get("id") or ""))
+                        if key not in seen_attachments:
+                            seen_attachments.add(key)
+                            image_attachments.append(attachment)
+                for attachment in context.get("native_images") or []:
+                    if not isinstance(attachment, dict):
+                        continue
+                    key = (str(attachment.get("index") or ""), str(attachment.get("id") or ""))
+                    if key not in seen_attachments:
+                        seen_attachments.add(key)
+                        image_attachments.append(attachment)
+                image_assets = archive_images(
+                    context.get("debug_snapshot_id") or context.get("turn_id") or "unknown",
+                    image_attachments,
+                    self.image_store,
+                )
             record = self.sft_logger.record_turn({
                 "turn_id": context.get("debug_snapshot_id") or context.get("turn_id"),
                 "chat_id": context.get("chat_id", ""),
@@ -735,6 +762,7 @@ class SessionPipeline:
                 "turn_messages": capture.get("turn_messages") or [],
                 "tools_used": capture.get("tools_used") or [],
                 "tool_trace": capture.get("tool_trace") or [],
+                "image_assets": image_assets,
                 "answer_raw": answer_raw,
                 "answer_text": answer_text,
                 "sent_message_ids": list(context.get("sent_message_ids") or []),

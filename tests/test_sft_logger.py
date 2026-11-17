@@ -10,8 +10,15 @@ import pytest
 
 from core.engine.engine import YukiEngine
 from core.session_pipeline import SessionPipeline
-from core.sft_logger import SFTTraceLogger, strip_media_and_sanitize
+from core.sft_logger import SFTTraceLogger, classify_emoji_label, strip_media_and_sanitize
 from core.toolchain import SKIP_REPLY_MARKER
+
+
+def test_negative_feedback_emojis_are_bad():
+    assert classify_emoji_label("❔") == "bad"
+    assert classify_emoji_label("10068") == "bad"
+    assert classify_emoji_label("💦") == "bad"
+    assert classify_emoji_label("128166") == "bad"
 
 
 def test_strip_media_and_sanitize_redacts_secrets_and_base64():
@@ -30,6 +37,24 @@ def test_strip_media_and_sanitize_redacts_secrets_and_base64():
     assert "sk-secret" not in cleaned[0]["content"]
     assert "tok_abcdef" not in cleaned[1]["content"][0]["text"]
     assert cleaned[1]["content"][1]["image_url"]["url"] == "<image_omitted>"
+
+
+def test_archive_images_writes_metadata(tmp_path):
+    from modules.vision.image_store import ImageStore
+
+    store = ImageStore(str(tmp_path / "source"))
+    idx = store.register(b"image-bytes", ext=".png")
+    attachment = store.attachment(idx)
+    logger = SFTTraceLogger(base_dir=str(tmp_path / "sft"))
+    assets = logger.archive_images("turn-image", [attachment], store)
+
+    assert len(assets) == 1
+    asset = assets[0]
+    assert asset["path"].startswith("images/turn-image/")
+    assert asset["bytes"] == 11
+    assert len(asset["sha256"]) == 64
+    assert asset["mime"] == "image/png"
+    assert (tmp_path / "sft" / asset["path"]).read_bytes() == b"image-bytes"
 
 
 def test_sft_logger_writes_monthly_jsonl_and_handles_errors(tmp_path):

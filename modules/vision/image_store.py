@@ -65,6 +65,16 @@ class ImageStore:
         entry = self._index.get(idx)
         return entry["path"] if entry else None
 
+    def resolve_attachment_path(self, attachment: dict) -> str | None:
+        """按索引和唯一 ID 解析附件，避免短索引复用串图。"""
+        if not isinstance(attachment, dict):
+            return None
+        with self._lock:
+            entry = self._index.get(str(attachment.get("index") or ""))
+            if not entry or entry.get("id") != attachment.get("id"):
+                return None
+            return entry.get("path")
+
     def attachment(self, idx: str) -> dict | None:
         """生成可持久化的附件引用，不把文件内容写入历史。"""
         with self._lock:

@@ -121,6 +121,7 @@ data/sft/
 | `input_messages` | `list[dict]` | 送给模型的完整初始消息列表（已把 base64 图片替换为 `<image_omitted>` 并脱敏密钥） |
 | `turn_messages` | `list[dict]` | 轮内工具链产生的中间消息（`assistant` `tool_calls` + `tool` 返回 + 合并消息） |
 | `tools_used` / `tool_trace` | `list` | 本轮使用的工具名列表与耗时/参数摘要 |
+| `image_assets` | `list[dict]` | 本轮可用原生图片附件的归档信息：SFT 目录相对路径、SHA-256、字节数、MIME、原图片索引；图片实体位于 `data/sft/images/<turn_id>/`，是否实际进入某次模型请求仍以 `input_messages` 的图片块和模型路由为准 |
 | `answer_raw` | `str` | 原始回复（**保留 `<layout>...</layout>` 与 `[MEME:...]`**；`skip` 时为空串） |
 | `answer_text` | `str` | 剥离 `<layout>` 后的可见回复 |
 | `sent_message_ids` | `list[str]` | 本轮发往 QQ 的所有分段气泡 `message_id` |
@@ -132,9 +133,11 @@ data/sft/
 `classify_emoji_label(emoji_id, is_add)` 默认映射：
 * `is_add == False` → `removed`
 * **正向 `perfect`**：`76`（QQ 赞）、`66`（QQ 爱心 ❤️）、`201`（点赞）、`319`（比心）、`128077`（👍）、`10084` / `2764`（❤️）、`👍`、`❤️`、`❤`、`💖`、`✨`
-* **负向 `bad`**：`77`（QQ 踩）、`128078`（👎）、`👎`
+* **负向 `bad`**：`77`（QQ 踩）、`128078`（👎）、`👎`、`❔` / `10068`（疑惑/不认可）、`💦` / `128166`（尴尬/出戏/不满意）。
 * **其他表情** → `reaction`（保留原 `emoji_id` 供后续筛选）
 * 支持环境变量扩展：`YUKI_SFT_POSITIVE_EMOJIS`、`YUKI_SFT_NEGATIVE_EMOJIS`（逗号分隔）。
+
+> 当前约定：QQ 没有“踩”时，主人以后用 `❔` 或 `💦` 标记负样本；两者直接记为 `bad`，不再归入 `reaction`。
 
 ---
 
@@ -189,3 +192,23 @@ for tid, lbl in list(final_label.items())[-5:]:
 1. 从高价值人工打标样本（`perfect`）+ 现有 [data/chat_history.json](file:///home/asumi/Yuki/data/chat_history.json) 原生 `<layout>` 样本出发，作为风格锚点；
 2. 对 [data/yuki_log.txt](file:///home/asumi/Yuki/data/yuki_log.txt) 清洗出的多轮对话片段，用上述锚点做 Few-Shot `<layout>` 逆向补全；
 3. 利用 [yuki_memory/chroma.sqlite3](file:///home/asumi/Yuki/yuki_memory/chroma.sqlite3) 与 [data/shot_memory/](file:///home/asumi/Yuki/data/shot_memory) 提供的真实梗做场景扩增，并与本系统攒出的真实带标 Block 合并微调。
+
+### 4.4 当前采集快照与质量诊断（2026-11-17）
+
+本次巡检基于 `data/sft/` 当前文件：
+
+* **规模**：259 轮轨迹，其中 `reply` 252、`skip` 7；70 条打标事件，撤回 1 条后有 67 轮有效标注，占轨迹 **25.9%**。
+* **标签**：有效标注全部为 `perfect`，当前没有 `bad`；历史上没有 QQ“踩”并不代表负样本缺失，后续用 `❔` / `💦` 记录 `bad`。现有标签均来自主人贴表情，且 56/67 条集中在群 `1057020972`，存在群分布偏差。
+* **链路完整性**：70 条标签全部命中 `turn_id`，494 条 `message_id` 索引与轨迹中的 494 条出站消息一一对应，无孤立或重复索引。
+* **正样本内容**：67 条有效样本均有可见回复；平均回复约 44.6 字，57 条位于 31--60 字；64 条带 `[MEME:]`，46 条保留 `<layout>`，无完全重复回复，适合作为人格语气与布局风格 SFT 样本。
+* **覆盖限制**：有效标注中只有 8 条使用工具；图片相关输入约 7 条，不能据此覆盖通用工具能力或视觉能力。
+* **视觉完整性**：原先 `input_messages` 中的 base64 会被替换为 `<image_omitted>`。现已新增 `image_assets`：归档本轮可用的原生图片附件，保存到 `data/sft/images/<turn_id>/`，记录相对路径、SHA-256、大小和 MIME；图片不再因脱敏而从训练块中永久丢失。是否实际进入某次模型请求仍需结合 `input_messages` 图片块和模型路由判断。此前已经落盘的历史轨迹没有图片实体，需要按 `[image_omitted]` / 图片标记筛选或放弃视觉训练。
+* **异常与人工复核**：全量轨迹中曾发现 8 条可见回复为空、1 条疑似只有 `<layout>`，以及 1 条需要单独检查安全语境的“天台/风大”样本；这些不在当前 67 条有效正样本中（安全样本除外，仍建议人工复核）。另有 208 条 `tool_trace` 非空但 `tools_used` 为空，导出时应以 `tool_trace` 是否有实际调用为准，不要只依赖 `tools_used`。
+
+后续筛选建议：
+
+1. `perfect` 作为候选 SFT chosen；`bad`（包括 `❔` / `💦`）排除出 SFT 正样本，进入 DPO rejected 或人工复核队列。
+2. 优先保留有完整 `input_messages`、非空 `answer_text`、成对 `<layout>`、可解析 `[MEME:...]` 的样本。
+3. 含 `<image_omitted>` 的旧样本不要直接当视觉训练样本；新样本检查 `image_assets` 文件存在且 SHA-256 一致后再纳入多模态导出。
+4. 含图片、`【等待超时】`、安全暗示、强工具依赖或 `outcome != reply` 的样本分别打上筛选标记，不与普通人格 SFT 混训。
+5. 训练前按群、模型、场景去重/配额，避免 `1057020972` 群和单一 `gemini-3.7-flash` 风格主导数据集。
