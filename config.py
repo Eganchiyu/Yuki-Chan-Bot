@@ -532,6 +532,61 @@ class ToolsConfig:
         comment="艺术创作聚焦模式下单轮对话允许的最大工具调用轮次",
         section="tools"
     )
+    browser_cdp_url: str = config_field(
+        "http://127.0.0.1:9222",
+        comment="宿主机 Chrome CDP 调试地址（--remote-debugging-port=9222）",
+        section="tools"
+    )
+    browser_max_nodes: int = config_field(
+        24,
+        comment="浏览器交互树最多返回的控件数量",
+        section="tools"
+    )
+    browser_bar_quota: int = config_field(
+        5,
+        comment="Top 控件中按比例预留给顶栏/侧栏/底栏重要控件的配额",
+        section="tools"
+    )
+    browser_wait_timeout: float = config_field(
+        5.0,
+        comment="浏览器每次操作后等待页面加载与元素稳定的最大秒数",
+        section="tools"
+    )
+    browser_settle_ms: int = config_field(
+        280,
+        comment="页面 DOM 与网络静默判定窗口（毫秒）",
+        section="tools"
+    )
+    browser_screenshot_max_width: int = config_field(
+        1280,
+        comment="浏览器默认轻量截图宽度（像素，约 720p，不做高斯模糊）",
+        section="tools"
+    )
+    browser_screenshot_quality: int = config_field(
+        55,
+        comment="浏览器默认轻量截图 JPEG 质量（1-100）",
+        section="tools"
+    )
+    browser_screenshot_high_width: int = config_field(
+        1600,
+        comment="AI 主动调用高清截图时的最大宽度（像素）",
+        section="tools"
+    )
+    browser_screenshot_high_quality: int = config_field(
+        88,
+        comment="AI 主动调用高清截图的 JPEG 质量（1-100）",
+        section="tools"
+    )
+    browser_focus_idle_turns: int = config_field(
+        5,
+        comment="浏览器聚焦模式连续未操作浏览器的轮数上限（大于该轮数自动退出并注入总结）",
+        section="tools"
+    )
+    browser_focus_max_rounds: int = config_field(
+        60,
+        comment="浏览器聚焦模式下单轮对话允许的最大工具调用轮次",
+        section="tools"
+    )
     art_gacha_zako_enabled: bool = config_field(
         True,
         comment="提示词抽卡是否启用外部语料库 data/zako（Zako-Prompt-Tools，缺失时自动回落原有抽卡）",

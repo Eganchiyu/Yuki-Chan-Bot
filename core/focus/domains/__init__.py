@@ -8,6 +8,11 @@ from core.focus.domains.art import (
     art_gacha_tool,
     art_start_tool,
 )
+from core.focus.domains.browser import (
+    BROWSER,
+    browser_finish_tool,
+    browser_start_tool,
+)
 from core.focus.domains.phone import PHONE, phone_finish_tool, phone_start_tool
 
 __all__ = [
@@ -20,4 +25,7 @@ __all__ = [
     "art_gacha_tool",
     "art_asset_tool",
     "art_finish_tool",
+    "BROWSER",
+    "browser_start_tool",
+    "browser_finish_tool",
 ]

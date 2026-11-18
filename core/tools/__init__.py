@@ -7,8 +7,10 @@ from core.focus.domains.art import (
     art_gacha_tool,
     art_start_tool,
 )
+from core.focus.domains.browser import browser_finish_tool, browser_start_tool
 from core.phone_focus import phone_finish_tool, phone_start_tool
 from .tools import TOOL_HANDLERS, TOOL_SCHEMAS, TOOL_SPECS
+from .tools_browser import browser_action_tool
 from .tools_diary import search_diary_tool
 from .tools_maid import delegate_to_maid_tool, stop_maid_tool
 from .tools_media import download_file_tool, generate_image_tool
@@ -42,6 +44,9 @@ __all__ = [
     "phone_action_tool",
     "phone_macro_tool",
     "phone_finish_tool",
+    "browser_start_tool",
+    "browser_action_tool",
+    "browser_finish_tool",
     "parse_rich_message_tool",
     "skip_reply_tool",
     "capture_group_snapshot_tool",

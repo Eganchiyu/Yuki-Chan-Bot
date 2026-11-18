@@ -7,8 +7,11 @@ from core.focus.domains.art import (
     art_gacha_tool,
     art_start_tool,
 )
+from core.focus.domains.browser import browser_finish_tool, browser_start_tool
 from core.phone_focus import phone_finish_tool, phone_start_tool
 from core.toolchain import MAID_GOAL_BREVITY_HINT, ToolSpec
+
+from .tools_browser import browser_action_tool
 
 from .tools_diary import search_diary_tool
 from .tools_maid import delegate_to_maid_tool, stop_maid_tool
@@ -544,6 +547,89 @@ TOOL_SPECS = [
             "required": ["summary"],
         },
         handler=art_finish_tool,
+    ),
+    ToolSpec(
+        name="browser_start",
+        description=(
+            "打开或接管宿主机 Chrome 浏览器进入浏览器聚焦模式（保留现有登录态）。"
+            "进入后返回首屏 720p 标注截图、页面文本和 Top 24 降序交互控件树，并展开 browser_action / browser_finish。"
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "goal": {
+                    "type": "string",
+                    "description": "这次逛网页或操作浏览器想做什么（可选）",
+                },
+                "url": {
+                    "type": "string",
+                    "description": "可选，直接要打开的网页 URL；留空则直接查看当前活动标签页",
+                },
+            },
+        },
+        handler=browser_start_tool,
+    ),
+    ToolSpec(
+        name="browser_action",
+        description=(
+            "在浏览器聚焦模式下查看或操控网页（自动等待页面加载与元素稳定后再抽取控件树）。"
+            "返回去重后的 [页面文本] 与按重要程度降序编好号的 Top 24 主视觉控件（大控件优先，含按比例保留的 [Bar] 控件）。"
+            "控件明确时默认跳过截图以省流提速；控件不明确时自动附 720p 大号红框图，你也可随时传 screenshot=\"high\" 或 action=\"screenshot\" 自己看图。"
+            "全程保持 Yuki 可爱灵巧的语气与自主判断，不要写成机械的流水账汇报。"
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": [
+                        "inspect", "open", "click", "double_click", "hover",
+                        "input", "press", "scroll", "back", "forward", "reload",
+                        "wait", "tabs", "switch_tab", "new_tab", "close_tab", "screenshot",
+                    ],
+                    "description": "动作类型，默认 inspect；screenshot 会强制拉取一张高清标注图",
+                    "default": "inspect",
+                },
+                "target": {
+                    "type": "string",
+                    "description": "控件编号（如 1 或 #1）或视口坐标 \"x,y\"；switch_tab 时填标签页编号或标题关键词",
+                },
+                "text": {"type": "string", "description": "input 时要输入的文字（支持中文）"},
+                "url": {"type": "string", "description": "open / new_tab 时要打开的 URL"},
+                "key": {"type": "string", "description": "press 时要按的键名，如 Enter / Escape / Tab / Space / ArrowDown"},
+                "direction": {"type": "string", "description": "scroll 方向：up / down / left / right，默认 down"},
+                "screenshot": {
+                    "type": "string",
+                    "enum": ["auto", "blur", "high", "none"],
+                    "description": "auto=控件明确不截/不明确附720p图；high=主动看高清图；blur=720p轻量图；none=不截图",
+                    "default": "auto",
+                },
+                "clear": {"type": "boolean", "description": "input 前是否先全选清空输入框，默认 false", "default": False},
+                "seconds": {"type": "number", "description": "wait 的秒数"},
+                "note": {"type": "string", "description": "顺手记一句这步在看什么或发现了什么"},
+                "remember": {"type": "boolean", "description": "是否记入操作过程，默认 true", "default": True},
+            },
+        },
+        handler=browser_action_tool,
+    ),
+    ToolSpec(
+        name="browser_finish",
+        description=(
+            "结束本轮浏览并退出浏览器聚焦模式，恢复常规工具空间。"
+            "请传入一句简短的 summary 总结刚才在浏览器里逛了什么/结果怎样，"
+            "然后用 Yuki 平常的可爱灵巧口吻自然回复大家，不要机械复述操作步骤。"
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "summary": {
+                    "type": "string",
+                    "description": "简短总结刚才在浏览器里做了什么与结果（会以 USER 总结写入上下文）",
+                },
+            },
+            "required": ["summary"],
+        },
+        handler=browser_finish_tool,
     ),
 ]
 

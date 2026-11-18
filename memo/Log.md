@@ -851,3 +851,26 @@
 - `docs/finetune_label.md` 已写入 2026-11-17 采集质量快照、筛选建议、负样本定义及图片迁移说明。
 - 容器内 `pytest tests/test_sft_logger.py -q`：7 passed；随后 `pytest tests -q`：242 passed；宿主 compileall 与 `git diff --check` 通过。代码已提交 `22f739f`，容器已重启并健康。
 - 重启前旧进程将 4 条 `10068/128166` 事件记为 `reaction`，已按只追加原则补写 4 条 `bad` 纠正事件；当前有效标签为 `perfect` 81、`bad` 4。
+- 2026-11-17 23:14 完成 `FrostCore` **M2.5 内核闭环加固与文档体系落地**（提交 `196c873`）：修复 `ReadOnlyPersonaSnapshot` 拼接记忆/动态槽位误报（新增 `ComposedPrompt.persona_block` 与 `verify_composed()`）、强制落地 `ModeCapabilities` 四项门禁（`can_send`/`writes_chat_history`/`allow_sub_focus`/`triggers_diary` + 修正 `CHAT_CAPABILITIES.allow_sub_focus=True`）、将 `TurnEvaluator` (`F`) 纯化为无写盘副作用并由 `SessionPipeline` 统一原子提交、补全 `FrostSeed`/`RhythmStateStore`/`DecisionEngine` 全异步 `a_*` 接口、在 `seed.sqlite` 新增 `chat_sessions` 实现 $O(1)$ 启动孤儿清扫、新增 `ToolSpec.concurrent_safe` 并发执行与 `safe_truncate()` ZWJ 安全截断；同步撰写 `/home/asumi/FrostCore/docs/architecture.md` 与 `docs/extension-guide.md`，更新 `README.md`、`CHANGELOG.md`、`/home/asumi/FrostCore/memo/Log.md` 及 Yuki 侧 `docs/frostcore-architecture.md`。`/home/asumi/FrostCore` 下 39 项离线测试、`compileall`、`mypy --strict`（47 个源文件）与 `ruff` 全部通过。
+
+## 2026-11-18 浏览器聚焦模式（browser 域）落地实现
+- 架构与文档：新增 [docs/browser-focus-architecture.md](docs/browser-focus-architecture.md)，沿用 `core/focus/` v2 框架并零新增镜像依赖（复用 `aiohttp` / `websockets` / `Pillow`）。
+- CDP 驱动与保态：`core/browser_driver.py` 实现纯异步 CDP 连接宿主机 Chrome（`tools.browser_cdp_url` 默认 `http://127.0.0.1:9222`、`BROWSER_LOCK` 串行）、OOPIF/同源 `iframe` 坐标穿透、三段式稳定等待（`readyState === 'complete'` + 在途 XHR/Fetch 静默 + DOM/bbox 静默窗 `280ms`）；配套 `scripts/start_yuki_chrome.sh`（不强制关闭已有 Chrome）。
+- 主视觉交互树与大号标注：`core/browser_tree.py` 实现视口可见/未遮挡探针（过滤装饰性 `aria-hidden` / `pointer-events:none` 背景画布）、独立去重 `[页面文本]` 块、Top 24 降序控件排序（弹窗优先 + 主区大控件优先 + `browser_bar_quota=5` 按比例注入 Bar 重要控件）、控件明确性判定（明确则省图）、无高斯模糊 720p（`1280px`/`q55`）与高清（`1600px`/`q88`）自适应大字号（`>=20px`）防遮挡红框/橙框标注。
+- 工具与人设引导：`core/focus/domains/browser.py`（`BROWSER` 域 + `browser_start` 首屏强制截 720p 图 + `browser_finish`）、`core/tools/tools_browser.py`（`browser_action` 全量动作 + `screenshot="high"` / `action="screenshot"` 主动看图）、`config.py` (`ToolsConfig`)、`core/tools/{tools.py,__init__.py}`、`core/focus/domains/__init__.py`、`core/prompts.py` 注入 Yuki 可爱灵巧语气与自主决策引导，禁止 AI 腔/机械汇报。
+- 验证：新增 `tests/test_browser_focus.py`，与 `tests/test_focus_contract.py` 合跑 28 passed；容器内全量 `pytest tests -q` = **256 passed**；`deploy/verify.sh` = **ALL_GATES_PASSED**。
+- 待联调：宿主 Chrome 当前未开启 9222 CDP（且生产容器 `yuki` 待重启生效），需在宿主机带 `--remote-debugging-port=9222` 拉起保留登录态的 Chrome 并重启容器后，即可用 `https://www.bilibili.com/toy/HENTI/index.html` 等网页端到端实测。
+- 2026-11-18 11:55 真实页面联调与性能微调（宿主机 Chrome 155 + `deepseek-flash` 备选路线实测 15 题完整跑通）：
+  - **OOPIF 跨域穿透补齐**：实测发现 Chrome 扁平化 CDP 中 `Page.getFrameTree` 不返回跨域 OOPIF 子帧，`core/browser_driver.py` 改为结合 `Target.getTargets()`（按 `parentFrameId`）主动合并可见 OOPIF 并校验 `DOM.getFrameOwner` 坐标偏移，成功抓出内嵌主舞台控件。
+  - **隐藏 `0x0` iframe 超时根治**：联调日志发现页面存在隐藏 `0x0` 统计子帧会导致 `requestAnimationFrame` 挂起到 `6005ms` 超时；`wait_until_stable()` 改为只等待主帧与已知可见 OOPIF，且 `_STABILITY_JS_TEMPLATE` 遇 `0x0` 或 `document.hidden` 立即返回，单次点击耗时从 `~6.67s` 降至 **`473ms`**（视口探针 `24ms`）。
+  - **控件分类与去重优化**：`core/browser_tree.py` 修正主内容区 `<nav>` 误判 `[Bar]` 问题、过滤按钮内继承 `cursor: pointer` 的子计数 `<span>`、跳过含交互子元素的文本容器，并让右侧窄边栏徽标优先贴框左侧避免遮挡邻近图标。
+  - **Chrome 155 保态启动**：`scripts/start_yuki_chrome.sh` 默认通过 `~/.cache/yuki-chrome-profile` 软链用户 `Default` 与 `Local State`，绕开 Chrome 对默认数据目录开 `9222` 的限制并保留全部登录态。
+  - **最终验证**：`tests/test_browser_focus.py` + `tests/test_focus_contract.py` = 28 passed；`deploy/verify.sh` = `ALL_GATES_PASSED`（256 passed）。
+- 2026-11-18 12:17 修复生产群聊实测中暴露的「鼠标点不动超时」与「B站头像/登录态误判」：
+  - **鼠标事件超时 & 切标签失败根因**：
+    1. 点击 `target="_blank"` 链接新开标签页后，原标签页退居 Chrome 后台，Chrome 节流后台标签页 compositor 导致 `Input.dispatchMouseEvent` 挂起至 `5.01s` 超时；
+    2. `/json/activate/{id}` 与 `/json/close/{id}` 返回纯文本而非 JSON，导致 `switch_tab` / `close_tab` 抛出 `JSONDecodeError`；
+    3. 部分页面（如 B 站首页）即使在前台，`mouseWheel` ACK 仍可能挂起。
+  - **驱动修复**（[browser_driver.py](core/browser_driver.py)）：新增 `_http_request` 处理纯文本端点；`_attach_target` / `navigate` / 鼠标操作前强制 `_bring_to_front()`；`click_at` 检测到新开 `openerId == self._target_id` 标签页时自动跟随切换；`scroll` 在 `mouseWheel` 1.2s 超时后自动降级为 DOM `scrollBy`。
+  - **B站登录态与头像识别修复**（[browser_tree.py](core/browser_tree.py)）：核查确认 Chrome Profile 已有 `SESSDATA` / `DedeUserID` 登录态，误判源于无文案头像链接 `header-entry-mini` 未被提炼、瀑布流底部卡片误占 `bar` 配额且 1920px 无文案头图链接占坑。现支持从 `class`/`href` 为头像/空间等图标链接补语义标签（`个人空间/头像`）并提升 Bar 账号权重、取消底部非 fixed 卡片的 `bar` 误判、跳过整幅无文案头图链接，实测 B 站首页已稳定输出 `[#17] [Bar] [链接] 个人空间/头像 @(1444,32)`。
+  - **验证**：`tests/test_browser_focus.py` + `tests/test_focus_contract.py` = **29 passed**；`deploy/verify.sh` = **ALL_GATES_PASSED**（**257 passed**）。待重启 `yuki` 容器生效。
