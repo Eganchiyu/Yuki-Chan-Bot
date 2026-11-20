@@ -874,3 +874,8 @@
   - **驱动修复**（[browser_driver.py](core/browser_driver.py)）：新增 `_http_request` 处理纯文本端点；`_attach_target` / `navigate` / 鼠标操作前强制 `_bring_to_front()`；`click_at` 检测到新开 `openerId == self._target_id` 标签页时自动跟随切换；`scroll` 在 `mouseWheel` 1.2s 超时后自动降级为 DOM `scrollBy`。
   - **B站登录态与头像识别修复**（[browser_tree.py](core/browser_tree.py)）：核查确认 Chrome Profile 已有 `SESSDATA` / `DedeUserID` 登录态，误判源于无文案头像链接 `header-entry-mini` 未被提炼、瀑布流底部卡片误占 `bar` 配额且 1920px 无文案头图链接占坑。现支持从 `class`/`href` 为头像/空间等图标链接补语义标签（`个人空间/头像`）并提升 Bar 账号权重、取消底部非 fixed 卡片的 `bar` 误判、跳过整幅无文案头图链接，实测 B 站首页已稳定输出 `[#17] [Bar] [链接] 个人空间/头像 @(1444,32)`。
   - **验证**：`tests/test_browser_focus.py` + `tests/test_focus_contract.py` = **29 passed**；`deploy/verify.sh` = **ALL_GATES_PASSED**（**257 passed**）。待重启 `yuki` 容器生效。
+
+## 2026-12-20 API 探测（api.rua.chat，仅外部测试，未改代码）
+- 机主给的 key 可用：`GET /v1/models` 200，仅 5 个模型：grok-4.5 / grok-4.6 / grok-4.7 / grok-build-latest / grok-composer-2.5-fast。
+- 5 个全部能跑 chat/completions；`grok-build-latest` 实际回报 `grok-4.6-build`，`grok-composer-2.5-fast` 回报 `grok-4.5`。
+- 计量：usage 带 `cost_in_usd_ticks`（同一次简单请求近 4000万 ticks，单次成本不低）。`/v1/dashboard/billing/subscription` 返回限额 1e8 占位值，非真实余额。
