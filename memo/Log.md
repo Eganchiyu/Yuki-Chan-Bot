@@ -935,3 +935,12 @@
 - **会话历史按 `chat_id` 分片 + 自动平滑迁移**（`core/history_manager.py`）：将全量单文件 `data/chat_history.json` 升级为 `data/history/<chat_id>.json` 按会话独立落盘与 `O(1)` 拷贝，仅刷脏会话分片；首次启动检测到旧单文件时自动拆分迁移并备份为 `chat_history.json.migrated.bak`。
 - **顺手修复**：修复 `modules/QQNapcatListen/commands.py::_set_group_active` 在 `MagicMock` 替身下未清空 `message_buffer` 的回归。
 - **验证**：定向单测（`test_reply_format`、`test_memory`、`test_art_focus`、`test_status`、`test_autonomous_sandbox` 共 89 passed）与 `compileall` 全部通过。
+
+## 2026-11-23 技术债修复 Phase 3：Prompt 单 System 规范化、管线解耦与工具底座收敛
+
+- **Prompt 单 System 规范化**（`core/prompts.py`）：将原本连续追加的 8~10 条分散 `role="system"` 消息合并为首条单一 `system` 消息（静态人设保持最前以最大化 KV Cache 命中率，日记/黑话/表达习惯/小本本/今日工作记忆/高涨提示/破冰指令统一归入结构化动态参考块），清理已废弃的 `yuki.mode_manager` 分支。
+- **`SessionPipeline` 出站解耦与直达跳跃协议化**：
+  - 抽离 `core/outbound_sender.py`（`OutboundReplySender`）独立承担 `[MEME:]` 抽样检索、LLM 语义断句、`Filtered` 彩蛋、语音发送与截屏缓冲记账；
+  - 在 `core/focus/{domain,manager}.py` 新增声明式 `jump_tag` + `on_jump` 钩子，`core/focus/domains/art.py` 注册 `art_gacha_jump`，从 `core/session_pipeline.py` 移除 `/抽图` 业务硬编码（`session_pipeline.py` 精简近 200 行）。
+- **双工具循环底座收敛**（`core/tool_step_runner.py`）：提取 `resolve_tool_calls` 与 `parse_tool_result_payload`，统一供 `core/engine/engine_reply.py` 与 `modules/autonomous/sandbox_loop.py` 复用。
+- **验证**：定向单测（`test_pipeline`、`test_sft_logger`、`test_art_focus`、`test_focus_contract`、`test_maid`、`test_reply_format` 共 70 passed）与 `compileall` 全部通过。

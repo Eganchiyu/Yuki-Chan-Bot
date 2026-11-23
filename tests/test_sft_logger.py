@@ -281,8 +281,8 @@ async def test_send_reply_indexes_message_ids_and_emoji_like_labels(tmp_path, mo
             "llm_rounds": 1,
         },
     }
-    monkeypatch.setattr("core.session_pipeline._TEXT_SENT_SLEEP", 0)
-    monkeypatch.setattr("core.session_pipeline._MEME_SENT_SLEEP", 0)
+    monkeypatch.setattr("core.outbound_sender._TEXT_SENT_SLEEP", 0)
+    monkeypatch.setattr("core.outbound_sender._MEME_SENT_SLEEP", 0)
 
     await pipeline.send_reply(ctx)
     assert ctx["sent_message_ids"] == ["70001", "70002"]

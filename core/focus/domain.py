@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Callable
+from typing import Any, Callable
 
 # 聚焦模式下默认保留的群聊基础互动工具
 BASE_KEEP_TOOLS: frozenset[str] = frozenset({
@@ -38,6 +38,8 @@ class FocusDomain:
     on_final_reply: Callable[[str, str, str], None] | None = None   # (chat_id, raw_ans, clean_ans)
     on_incoming: Callable[[str, str], None] | None = None           # (chat_id, text)
     stub: Callable[[dict], str] | None = None                       # 给 pruner 的单行存根格式
+    jump_tag: str = ""                                              # 入站消息直达本域的 tag（如 "art_gacha_jump"）
+    on_jump: Callable[[str, Any, list[dict]], str | None] | None = None  # (chat_id, history, matched_msgs) -> 附加指令文本
 
     @property
     def effective_summary_prefix(self) -> str:

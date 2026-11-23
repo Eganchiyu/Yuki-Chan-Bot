@@ -22,8 +22,9 @@ from core.reply_format import (
     normalize_reply_markup,
     strip_layout_markup,
 )
-from core.tool_markup import extract_text_tool_calls, strip_tool_call_markup
+from core.tool_markup import strip_tool_call_markup
 from core.tool_prune import ToolHistoryPruner
+from core.tool_step_runner import parse_tool_result_payload, resolve_tool_calls
 from core.toolchain import SKIP_REPLY_MARKER, ToolCallManager, ToolContext, ToolRuntime
 from modules.debug.context_snapshot import context_snapshot_store
 from modules.vision.prefetch import resolve_image
@@ -256,14 +257,7 @@ class EngineReplyService:
     @staticmethod
     def _tool_payload(tool_message) -> dict:
         """解析工具消息里的标准 JSON 载荷（失败返回空字典）。"""
-        content = tool_message.get("content")
-        if not isinstance(content, str):
-            return {}
-        try:
-            payload = json.loads(content)
-        except (TypeError, ValueError):
-            return {}
-        return payload if isinstance(payload, dict) else {}
+        return parse_tool_result_payload(tool_message)
 
     def _is_art_draw_submit(self, tool_message: dict) -> bool:
         """判断这条工具结果是否是成功提交的 art_draw 生图任务。"""
@@ -406,20 +400,12 @@ class EngineReplyService:
 
     @staticmethod
     def _extract_calls(st: TurnState, msg: dict) -> list[dict]:
-        tool_calls = msg.get("tool_calls") or []
-        if not tool_calls:
-            text_calls, cleaned_content = extract_text_tool_calls(
-                msg.get("content"), st.valid_tool_names
-            )
-            if text_calls:
-                logger.warning(
-                    f"[ToolChain] {st.chat_id} 工具调用被写成正文文本，已解析为真实调用: "
-                    f"{[c['function']['name'] for c in text_calls]}"
-                )
-                msg["content"] = cleaned_content
-                msg["tool_calls"] = text_calls
-                tool_calls = text_calls
-        return tool_calls
+        return resolve_tool_calls(
+            msg,
+            st.valid_tool_names,
+            log_prefix="[ToolChain]",
+            chat_id=st.chat_id,
+        )
 
     def _finalize_turn(self, st: TurnState, msg: dict, llm_ms: int) -> tuple[str, str]:
         if msg.get("_finish_reason") == "content_filter":

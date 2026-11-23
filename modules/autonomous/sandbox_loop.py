@@ -15,7 +15,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable
 
 from config import cfg
-from core.tool_markup import extract_text_tool_calls
+from core.tool_step_runner import parse_tool_result_payload, resolve_tool_calls
 from core.toolchain import FunctionRegistry, ToolCallManager, ToolContext, ToolRuntime
 from core.focus import ToolView
 from utils.llm_client import llm_chat_raw
@@ -181,19 +181,13 @@ class SandboxLoop:
 
     def extract_calls(self, msg: dict, visible: set[str] | None = None) -> list[dict]:
         """原生 tool_calls 优先；模型把调用写成正文时用 tool_markup 还原。"""
-        calls = list(msg.get("tool_calls") or [])
-        if calls:
-            return calls
         valid = self.all_tool_names() if visible is None else (set(visible) & self.all_tool_names())
-        text_calls, cleaned = extract_text_tool_calls(msg.get("content"), valid)
-        if text_calls:
-            logger.warning(
-                f"[Sandbox] {self.chat_id} 工具调用被写成正文，已解析为真实调用: "
-                f"{[c['function']['name'] for c in text_calls]}"
-            )
-            msg["content"] = cleaned
-            msg["tool_calls"] = text_calls
-        return text_calls
+        return resolve_tool_calls(
+            msg,
+            valid,
+            log_prefix="[Sandbox]",
+            chat_id=self.chat_id,
+        )
 
     # ------------------------------------------------------------ 执行
     async def execute_calls(self, calls: list[dict], visible: set[str] | None = None,
@@ -223,11 +217,7 @@ class SandboxLoop:
 
 def parse_tool_payload(result_message: dict) -> dict:
     """把 tool 消息的 JSON 内容解成 dict（失败返回空 dict）。"""
-    try:
-        payload = json.loads(result_message.get("content") or "{}")
-    except (TypeError, json.JSONDecodeError):
-        return {}
-    return payload if isinstance(payload, dict) else {}
+    return parse_tool_result_payload(result_message)
 
 
 def build_tool_context(

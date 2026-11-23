@@ -1,8 +1,6 @@
 # core/session_pipeline.py
 import asyncio
 import datetime
-import os
-import random
 import re
 import time
 from dataclasses import dataclass, field
@@ -10,11 +8,15 @@ from typing import Any
 
 from config import cfg
 from core.brain import YukiState
-from utils import BASE_DIR
 from core.focus import focus_manager
 from core.history_filter import dialogue_length
+from core.outbound_sender import (
+    OutboundReplySender,
+    record_sent_message_id,
+    select_kept_memes,
+    valid_message_id,
+)
 from core.recall_cache import recall_cache_store
-from core.reply_format import clean_visible_reply
 from core.reply_watch import (
     auto_subscribe,
     build_high_spirits_event_builder,
@@ -32,7 +34,6 @@ from modules.debug.context_snapshot import PIPELINE_STAGES, context_snapshot_sto
 from modules.vision.prefetch import prefetch_images, resolve_image
 from utils.background_tasks import spawn_background_task
 from utils.logger import get_logger
-from utils.paths import normalize_stored_path
 
 logger = get_logger("session_pipeline")
 
@@ -40,19 +41,7 @@ logger = get_logger("session_pipeline")
 # ---------- 预编译正则 / 常量 ----------
 
 _QUOTED_PREFIX_RE = re.compile(r'^【"[^"]*"】说:\s*')
-_MEME_FULLMATCH_RE = re.compile(r'\[MEME:(.+?)\]', re.DOTALL)
-_MEME_SPLIT_RE = re.compile(r'(\[MEME:.*?\])')
-
-_MEME_DISCARD_SLEEP = 3.0      # 被随机丢弃时的节奏延迟
-_MEME_SENT_SLEEP = 2.0         # 表情包已发送后的节奏延迟
-_TEXT_SENT_SLEEP = 0.5         # 文本已发送后的节奏延迟
-_MEME_RANDOM_KEEP_PROB = 0.6   # 非最后一个表情包保留概率
-
 _ALWAYS_REPLY_MODES = frozenset({"private", "master_private"})
-
-# 彩蛋：模型补全被内容安全过滤（正文恒为 "Filtered"）时，不发这两个字，改发这张表情包
-_FILTERED_EGG_IMAGE = os.path.join(BASE_DIR, "output", "reference", "Filtered.jpg")
-_FILTERED_EGG_CQ = f"[CQ:image,file=file:///{os.path.abspath(_FILTERED_EGG_IMAGE)},sub_type=1]"
 _REPLYABLE_MODES = frozenset({"group", "private", "master_private"})
 
 
@@ -134,6 +123,11 @@ class SessionPipeline:
         self.sticker_manager = components.get("sticker_manager")
         self.image_store = components.get("image_store")
         self.sft_logger = components.get("sft_logger") or sft_trace_logger
+        self.outbound = OutboundReplySender(
+            get_sender=lambda: self.sender,
+            get_yuki=lambda: self.yuki,
+            get_sticker_manager=lambda: getattr(self, "sticker_manager", None),
+        )
         self.group_active_state = group_active_state
         if self.engine is not None and not isinstance(self.engine, MagicMock if "MagicMock" in globals() else ()):
             try:
@@ -537,45 +531,21 @@ class SessionPipeline:
         system_prompt = self.yuki.get_setting(mode)
 
         incoming_messages = context.get("incoming_messages") or context.get("message_objs") or []
-        has_art_gacha_jump = any(
-            isinstance(m, dict) and "art_gacha_jump" in (m.get("tags") or [])
-            for m in incoming_messages
+        jump_prompts, matched_jump_tags = focus_manager.apply_incoming_jumps(
+            chat_id,
+            self.history_manager,
+            incoming_messages,
+            system_prompt=system_prompt,
         )
-        if has_art_gacha_jump:
-            from core.focus.domains.art import prepare_art_gacha_jump
-
-            custom_notes: list[str] = []
-            for m in incoming_messages:
-                if isinstance(m, dict) and "art_gacha_jump" in (m.get("tags") or []):
-                    raw = str(m.get("raw_text") or "").strip()
-                    if raw.startswith("/抽图") and len(raw) > 3 and raw[3].isspace():
-                        note_part = raw[3:].strip()
-                        if note_part:
-                            custom_notes.append(note_part)
-            custom_note = " ".join(custom_notes).strip()
-
-            self.history_manager.get_session(chat_id, system_content=system_prompt)
-            jump_res = prepare_art_gacha_jump(
-                chat_id,
-                history=self.history_manager,
-                goal=custom_note or "抽图创作",
-            )
-            gacha_prompt = jump_res.get("prompt") or ""
-            gacha_source = jump_res.get("source") or ""
-            custom_hint = (
-                f"用户附带自定义要求：「{custom_note}」（请务必优先满足该要求，例如选用指定的个人资产图、人物、动作或构图，并将下方抽卡 Prompt 作为画面风格与场景灵感融入）。\n"
-                if custom_note
-                else "请直接根据以上抽卡 Prompt 结合合适的个人资产图（如有需要）改写为完整画面描述，"
-            )
-            context["art_gacha_jump"] = True
+        if matched_jump_tags:
+            context["focus_jump"] = True
+            if "art_gacha_jump" in matched_jump_tags:
+                context["art_gacha_jump"] = True
             context["force_reply"] = True
-            context["combined_text"] = (
-                f"{context['combined_text']}\n"
-                f"【系统直达抽图指令】已为你直接进入艺术创作模式并自动完成一次抽卡（来源: {gacha_source}）。"
-                f"本次抽到的灵感 Prompt 如下：\n{gacha_prompt}\n"
-                f"{custom_hint}"
-                "立即调用 `art_draw` 进行绘画。注意：提交绘画后不要调用 `art_finish`，保持创作模式开启以便后续继续抽图。"
-            )
+            if jump_prompts:
+                context["combined_text"] = (
+                    f"{context['combined_text']}\n" + "\n".join(jump_prompts)
+                )
 
         current_time_str = datetime.datetime.now().strftime("%Y年%m月%d日%H:%M")
         session = self.history_manager.append_session_message(
@@ -705,8 +675,8 @@ class SessionPipeline:
         except Exception:
             energy_val, activity_val, bioclock_val = None, None, None
 
-        # 破冰模式或直达抽图指令强制回复，跳过决策
-        if context.get("ice_break") or context.get("art_gacha_jump"):
+        # 破冰模式或聚焦直达跳跃指令强制回复，跳过决策
+        if context.get("ice_break") or context.get("focus_jump") or context.get("art_gacha_jump"):
             self._update_snapshot(
                 context, should_reply=True, rag_interest=round(rag_interest, 3),
                 energy=energy_val, activity=activity_val, bioclock=bioclock_val,
@@ -825,173 +795,29 @@ class SessionPipeline:
         return context
 
     # ---------------------------------------------------------------
-    # 阶段七：发送回复（文本 / 表情包 / 语音）
+    # 阶段七：发送回复（委托给 OutboundReplySender）
     # ---------------------------------------------------------------
 
-    @staticmethod
-    def _select_kept_memes(parts: list[str]) -> set[int]:
-        """决定哪些 [MEME] 片段保留：最后一个必留，其余按概率保留。"""
-        meme_indices = [
-            i for i, part in enumerate(parts) if _MEME_FULLMATCH_RE.fullmatch(part.strip())
-        ]
-        keep: set[int] = set()
-        if not meme_indices:
-            return keep
-        keep.add(meme_indices[-1])
-        for idx in meme_indices[:-1]:
-            if random.random() >= _MEME_RANDOM_KEEP_PROB:
-                keep.add(idx)
-        return keep
-
-    def _record_bot_message_to_shot_buffer(self, shot_live_buffer, chat_id, **kwargs):
-        if not shot_live_buffer:
-            return
-        try:
-            shot_live_buffer.append(chat_id, user_id=cfg.SELF_QQ, is_bot=True, **kwargs)
-        except Exception as exc:
-            logger.debug(f"[ShotMemory] 记录到截屏缓冲失败: {exc}")
-
-    @staticmethod
-    def _valid_message_id(mid: Any) -> str | None:
-        if isinstance(mid, bool) or mid is None:
-            return None
-        if isinstance(mid, (int, str)):
-            val = str(mid).strip()
-            return val if val else None
-        return None
+    _select_kept_memes = staticmethod(select_kept_memes)
+    _valid_message_id = staticmethod(valid_message_id)
 
     def _record_sent_message_id(self, context: dict, mid: Any) -> str | None:
-        valid = self._valid_message_id(mid)
-        if valid is not None:
-            context.setdefault("sent_message_ids", []).append(valid)
-        return valid
+        return record_sent_message_id(context, mid)
 
-    async def _send_meme_segment(self, chat_id, send_mode, meme_match, shot_live_buffer,
-                                 context: dict | None = None):
-        if not getattr(self, "sticker_manager", None):
-            return
-        search_query = meme_match.group(1).strip()
-        best = await self.sticker_manager.get_suitable_sticker(search_query, chat_id)
-        if not best:
-            return
-
-        image_path = os.path.abspath(normalize_stored_path(best["image_ref"]))
-        self.yuki.last_sent_meme[chat_id] = best["id"]
-
-        cq_code = f"[CQ:image,file=file:///{image_path},sub_type=1]"
-        sent_raw = await self.sender.send(chat_id, cq_code, mode=send_mode)
-        sent_id = self._record_sent_message_id(context, sent_raw) if context is not None else self._valid_message_id(sent_raw)
-
-        self._record_bot_message_to_shot_buffer(
-            shot_live_buffer, chat_id,
-            name=cfg.ROBOT_NAME.title(),
-            raw_text="[表情包]",
-            content="[表情包]",
-            segments=[{"type": "image", "data": {"file": image_path}}],
-            message_id=sent_id,
-        )
-        # 因为检索已经耗时，这里的强制睡眠可以大幅缩短
-        await asyncio.sleep(_MEME_SENT_SLEEP)
-
-    async def _send_text_segment(self, chat_id, send_mode, part, shot_live_buffer,
-                                 context: dict | None = None):
-        sent_raw = await self.sender.send(chat_id, part, mode=send_mode)
-        sent_id = self._record_sent_message_id(context, sent_raw) if context is not None else self._valid_message_id(sent_raw)
-
-        bot_name = cfg.ROBOT_NAME.title()
-        self._record_bot_message_to_shot_buffer(
-            shot_live_buffer, chat_id,
-            name=bot_name,
-            raw_text=part,
-            content=f'【"{bot_name}"】说: {part}',
-            segments=[{"type": "text", "data": {"text": part}}],
-            message_id=sent_id,
-        )
-        await asyncio.sleep(_TEXT_SENT_SLEEP)
+    def _get_outbound(self) -> OutboundReplySender:
+        outbound = getattr(self, "outbound", None)
+        if outbound is None:
+            outbound = OutboundReplySender(
+                get_sender=lambda: self.sender,
+                get_yuki=lambda: getattr(self, "yuki", None),
+                get_sticker_manager=lambda: getattr(self, "sticker_manager", None),
+            )
+            self.outbound = outbound
+        return outbound
 
     async def send_reply(self, context):
         """发送文本、表情包分段或语音回复。"""
-        chat_id = context["chat_id"]
-        mode = context["mode"]
-        context.setdefault("sent_message_ids", [])
-        # 发送前再做一次标记归一化：兼容模型把 <layout>/[MEME] 括号写错的情况
-        answer_text = clean_visible_reply(context["answer_text"])
-        voice = context.get("voice")
-
-        # master_private 使用私聊 API 发送
-        send_mode = "private" if mode == "master_private" else mode
-
-        if mode == "group":
-            self.yuki.consume_energy(chat_id)
-
-        logger.debug(
-            f"[Pipeline] {cfg.ROBOT_NAME.title()} 正在发送消息 "
-            f"(精力: {self.yuki.energy.get(chat_id, 0):.1f})"
-        )
-
-        # === 1. 语音直接发送 ===
-        if voice:
-            self._record_sent_message_id(context, await self.sender.send(chat_id, voice, mode=send_mode))
-            logger.info("[Pipeline] 发送语音完成")
-            return context
-
-        # 彩蛋：被内容安全过滤的回复（正文恒为 "Filtered"）直接删掉，替换成表情包
-        if answer_text.strip() == "Filtered":
-            if os.path.isfile(_FILTERED_EGG_IMAGE):
-                logger.info(f"[Pipeline] {cfg.ROBOT_NAME.title()} 回复被过滤，改发 filtered 表情包")
-                self._record_sent_message_id(context, await self.sender.send(chat_id, _FILTERED_EGG_CQ, mode=send_mode))
-            else:
-                logger.warning(
-                    f"[Pipeline] filtered 彩蛋图片缺失，回落发送原文本: {_FILTERED_EGG_IMAGE}"
-                )
-                self._record_sent_message_id(context, await self.sender.send(chat_id, "Filtered", mode=send_mode))
-            return context
-
-        # deepseek 等模型有时返回空字符串，拦截并发送占位提示，避免静默无回复
-        if not answer_text or not answer_text.strip():
-            logger.warning(f"[Pipeline] {cfg.ROBOT_NAME.title()} 回复内容为空，拦截并发送占位提示")
-            self._record_sent_message_id(context, await self.sender.send(chat_id, "Yuki回复了空字符", mode=send_mode))
-            return context
-
-        # === 2. 流式发送文本与表情包 ===
-        # 按 [MEME:xxx] 切分，() 保留分隔符，结果类似 ['文本1', '[MEME:关键词]', '文本2']
-        parts = _MEME_SPLIT_RE.split(answer_text)
-        keep_set = self._select_kept_memes(parts)
-
-        # 延迟导入，避免潜在循环依赖
-        try:
-            from modules.shot_memory import shot_live_buffer
-        except ImportError:
-            shot_live_buffer = None
-
-        for part_idx, part in enumerate(parts):
-            part = part.strip()
-            if not part:
-                continue
-
-            meme_match = _MEME_FULLMATCH_RE.fullmatch(part)
-            if meme_match:
-                if part_idx not in keep_set:
-                    logger.debug(f"[Pipeline] 表情包被随机丢弃: {part}")
-                    await asyncio.sleep(_MEME_DISCARD_SLEEP)
-                    continue
-                await self._send_meme_segment(chat_id, send_mode, meme_match, shot_live_buffer, context=context)
-            else:
-                if getattr(cfg, "SENTENCE_SPLIT_ENABLED", True):
-                    from core.sentence_splitter import split_text_with_llm
-
-                    sub_parts = await split_text_with_llm(part)
-                else:
-                    sub_parts = [part]
-                for sub_part in sub_parts:
-                    sub_part = sub_part.strip()
-                    if sub_part:
-                        await self._send_text_segment(
-                            chat_id, send_mode, sub_part, shot_live_buffer, context=context
-                        )
-
-        logger.info(f"[Pipeline] 发送完成，内容: {answer_text[:80]}")
-        return context
+        return await self._get_outbound().send_reply(context)
 
     # ---------------------------------------------------------------
     # 阶段八：收尾

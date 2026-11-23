@@ -37,6 +37,36 @@ def _art_stub(payload: dict) -> str:
     return str(payload.get("content") or "").replace("\n", " ")
 
 
+def _handle_art_gacha_jump(chat_id: str, history: Any, matched_messages: list[dict]) -> str:
+    custom_notes: list[str] = []
+    for m in matched_messages:
+        raw = str(m.get("raw_text") or "").strip()
+        if raw.startswith("/抽图") and len(raw) > 3 and raw[3].isspace():
+            note_part = raw[3:].strip()
+            if note_part:
+                custom_notes.append(note_part)
+    custom_note = " ".join(custom_notes).strip()
+
+    jump_res = prepare_art_gacha_jump(
+        chat_id,
+        history=history,
+        goal=custom_note or "抽图创作",
+    )
+    gacha_prompt = jump_res.get("prompt") or ""
+    gacha_source = jump_res.get("source") or ""
+    custom_hint = (
+        f"用户附带自定义要求：「{custom_note}」（请务必优先满足该要求，例如选用指定的个人资产图、人物、动作或构图，并将下方抽卡 Prompt 作为画面风格与场景灵感融入）。\n"
+        if custom_note
+        else "请直接根据以上抽卡 Prompt 结合合适的个人资产图（如有需要）改写为完整画面描述，"
+    )
+    return (
+        f"【系统直达抽图指令】已为你直接进入艺术创作模式并自动完成一次抽卡（来源: {gacha_source}）。"
+        f"本次抽到的灵感 Prompt 如下：\n{gacha_prompt}\n"
+        f"{custom_hint}"
+        "立即调用 `art_draw` 进行绘画。注意：提交绘画后不要调用 `art_finish`，保持创作模式开启以便后续继续抽图。"
+    )
+
+
 ART = FocusDomain(
     name="art",
     title="艺术创作",
@@ -51,6 +81,8 @@ ART = FocusDomain(
     default_fallback="已完成艺术创作。",
     empty_trace_fallback="已打开画板查看资产并完成创作。",
     stub=_art_stub,
+    jump_tag="art_gacha_jump",
+    on_jump=_handle_art_gacha_jump,
 )
 
 register_domain(ART)

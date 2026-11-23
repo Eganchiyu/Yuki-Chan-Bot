@@ -71,10 +71,18 @@ async def test_ice_break_prompt_and_context_injection():
     yuki.get_setting.return_value = "你是测试机器人"
     history = {"12345": [{"role": "system", "content": "你是测试机器人"}]}
 
-    msgs_ice = await build_chat_context(yuki, "12345", "测试", history, "group", [], ice_break=True)
-    assert any("破冰模式指令" in m["content"] for m in msgs_ice if m["role"] == "system")
+    msgs_ice = await build_chat_context(
+        yuki, "12345", "测试", history, "group",
+        [{"content": "昨日日记", "score": 0.8, "debug": "d"}],
+        ice_break=True,
+    )
+    system_msgs = [m for m in msgs_ice if m["role"] == "system"]
+    assert len(system_msgs) == 1 and msgs_ice[0]["role"] == "system"
+    assert msgs_ice[0]["content"].startswith("你是测试机器人")
+    assert "破冰模式指令" in system_msgs[0]["content"] and "【回忆】昨日日记" in system_msgs[0]["content"]
 
     msgs_normal = await build_chat_context(yuki, "12345", "测试", history, "group", [], ice_break=False)
+    assert len([m for m in msgs_normal if m["role"] == "system"]) == 1
     assert not any("破冰模式指令" in m["content"] for m in msgs_normal if m["role"] == "system")
 
 

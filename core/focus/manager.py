@@ -75,6 +75,41 @@ class FocusManager:
             return None
         return self._tool_to_domain.get(tool_name)
 
+    def apply_incoming_jumps(
+        self,
+        chat_id: Any,
+        history: Any,
+        incoming_messages: list[dict],
+        *,
+        system_prompt: str | None = None,
+    ) -> tuple[list[str], set[str]]:
+        """遍历已注册聚焦域的直达跳跃钩子，返回 `(附加指令列表, 命中的 jump_tag 集合)`。"""
+        if not incoming_messages:
+            return [], set()
+        cid = str(chat_id)
+        prompts: list[str] = []
+        matched_tags: set[str] = set()
+        ensured_session = False
+
+        for domain in self._domains.values():
+            if not domain.jump_tag or domain.on_jump is None:
+                continue
+            matched = [
+                m
+                for m in incoming_messages
+                if isinstance(m, dict) and domain.jump_tag in (m.get("tags") or [])
+            ]
+            if not matched:
+                continue
+            if not ensured_session and history is not None and hasattr(history, "get_session"):
+                history.get_session(cid, system_content=system_prompt)
+                ensured_session = True
+            matched_tags.add(domain.jump_tag)
+            injected = domain.on_jump(cid, history, matched)
+            if injected:
+                prompts.append(injected)
+        return prompts, matched_tags
+
     # ---------------- 会话状态管理 ----------------
 
     def active(self, chat_id: Any) -> FocusState | None:

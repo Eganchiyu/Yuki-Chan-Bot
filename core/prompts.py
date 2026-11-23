@@ -213,19 +213,18 @@ async def build_chat_context(yuki, chat_id: str, combined_text: str, history_dic
         preview = diary_obj['content'].replace('\n', ' ')  # 提取文本内容
         logger.debug(f"[Diary Debug]回忆 {i}: {preview}")
 
-    # 1. 基础人设
+    # 1. 基础静态人设（保持位于首条 system 最前端以最大化前缀缓存命中率）
     system_prompt = history_dict[chat_id][0]["content"] if history_dict[chat_id] and history_dict[chat_id][0][
         "role"] == "system" else yuki.get_setting(mode)
-    combined_API_message = [{"role": "system", "content": system_prompt}]
+    dynamic_sections: list[str] = []
 
-    # 2. 插入检索到的日记，作为旧 RAG 回退补充
-    for diary_obj in reversed(relevant_diaries):
-        content = diary_obj['content']  # 提取文本内容
-        combined_API_message.append({"role": "system", "content": f"【回忆】{content}"})
+    # 2. 插入检索到的日记，作为 RAG 回忆补充
+    diary_blocks = [f"【回忆】{diary_obj['content']}" for diary_obj in reversed(relevant_diaries)]
+    if diary_blocks:
+        dynamic_sections.append("\n\n".join(diary_blocks))
 
     # --- 调试输出：打印加权分和匹配到的关键词信息 ---
     for i, diary_obj in enumerate(relevant_diaries[:3], 1):
-        # 打印加权分和匹配到的关键词信息
         logger.debug(f"[RAG-Debug] 回忆 {i} | 得分: {diary_obj['score']:.2f} | 详情: {diary_obj['debug']}")
 
     # 2.2 群黑话机械匹配参考（零 LLM 开销）
@@ -237,7 +236,7 @@ async def build_chat_context(yuki, chat_id: str, combined_text: str, history_dic
             matched_jargons = match_jargons_for_text(chat_id, combined_text, limit=jargon_limit)
             jargon_hint = format_jargon_reference(matched_jargons)
             if jargon_hint:
-                combined_API_message.append({"role": "system", "content": jargon_hint})
+                dynamic_sections.append(jargon_hint)
         except Exception as exc:
             logger.debug(f"[Jargon] 匹配注入失败: {exc}")
 
@@ -259,7 +258,7 @@ async def build_chat_context(yuki, chat_id: str, combined_text: str, history_dic
             )
             style_hint = format_style_habits_hint(picked_styles)
             if style_hint:
-                combined_API_message.append({"role": "system", "content": style_hint})
+                dynamic_sections.append(style_hint)
         except Exception as exc:
             logger.debug(f"[Style] 表达习惯注入失败: {exc}")
 
@@ -273,27 +272,21 @@ async def build_chat_context(yuki, chat_id: str, combined_text: str, history_dic
     if zones.get("plans"):
         notebook_parts.append(f"【长期规划路标】{zones['plans']}")
     if notebook_parts:
-        combined_API_message.append({
-            "role": "system",
-            "content": (
-                "【小本本】(这是只有你能看到的小本本，也是你的潜意识想法。"
-                "不要在回复中反复提及小本本或复述和引用里面的原话，"
-                "也不要让它变成聊天话题，只在心里默默作为判断和行动的底色哦！)\n"
-                + "\n".join(notebook_parts)
-            ),
-        })
+        dynamic_sections.append(
+            "【小本本】(这是只有你能看到的小本本，也是你的潜意识想法。"
+            "不要在回复中反复提及小本本或复述和引用里面的原话，"
+            "也不要让它变成聊天话题，只在心里默默作为判断和行动的底色哦！)\n"
+            + "\n".join(notebook_parts)
+        )
 
     # 2.6 今日独处工作记忆：她今天自己做了什么、产物在哪（自主轮回群后常驻）
     today_work = _today_work_memory()
     if today_work:
-        combined_API_message.append({
-            "role": "system",
-            "content": (
-                "【今日独处工作记忆（今天你自己做的事情与产物）】\n"
-                f"{today_work}\n"
-                "（这些是你自己做的，不用主动汇报；群里聊到相关话题时自然接上就好。）"
-            ),
-        })
+        dynamic_sections.append(
+            "【今日独处工作记忆（今天你自己做的事情与产物）】\n"
+            f"{today_work}\n"
+            "（这些是你自己做的，不用主动汇报；群里聊到相关话题时自然接上就好。）"
+        )
 
     # 2.7 心情高涨：刚结束独处、做出东西后回到群里的分享欲引导
     high_active = getattr(yuki, "high_spirits_active", None)
@@ -303,29 +296,26 @@ async def build_chat_context(yuki, chat_id: str, combined_text: str, history_dic
         except Exception:
             is_high = False
         if is_high:
-            combined_API_message.append({
-                "role": "system",
-                "content": (
-                    "【心情高涨】你刚从一个人的独处时光里回来，心情很好、很有分享欲。"
-                    "如果话题合适，可以自然地聊聊你刚做的事、分享一点细节或感想；"
-                    "保持你平时那种软软的、带点小得意的电子妹妹语气，别像汇报工作，"
-                    "也别一回来就连续刷屏（回群后最多连发两条，两条之间要留出空隙）。"
-                ),
-            })
+            dynamic_sections.append(
+                "【心情高涨】你刚从一个人的独处时光里回来，心情很好、很有分享欲。"
+                "如果话题合适，可以自然地聊聊你刚做的事、分享一点细节或感想；"
+                "保持你平时那种软软的、带点小得意的电子妹妹语气，别像汇报工作，"
+                "也别一回来就连续刷屏（回群后最多连发两条，两条之间要留出空隙）。"
+            )
 
-    # 3. 补充工具链约束：工具调用期间不要把过程性思考混入最终回复
-    combined_API_message.append({"role": "system", "content": "如果需要查询日记、发送本地文件或委托小女仆等任务，请优先调用可用工具。"})
-
-    mode_manager = getattr(yuki, "mode_manager", None)
-    if mode_manager:
-        combined_API_message.append({
-            "role": "system",
-            "content": mode_manager.render_prompt_status(current_chat_id=chat_id, current_mode=mode),
-        })
+    # 3. 补充工具链约束
+    dynamic_sections.append("如果需要查询日记、发送本地文件或委托小女仆等任务，请优先调用可用工具。")
 
     # 3.5 破冰模式：注入专用指令
     if ice_break:
-        combined_API_message.append({"role": "system", "content": get_ice_break_instructions()})
+        dynamic_sections.append(get_ice_break_instructions())
+
+    merged_system = (
+        f"{system_prompt}\n\n--- 当前上下文与潜意识参考 ---\n" + "\n\n".join(dynamic_sections)
+        if dynamic_sections
+        else system_prompt
+    )
+    combined_API_message = [{"role": "system", "content": merged_system}]
 
     # 4. 取出最近的对话（注意：这里保持原样取出，下面进行处理）
     recent_msgs_raw = [msg for msg in history_dict[chat_id][-cfg.KEEP_LAST_DIALOGUE - 1:-1] if msg["role"] != "system"]
