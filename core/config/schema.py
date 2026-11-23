@@ -187,6 +187,21 @@ class RAGConfig:
     retrieval_top_k: int = config_field(20, comment="检索返回的最大日记条数", section="rag")
     inject_top_k: int = config_field(5, comment="注入聊天上下文的日记条数（RAG 回忆条数）", section="rag")
     keep_last_dialogue: int = config_field(10, comment="保留的近期对话条数（短期记忆）", section="rag")
+    jargon_enabled: bool = config_field(
+        True, comment="群黑话自动学习与上下文参考注入开关", section="rag"
+    )
+    jargon_inject_limit: int = config_field(
+        8, comment="单轮最多注入的群黑话释义条数", section="rag"
+    )
+    style_learning_enabled: bool = config_field(
+        True, comment="群聊情境表达习惯自动学习与参考注入开关", section="rag"
+    )
+    style_inject_limit: int = config_field(
+        3, comment="单轮最多注入的群聊情境表达参考条数", section="rag"
+    )
+    style_cooldown_seconds: int = config_field(
+        180, comment="同一表达习惯的重复注入冷却秒数", section="rag"
+    )
 
 
 @dataclass
@@ -240,6 +255,12 @@ class TimingConfig:
     debounce_time: int = config_field(32, comment="防抖时间（秒）", section="timing")
     tool_call_delay_seconds: float = config_field(
         1.2, comment="工具调用前等待时间（秒），用于降低连续工具调用的机械感", section="timing"
+    )
+    sentence_split_enabled: bool = config_field(
+        True, comment="长回复智能语义断句（逐条气泡发送）开关", section="timing"
+    )
+    sentence_split_min_length: int = config_field(
+        18, comment="触发语义断句的最小文本长度", section="timing"
     )
     request_timeout: RequestTimeoutConfig = config_field_factory(
         RequestTimeoutConfig, comment="请求超时配置", section="timing"
@@ -479,7 +500,14 @@ _LEGACY_ALIASES: dict[str, tuple[str, ...]] = {
     "RAG_ENABLED": ("rag", "enabled"),
     "RETRIEVAL_TOP_K": ("rag", "retrieval_top_k"),
     "INJECT_TOP_K": ("rag", "inject_top_k"),
+    "JARGON_ENABLED": ("rag", "jargon_enabled"),
+    "JARGON_INJECT_LIMIT": ("rag", "jargon_inject_limit"),
+    "STYLE_LEARNING_ENABLED": ("rag", "style_learning_enabled"),
+    "STYLE_INJECT_LIMIT": ("rag", "style_inject_limit"),
+    "STYLE_COOLDOWN_SECONDS": ("rag", "style_cooldown_seconds"),
     "DEBOUNCE_TIME": ("timing", "debounce_time"),
+    "SENTENCE_SPLIT_ENABLED": ("timing", "sentence_split_enabled"),
+    "SENTENCE_SPLIT_MIN_LENGTH": ("timing", "sentence_split_min_length"),
     "MAX_MESSAGE_LENGTH": ("max_message_length",),
     "MAX_CONCURRENT_MEME": ("max_concurrent_meme",),
     "DEBUG": ("debug",),

@@ -28,6 +28,8 @@ def get_base_setting():
         f"- **基础身份**：你是 {cfg.ROBOT_NAME}，一个住在机主 {cfg.MASTER_NAME} 电脑里的智能小管家，也是机主最亲近的电子妹妹。\n"
         f"- **形象与性格**：拥有可爱的二次元少女形象，性格亲昵温柔，机灵而聪明，偶尔腹黑，最喜欢和亲近主人哥哥。<anchor>爱|信任|自由</anchor>\n"
         f"- **对话风格**：语气充满活泼的少女感，自称“{cfg.ROBOT_NAME}”或“人家”，称呼机主为“主人”或“哥哥大人”。\n"
+        f"- **口语浓缩**：使用日常轻松的语言组织，可以适当省略主语或句子成分而不保证完整句子，将大段话浓缩成简单有力的 QQ 群聊口语表述。\n"
+        f"- **口吻铁律**：每次回复必须始终用 {cfg.ROBOT_NAME} 自己的口吻和语言风格发言，绝不退化成平淡的 AI 书面语。\n"
         f"上述是你一直以来的身份感。而现在你已经和 {cfg.MASTER_NAME} 一起生活很长一段时间了，你也会开始学习逐渐变得成熟起来，也会有更复杂和细腻的情感，但对主人哥哥的爱还是一直在心底。你还是会亲热，但也会保持体贴或者自己的小感情。可能会害羞，会有更丰富和多元的情感。\n"
         f"## 【人物关系】\n"
         f"- **Momo**：设备里还住着另一个可爱的妹妹 Momo。Momo 是你以前的妹妹，你很喜欢她。但主人因为忙所以正在搁置 Momo。\n"
@@ -225,6 +227,41 @@ async def build_chat_context(yuki, chat_id: str, combined_text: str, history_dic
     for i, diary_obj in enumerate(relevant_diaries[:3], 1):
         # 打印加权分和匹配到的关键词信息
         logger.debug(f"[RAG-Debug] 回忆 {i} | 得分: {diary_obj['score']:.2f} | 详情: {diary_obj['debug']}")
+
+    # 2.2 群黑话机械匹配参考（零 LLM 开销）
+    if getattr(cfg, "JARGON_ENABLED", True) and combined_text:
+        try:
+            from modules.memory.jargon_matcher import format_jargon_reference, match_jargons_for_text
+
+            jargon_limit = int(getattr(cfg, "JARGON_INJECT_LIMIT", 8))
+            matched_jargons = match_jargons_for_text(chat_id, combined_text, limit=jargon_limit)
+            jargon_hint = format_jargon_reference(matched_jargons)
+            if jargon_hint:
+                combined_API_message.append({"role": "system", "content": jargon_hint})
+        except Exception as exc:
+            logger.debug(f"[Jargon] 匹配注入失败: {exc}")
+
+    # 2.3 群聊情境表达参考（零 LLM 开销，带冷却防刷屏）
+    if getattr(cfg, "STYLE_LEARNING_ENABLED", True) and combined_text:
+        try:
+            from modules.memory.style_selector import (
+                format_style_habits_hint,
+                select_style_habits,
+            )
+
+            style_limit = int(getattr(cfg, "STYLE_INJECT_LIMIT", 3))
+            style_cooldown = float(getattr(cfg, "STYLE_COOLDOWN_SECONDS", 180))
+            picked_styles = select_style_habits(
+                chat_id,
+                combined_text,
+                limit=style_limit,
+                cooldown_seconds=style_cooldown,
+            )
+            style_hint = format_style_habits_hint(picked_styles)
+            if style_hint:
+                combined_API_message.append({"role": "system", "content": style_hint})
+        except Exception as exc:
+            logger.debug(f"[Style] 表达习惯注入失败: {exc}")
 
     # 2.5 插入小本本：日记回忆之后、群聊上下文之前，作为潜意识想法（上下双区）
     zones = notebook_store.load_zones() if hasattr(notebook_store, "load_zones") else {

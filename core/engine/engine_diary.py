@@ -1,4 +1,5 @@
 # core/engine_diary.py
+import asyncio
 import datetime
 import json
 import re
@@ -7,6 +8,8 @@ from config import cfg
 from core.focus import focus_manager
 from core.history_filter import dialogue_messages
 from core.prompts import get_base_setting, get_summary_prompt
+from modules.memory.jargon_miner import mine_jargons_background
+from modules.memory.style_learner import learn_styles_background
 from utils.llm_client import llm_chat
 from utils.logger import get_logger
 
@@ -28,6 +31,16 @@ class EngineDiaryService:
         """
         logger.info(f"[Engine] [{chat_id}] 记忆过长，{cfg.ROBOT_NAME.title()} 正在写日记...")
         dialogue_msgs = dialogue_messages(history)
+        if getattr(cfg, "JARGON_ENABLED", True) and dialogue_msgs:
+            try:
+                asyncio.create_task(mine_jargons_background(str(chat_id), dialogue_msgs))
+            except RuntimeError:
+                pass
+        if getattr(cfg, "STYLE_LEARNING_ENABLED", True) and dialogue_msgs:
+            try:
+                asyncio.create_task(learn_styles_background(str(chat_id), dialogue_msgs))
+            except RuntimeError:
+                pass
         content_to_summarize = json.dumps(dialogue_msgs, ensure_ascii=False)
         try:
             messages = [

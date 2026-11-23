@@ -975,7 +975,18 @@ class SessionPipeline:
                     continue
                 await self._send_meme_segment(chat_id, send_mode, meme_match, shot_live_buffer, context=context)
             else:
-                await self._send_text_segment(chat_id, send_mode, part, shot_live_buffer, context=context)
+                if getattr(cfg, "SENTENCE_SPLIT_ENABLED", True):
+                    from core.sentence_splitter import split_text_with_llm
+
+                    sub_parts = await split_text_with_llm(part)
+                else:
+                    sub_parts = [part]
+                for sub_part in sub_parts:
+                    sub_part = sub_part.strip()
+                    if sub_part:
+                        await self._send_text_segment(
+                            chat_id, send_mode, sub_part, shot_live_buffer, context=context
+                        )
 
         logger.info(f"[Pipeline] 发送完成，内容: {answer_text[:80]}")
         return context

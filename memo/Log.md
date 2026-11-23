@@ -906,3 +906,18 @@
 - 在 `modules/QQNapcatListen/commands.py` 新增 `handle_art_gacha_command()` 并在 `listen_main.py` 群聊与私聊分支接入，支持 `/抽图` 与 `/抽图 <自定义附言>`；
 - 在 `core/session_pipeline.py` 的 `prepare_chat_context` 与 `decide_reply_action` 对带 `art_gacha_jump` 标记的消息执行跳跃、提取自定义附言并强制回复；
 - 验证：`docker exec yuki python -m pytest tests/test_art_focus.py tests/test_napcat.py -q`（27 passed）。
+
+## 2026-11-23 移植 MaiBot 智能语义断句与群黑话系统
+
+- **智能语义断句**（`core/sentence_splitter.py`）：
+  - 借鉴 MaiBot `llm_sentence_splitter`，对超过阈值长度（`SENTENCE_SPLIT_MIN_LENGTH=18`）且非代码块/多行清单的文本段调用轻量模型切分为自然短气泡；
+  - 校验非空白字符零增删改写并剥离段尾逗号，异常或校验不通过自动回退原文；接入 `core/session_pipeline.py::send_reply`。
+- **群黑话（Jargon）系统**（`modules/memory/jargon_{store,miner,matcher}.py`）：
+  - `JargonStore` 使用 `data/jargon.db`（SQLite）按词条聚合频次、分群分布与证据片段；
+  - `jargon_miner.py` 挂载于 `core/engine/engine_diary.py::do_summarize` 后台旁路，仅从 `user` 发言抽取候选，达到阶梯阈值 `[4, 8, 25, 100]` 后执行 `with_context` vs `content_only` vs `compare` 三步防幻觉对比以过滤普通白话；
+  - `jargon_matcher.py` 接入 `core/prompts.py::build_chat_context`，零 LLM 开销机械匹配命中词条并注入精简参考提示。
+- **配置与测试**：在 `core/config/schema.py` 新增 `jargon_enabled`、`jargon_inject_limit`、`sentence_split_enabled`、`sentence_split_min_length` 及兼容别名；`docker exec yuki python -m pytest tests/test_sentence_splitter.py tests/test_jargon.py tests/test_config.py tests/test_pipeline.py -q`（26 passed）。
+- **人格口语约束与群聊情境表达学习（StyleHabit）**：
+  - `core/prompts.py::get_base_setting` 补充口语浓缩（省略成分、QQ 群聊口语）与口吻铁律（始终保持 Yuki 风格）；
+  - 新增 `modules/memory/style_{store,learner,selector}.py`（`data/style_habits.db`），在 `engine_diary.py::do_summarize` 旁路从 `user` 发言提取 `(situation, style)`，在 `build_chat_context` 中按分词重叠 + 180s 冷却防刷屏零延迟挑选最多 3 条注入；
+  - `core/config/schema.py` 新增 `style_learning_enabled`、`style_inject_limit`、`style_cooldown_seconds`；新增 `tests/test_style_habits.py`。
