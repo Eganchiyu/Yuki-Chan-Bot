@@ -49,4 +49,5 @@ dev = [
 [tool.pytest.ini_options]
 # 套件必须全离线：不联网、不需要真实 API Key，随时可跑
 asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
 testpaths = ["tests"]

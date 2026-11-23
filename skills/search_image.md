@@ -5,7 +5,7 @@
 
 ## 参数
 - `keyword` (str): 关键词，用于生成文件名，不参与搜索。
-- `save_dir` (str): 保存目录，默认为`D:/Projects/YukiV6/temp_images`。
+- `save_dir` (str): 保存目录，默认为项目根目录下的 `temp_images`。
 
 ## 返回值
 - 成功：图片文件的绝对路径（字符串）。

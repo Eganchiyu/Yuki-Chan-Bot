@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from core import phone_macro as pm
 from core.focus.domain import BASE_KEEP_TOOLS, FocusDomain
-from core.focus.manager import register_domain
+from core.focus.manager import focus_manager, register_domain
 from core.focus.tools import make_focus_finish_handler
 from core.toolchain import ToolResult
 from utils.logger import get_logger
@@ -87,21 +87,19 @@ PHONE = FocusDomain(
 register_domain(PHONE)
 
 
-def _active_phone_manager():
-    """优先读取 core.phone_focus.phone_focus_manager 以兼容单元测试的 monkeypatch。"""
-    from core import phone_focus as pf
-    return pf.phone_focus_manager
-
-
 async def phone_start_tool(context, goal: str = "") -> ToolResult:
     """进入手机聚焦模式，返回当前手机界面与已存组合技列表。"""
     from core.phone_driver import driver
     from core.tools.tools_phone import phone_action_tool
 
-    mgr = _active_phone_manager()
-    mgr.enter(context.chat_id, goal=goal)
+    history = (
+        (context.metadata or {}).get("history_manager")
+        if isinstance(context.metadata, dict)
+        else None
+    )
+    focus_manager.enter(context.chat_id, PHONE.name, goal=goal, history=history)
     if goal:
-        mgr.record_step(context.chat_id, f"开始操作手机: {goal}")
+        focus_manager.record_step(context.chat_id, f"开始操作手机: {goal}", domain=PHONE.name)
 
     unlocked, unlock_note = await driver.wake_and_unlock()
     if not unlocked:
@@ -121,7 +119,7 @@ async def phone_start_tool(context, goal: str = "") -> ToolResult:
         remember=False,
     )
     if not inspect_res.success and inspect_res.error == "device_unavailable":
-        mgr._states.pop(str(context.chat_id), None)
+        focus_manager.abort(context.chat_id, PHONE.name)
         return ToolResult(
             success=False,
             content=inspect_res.content,
@@ -153,4 +151,4 @@ async def phone_start_tool(context, goal: str = "") -> ToolResult:
     )
 
 
-phone_finish_tool = make_focus_finish_handler(PHONE, manager_getter=_active_phone_manager)
+phone_finish_tool = make_focus_finish_handler(PHONE)

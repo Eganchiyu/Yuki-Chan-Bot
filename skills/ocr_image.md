@@ -13,6 +13,6 @@
 
 ## 调用示例
 ```bash
-python D:/Projects/YukiV6/skills/ocr_image.py D:/Projects/YukiV6/data/image_store/027.jpg
-python D:/Projects/YukiV6/skills/ocr_image.py D:/Projects/YukiV6/data/image_store/027.jpg ch_sim,en false
+python3 skills/ocr_image.py data/image_store/027.jpg
+python3 skills/ocr_image.py data/image_store/027.jpg ch_sim,en false
 ```

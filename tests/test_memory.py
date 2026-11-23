@@ -328,3 +328,121 @@ def test_rag_save_memory_deduplicates_with_chat_id_under_chroma():
     assert other_chat_id is not None
     assert rag.collection.count() == 2
 
+
+# ==================== 群黑话 (Jargon) 与情境表达习惯 (StyleHabit) ====================
+
+async def test_jargon_store_thresholds_inference_and_matching(tmp_path):
+    """群黑话频次阶梯阈值、三步防幻觉推断（真黑话 vs 普通白话）及纯 user 提取匹配。"""
+    import json
+    from unittest.mock import AsyncMock, patch
+
+    from modules.memory.jargon_matcher import format_jargon_reference, match_jargons_for_text
+    from modules.memory.jargon_miner import (
+        extract_candidates_from_dialogue,
+        infer_jargon_meaning,
+        should_infer_jargon,
+    )
+    from modules.memory.jargon_store import JargonStore
+
+    store = JargonStore(str(tmp_path / "jargon.db"))
+    try:
+        for i in range(3):
+            recs = store.record_candidates("10001", [("典中典", f"证据{i}")])
+            assert len(recs) == 1 and recs[0].count == i + 1
+            assert should_infer_jargon(recs[0]) is False
+
+        recs = store.record_candidates("10001", [("典中典", "证据3")])
+        assert recs[0].count == 4 and should_infer_jargon(recs[0]) is True
+
+        for i in range(4):
+            store.record_candidates("10001", [("坐牢", f"今天加班写bug真是坐牢 {i}")])
+        rec = [r for r in store.list_jargons() if r.content == "坐牢"][0]
+        responses_jargon = [
+            json.dumps({"meaning": "指在工作或游戏中陷入枯燥痛苦的困境", "no_info": False}, ensure_ascii=False),
+            json.dumps({"meaning": "被关进监狱服刑"}, ensure_ascii=False),
+            json.dumps({"is_similar": False, "reason": "群里指加班痛苦，与监狱字面义不同"}, ensure_ascii=False),
+        ]
+        with patch("modules.memory.jargon_miner._call_fast_llm", new_callable=AsyncMock, side_effect=responses_jargon):
+            assert await infer_jargon_meaning(rec, store=store) is True
+        verified = store.load_verified_jargons("10001")
+        assert len(verified) == 1 and verified[0].content == "坐牢"
+
+        for i in range(4):
+            store.record_candidates("10001", [("电脑", f"买了个新电脑 {i}")])
+        plain_rec = [r for r in store.list_jargons() if r.content == "电脑"][0]
+        responses_plain = [
+            json.dumps({"meaning": "电子计算机设备", "no_info": False}, ensure_ascii=False),
+            json.dumps({"meaning": "电子计算机"}, ensure_ascii=False),
+            json.dumps({"is_similar": True, "reason": "完全相同的常见词汇"}, ensure_ascii=False),
+        ]
+        with patch("modules.memory.jargon_miner._call_fast_llm", new_callable=AsyncMock, side_effect=responses_plain):
+            assert await infer_jargon_meaning(plain_rec, store=store) is False
+        assert all(r.content != "电脑" for r in store.load_verified_jargons("10001"))
+
+        dialogue = [
+            {"role": "user", "content": "群友A: 今天又爆典了"},
+            {"role": "assistant", "content": "哈哈确实"},
+            {"role": "user", "content": "群友B: 真的太爆典了"},
+            {"role": "user", "content": "群友C: 每日爆典任务完成"},
+        ]
+        extract_resp = json.dumps([{"content": "爆典", "idx": 0}], ensure_ascii=False)
+        with patch("modules.memory.jargon_miner._call_fast_llm", new_callable=AsyncMock, return_value=extract_resp):
+            extracted = await extract_candidates_from_dialogue("20002", dialogue, store=store)
+        assert len(extracted) == 1 and extracted[0].content == "爆典"
+
+        store.update_inference_result("爆典", is_jargon=True, meaning="指某人说出极具代表性的逆天/经典言论", last_inference_count=4)
+        matches = match_jargons_for_text("20002", "今天群里怎么又在爆典啊", store=store)
+        assert matches == [("爆典", "指某人说出极具代表性的逆天/经典言论")]
+        hint = format_jargon_reference(matches)
+        assert "爆典" in hint and "群聊黑话/梗参考" in hint
+    finally:
+        store.close()
+
+
+async def test_style_habits_store_cooldown_and_extraction(tmp_path):
+    """情境表达习惯累加计数、分词重叠选择 + 冷却防刷屏、以及仅从 user 消息抽取。"""
+    import json
+    from unittest.mock import AsyncMock, patch
+
+    from modules.memory.style_learner import extract_styles_from_dialogue
+    from modules.memory.style_selector import format_style_habits_hint, select_style_habits
+    from modules.memory.style_store import StyleStore
+
+    store = StyleStore(str(tmp_path / "style.db"))
+    try:
+        first = store.record_habits(
+            "10001",
+            [("游戏操作非常厉害惊叹", "使用 这么强！"), ("表示加班痛苦难受", "使用 真是坐牢啊"), ("早上打招呼", "使用 早安喵")],
+        )
+        assert len(first) == 3 and first[0].count == 1
+        second = store.record_habits("10001", [("游戏操作非常厉害惊叹", "使用 这么强！")])
+        assert second[0].count == 2
+
+        picked = select_style_habits(
+            "10001", "刚才那把游戏操作真的太厉害了", store=store, limit=2, cooldown_seconds=180.0, now=1000.0
+        )
+        assert len(picked) == 2 and picked[0].situation == "游戏操作非常厉害惊叹"
+        first_ids = {h.id for h in picked}
+
+        picked_again = select_style_habits(
+            "10001", "游戏操作厉害", store=store, limit=2, cooldown_seconds=180.0, now=1060.0
+        )
+        assert len(picked_again) == 1 and picked_again[0].id not in first_ids
+        hint = format_style_habits_hint(picked)
+        assert "本群常用表达参考" in hint and "这么强" in hint
+
+        dialogue = [
+            {"role": "user", "content": "群友A: 我嘞个豆这也太强了"},
+            {"role": "assistant", "content": "确实厉害呀"},
+            {"role": "user", "content": "群友B: 对对对，真的离谱"},
+            {"role": "user", "content": "群友C: 我嘞个豆，羡慕哭了"},
+            {"role": "user", "content": "群友D: 狠狠支持了"},
+        ]
+        mock_resp = json.dumps([{"situation": "对某事表示惊叹", "style": "使用 我嘞个豆"}], ensure_ascii=False)
+        with patch("modules.memory.style_learner._call_style_llm", new_callable=AsyncMock, return_value=mock_resp):
+            saved = await extract_styles_from_dialogue("20002", dialogue, store=store)
+        assert len(saved) == 1 and saved[0].style == "使用 我嘞个豆"
+    finally:
+        store.close()
+
+

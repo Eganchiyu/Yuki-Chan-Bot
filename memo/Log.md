@@ -944,3 +944,15 @@
   - 在 `core/focus/{domain,manager}.py` 新增声明式 `jump_tag` + `on_jump` 钩子，`core/focus/domains/art.py` 注册 `art_gacha_jump`，从 `core/session_pipeline.py` 移除 `/抽图` 业务硬编码（`session_pipeline.py` 精简近 200 行）。
 - **双工具循环底座收敛**（`core/tool_step_runner.py`）：提取 `resolve_tool_calls` 与 `parse_tool_result_payload`，统一供 `core/engine/engine_reply.py` 与 `modules/autonomous/sandbox_loop.py` 复用。
 - **验证**：定向单测（`test_pipeline`、`test_sft_logger`、`test_art_focus`、`test_focus_contract`、`test_maid`、`test_reply_format` 共 70 passed）与 `compileall` 全部通过。
+
+## 2026-11-23 技术债修复 Phase 4：兼容壳清退、工作区垃圾清理与测试归并优化
+
+- **清退旧手机聚焦兼容壳**：`core/focus/domains/phone.py`、`core/focus/tools.py`、`core/tools/tools_phone*.py` 及相关测试全面切回原生 `core.focus`（`FocusManager` / `focus_manager` / `PHONE`），移除 `core/phone_focus.py`。
+- **垃圾残留与旧路径清理**：移除废弃空目录（`maid_venv/`、`processors/`）、0 字节 `data/bot.db`、根目录临时测试库 `guild1.db*` 及备份 `utils/paths.py.bak-20261015`；修正 `skills/` 下残留的 `D:/Projects/YukiV6/...` 硬编码路径；在 `pyproject.toml` 显式配置 `asyncio_default_fixture_loop_scope = "function"`。
+- **测试文件按领域归并优化**：
+  - `test_sentence_splitter.py` 归并入 `test_reply_format.py`；
+  - `test_jargon.py` 与 `test_style_habits.py` 归并入 `test_memory.py`；
+  - `test_diary_filter.py` 归并入 `test_pipeline.py`（消除跨测试文件反向导入）；
+  - `test_status.py` 归并入 `test_napcat.py`；
+  - 同步刷新 `tests/README.md` 模块地图（25 个文件收敛为 20 个高内聚测试模块）。
+- **验证**：定向单测（`test_focus_snapshot`、`test_tool_phone_macro`、`test_reply_format`、`test_memory`、`test_pipeline`、`test_napcat` 共 87 passed）与全库 `compileall` 通过。

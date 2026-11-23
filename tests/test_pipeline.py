@@ -379,3 +379,129 @@ async def test_cancel_pending_clears_buffer_and_timer():
     assert pipeline.yuki.message_buffer["12345"] == []
     assert "12345" not in pipeline._timer_tasks
 
+
+# ==================== 日记过滤与超长触发 (diary_filter) ====================
+
+def _mix_diary_session():
+    import json
+
+    return [
+        {"role": "system", "content": "人设"},
+        {"role": "user", "content": "帮我看看手机"},
+        {"role": "assistant", "content": "好~人家看看"},
+        {"role": "tool", "name": "phone_action", "tool_call_id": "c1",
+         "content": json.dumps({"success": True, "content": "[#1] [可点] 外卖 @(540,435)"})},
+        {"role": "tool", "name": "search_diary", "tool_call_id": "c2",
+         "content": json.dumps({"success": True, "content": "total 0\ndrwxr-xr-x ..."})},
+        {"role": "assistant", "content": "找到外卖啦，要点哪家？"},
+        {"role": "user", "content": "第一家"},
+        {"role": "assistant", "content": "点好了！"},
+    ]
+
+
+def test_dialogue_filter_rules():
+    """is_dialogue_message 与 dialogue_length 排除 system、tool 与聚焦思考。"""
+    from core.history_filter import dialogue_length, dialogue_messages, is_dialogue_message
+
+    assert is_dialogue_message({"role": "user"})
+    assert is_dialogue_message({"role": "assistant"})
+    assert not is_dialogue_message({"role": "tool"})
+    assert not is_dialogue_message({"role": "system"})
+    assert not is_dialogue_message({"role": "assistant", "is_tool_thought": True, "focus_work": "phone"})
+    assert not is_dialogue_message({"role": "assistant", "is_tool_thought": True, "phone_focus_work": True})
+    assert not is_dialogue_message("不是字典")
+
+    session = _mix_diary_session()
+    assert len(session) == 8 and dialogue_length(session) == 5
+    assert all(m["role"] in ("user", "assistant") for m in dialogue_messages(session))
+    assert dialogue_length([]) == 0 and dialogue_length(None) == 0
+
+
+async def test_do_summarize_filters_tools_and_handles_failure(monkeypatch):
+    """do_summarize 只向模型喂纯聊天内容；异常时原样返回快照。"""
+    from config import cfg
+
+    captured = {}
+
+    async def fake_llm_chat(messages, **kwargs):
+        captured["messages"] = messages
+        return (
+            "今天主人让人家帮忙看手机点外卖，第一家那家店人家记得清清楚楚，"
+            "下单成功以后主人还夸人家动作快，人家开心得在桌面转了好几个圈呢~"
+        )
+
+    monkeypatch.setattr("core.engine.engine_diary.llm_chat", fake_llm_chat)
+    rag = MagicMock()
+    diary = EngineDiaryService(rag, MagicMock())
+    result = await diary.do_summarize("12345", _mix_diary_session())
+
+    payload = captured["messages"][-1]["content"]
+    assert "phone_action" not in payload and "tool_call_id" not in payload and "[#1]" not in payload
+    assert "帮我看看手机" in payload and "点好了！" in payload
+    rag.save_diary.assert_called_once()
+
+    roles = [msg["role"] for msg in result]
+    assert roles[0] == "system" and "tool" not in roles
+    assert len(result) == 1 + min(cfg.KEEP_LAST_DIALOGUE, 5)
+
+    async def boom(*args, **kwargs):
+        raise RuntimeError("模型挂了")
+
+    monkeypatch.setattr("core.engine.engine_diary.llm_chat", boom)
+    original = _mix_diary_session()
+    assert await diary.do_summarize("12345", original) == original
+
+
+async def test_pipeline_diary_trigger_threshold_and_focus_pause(monkeypatch):
+    """写日记仅按纯聊天条数触发，且在聚焦模式期间暂停超长与空闲摘要。"""
+    from config import cfg
+    from core.focus import focus_manager
+
+    focus_manager._states.clear()
+    try:
+        pipeline = _create_mock_pipeline()
+        # 1) 塞满工具消息但聊天仅 2 条：不触发
+        tool_heavy = [
+            {"role": "system", "content": "人设"},
+            {"role": "user", "content": "开始"},
+            {"role": "assistant", "content": "嗯"},
+            *[
+                {"role": "tool", "name": "search_diary", "tool_call_id": f"c{i}", "content": "输出"}
+                for i in range(cfg.DIARY_MAX_LENGTH + 10)
+            ],
+        ]
+        pipeline.history_manager.append_session_message.return_value = tool_heavy
+        created = []
+        monkeypatch.setattr("asyncio.create_task", lambda coro: created.append(coro) or coro.close())
+
+        ctx = {"chat_id": "12345", "answer_text": "回复", "answer_raw": "回复", "current_time_str": "2026-11-09 22:00"}
+        await pipeline.finalize_conversation(ctx)
+        assert created == []
+
+        # 2) 聊天超过阈值：进入聚焦时暂停，退出聚焦后恢复触发
+        chat_heavy = [
+            {"role": "system", "content": "人设"},
+            *[
+                {"role": "user" if i % 2 else "assistant", "content": f"聊天{i}"}
+                for i in range(cfg.DIARY_MAX_LENGTH + 4)
+            ],
+        ]
+        pipeline.history_manager.append_session_message.return_value = chat_heavy
+
+        focus_manager.enter("12345", "phone", goal="点外卖")
+        await pipeline.finalize_conversation(ctx)
+        assert created == []
+
+        rag = MagicMock()
+        diary_history = MagicMock()
+        await EngineDiaryService(rag, diary_history).summarize_idle_session("12345", chat_heavy)
+        rag.save_diary.assert_not_called()
+        diary_history.replace_session.assert_not_called()
+
+        focus_manager.exit("12345")
+        await pipeline.finalize_conversation(ctx)
+        assert len(created) == 1
+    finally:
+        focus_manager._states.clear()
+
+

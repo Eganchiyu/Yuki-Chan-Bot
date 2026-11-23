@@ -2,11 +2,15 @@ import requests
 import os
 import random
 
-def search_image(keyword, save_dir='D:/Projects/YukiV6/temp_images'):
+_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_DEFAULT_SAVE_DIR = os.path.join(_PROJECT_ROOT, 'temp_images')
+
+
+def search_image(keyword, save_dir=_DEFAULT_SAVE_DIR):
     """
     搜索并下载一张与关键词相关的图片（目前使用随机动漫图片API，关键词仅用于命名）。
     :param keyword: 关键词，用于文件名标识
-    :param save_dir: 保存目录，默认为D:/Projects/YukiV6/temp_images
+    :param save_dir: 保存目录，默认为项目根目录下的 temp_images
     :return: 成功返回图片文件绝对路径，失败返回None
     """
     os.makedirs(save_dir, exist_ok=True)

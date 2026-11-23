@@ -1,6 +1,7 @@
 """NapCat 网关传输契约、入站唤醒策略与 QQ 指令测试。"""
 import asyncio
 import json
+import time
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -367,3 +368,97 @@ async def test_switch_command_swaps_route_and_auth(monkeypatch):
     await _drain()
     assert cfg.LLM_MODEL == "model-main"
     assert "只有哥哥大人" in gw_unauth.sent[0]["text"]
+
+
+# ==================== /查询 状态简报与 /强制关闭 指令 ====================
+
+class _StatusFakeYuki:
+    def __init__(self, gid: str = "1057020972"):
+        self.energy = {gid: 63.4}
+        self.group_activity = {gid: 1.2}
+        self.desire_to_start_topic = {gid: 71.5}
+        self.last_message_time = {gid: time.time() - 754}
+        self.maid_task_queue = None
+        self.maid_current_tasks = {}
+        self.message_buffer = {gid: [{"content": "hi"}]}
+        self.buffer_tasks = {}
+
+
+def test_status_text_desensitization_and_mode_override():
+    """/查询 普通群友隐藏线路与模型，主人可见全量简报，休眠态与模式提供者覆盖生效。"""
+    from core import status as status_mod
+
+    gid = "1057020972"
+    status_mod.reset_mode_providers()
+    try:
+        member_text = status_mod.build_status_text(_StatusFakeYuki(gid), gid, is_master=False)
+        assert "模式" in member_text and "精力" in member_text and "静默" in member_text
+        assert cfg.LLM_MODEL not in member_text and "主线" not in member_text
+
+        master_text = status_mod.build_status_text(_StatusFakeYuki(gid), gid, is_master=True)
+        assert cfg.LLM_MODEL in master_text and "主线" in master_text and "小女仆" in master_text
+        assert "\n" not in master_text and len(master_text) < 160
+
+        assert "模式 休眠" in status_mod.build_status_text(_StatusFakeYuki(gid), gid, group_active=False)
+
+        status_mod.register_mode_provider(lambda cid: "辩论中 · 第12轮" if cid == gid else None)
+        assert "辩论中 · 第12轮" in status_mod.build_status_text(_StatusFakeYuki(gid), gid)
+    finally:
+        status_mod.reset_mode_providers()
+
+
+def test_status_and_force_close_command_regex():
+    from core import status as status_mod
+
+    for ok in ("/查询", " /状态 ", "/status", "/STATUS"):
+        assert status_mod.match_status_command(ok)
+    for bad in ("/查询 模式", "/查", "查询", "/关闭", ""):
+        assert not status_mod.match_status_command(bad)
+
+    for ok in ("/强制关闭", "/强制关", "/强制关闭 确认", "/强制关闭确认"):
+        assert status_mod.match_force_close_command(ok)
+    for bad in ("/关闭", "/强制", "/强制开启"):
+        assert not status_mod.match_force_close_command(bad)
+
+
+async def test_status_and_force_close_handlers():
+    """/查询 单行响应；/强制关闭 全员可用但必须二次确认（过期重置），确认后休眠并清缓冲。"""
+    from unittest.mock import AsyncMock
+
+    from core import status as status_mod
+
+    gid = "1057020972"
+    master = _master_qq()
+    status_mod.reset_force_close_state()
+    try:
+        pipe = MagicMock()
+        pipe.yuki = _StatusFakeYuki(gid)
+        pipe.group_active_state = {gid: True}
+        gw = MagicMock()
+        gw.send = AsyncMock()
+
+        assert listen_main.handle_status_command(gw, pipe, gid, gid, master, "/查询") is True
+        await _drain()
+        assert "模式" in gw.send.await_args.args[1] and "\n" not in gw.send.await_args.args[1]
+
+        assert listen_main.handle_status_command(gw, pipe, gid, gid, master, "查询一下") is False
+        assert listen_main.handle_force_close_command(gw, pipe, gid, gid, "/关闭") is False
+
+        # 第一次 /强制关闭：只提示确认，群仍活跃
+        assert listen_main.handle_force_close_command(gw, pipe, gid, gid, "/强制关闭") is True
+        await _drain()
+        assert pipe.group_active_state[gid] is True and "再发一次" in gw.send.await_args.args[1]
+
+        # 第二次 /强制关闭：真正休眠并清空缓冲
+        assert listen_main.handle_force_close_command(gw, pipe, gid, gid, "/强制关闭") is True
+        await _drain()
+        assert pipe.group_active_state[gid] is False
+        assert pipe.yuki.message_buffer[gid] == []
+        assert status_mod.is_force_close_confirmed(gid) is False
+
+        # 确认窗口过期检查
+        status_mod.mark_force_close_pending(gid, now=time.time() - status_mod.FORCE_CLOSE_CONFIRM_SECONDS - 1)
+        assert status_mod.is_force_close_confirmed(gid) is False
+    finally:
+        status_mod.reset_force_close_state()
+

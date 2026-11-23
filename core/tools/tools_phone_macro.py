@@ -14,8 +14,8 @@ import copy
 from config import cfg
 from core import phone_agent
 from core import phone_macro as pm
+from core.focus import focus_manager
 from core.phone_driver import driver
-from core.phone_focus import phone_focus_manager
 from core.toolchain import ToolResult
 from utils.logger import get_logger
 
@@ -510,15 +510,16 @@ async def phone_macro_tool(
                 auto_distill=bool(auto_distill),
             )
             if res.success:
-                phone_focus_manager.record_step(context.chat_id, f"保存组合技「{name}」", note)
+                focus_manager.record_step(context.chat_id, f"保存组合技「{name}」", note, domain="phone")
             return res
 
         if action in ("play", "run", "执行", "回放"):
             res = await _play(context, name, params, dry_run, max_nodes, wait_seconds, expect_timeout)
-            phone_focus_manager.record_step(
+            focus_manager.record_step(
                 context.chat_id,
                 f"回放组合技「{name}」({'成功' if res.success else '受阻'})",
                 note,
+                domain="phone",
             )
             return res
 

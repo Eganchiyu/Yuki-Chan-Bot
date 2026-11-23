@@ -20,8 +20,8 @@ import xml.etree.ElementTree as ET
 
 from config import cfg
 from core import phone_macro as pm
+from core.focus import focus_manager
 from core.phone_driver import ADB_KEYBOARD_IME, driver
-from core.phone_focus import phone_focus_manager
 from core.toolchain import ToolResult
 from utils import BASE_DIR
 from utils.logger import get_logger
@@ -974,8 +974,8 @@ async def phone_action_tool(context, action="inspect", target=None, text="", dir
         except Exception as exc:  # 历史写失败不影响操作结果
             logger.warning(f"[Phone] 写历史失败: {exc}")
 
-    if action not in ("inspect", "查看", "看看") or phone_focus_manager.is_focused(context.chat_id):
-        phone_focus_manager.record_step(context.chat_id, " / ".join(steps), note)
+    if action not in ("inspect", "查看", "看看") or focus_manager.is_focused(context.chat_id, "phone"):
+        focus_manager.record_step(context.chat_id, " / ".join(steps), note, domain="phone")
 
     lines = [f"已完成: {' / '.join(steps)}", _format_tree(tree)]
     if shot_hint:

@@ -264,3 +264,45 @@ def test_history_manager_sharded_migration_and_single_chat_flush(tmp_path):
     assert reloaded.get_session("10001")[-1]["content"] == "群1新消息"
     assert reloaded.get_session("room/with:slash")[0]["content"] == "特殊会话"
 
+
+# ==================== 智能语义断句器 (sentence_splitter) ====================
+
+def test_parse_split_response_rules_and_safety():
+    """语义断句剥离句尾逗号、识别 no_split 标记，并在模型擅自改字时安全回退原文。"""
+    from core.sentence_splitter import parse_split_response
+
+    original = "今天天气真好啊，我们去吃火锅吧？顺便买杯奶茶！"
+    raw = '["今天天气真好啊，", "我们去吃火锅吧？", "顺便买杯奶茶！"]'
+    assert parse_split_response(original, raw) == ["今天天气真好啊", "我们去吃火锅吧？", "顺便买杯奶茶！"]
+
+    no_split_src = "这是一句不需要拆分的完整回复。"
+    assert parse_split_response(no_split_src, '"no_split"') == [no_split_src]
+    assert parse_split_response(no_split_src, '["no_split"]') == [no_split_src]
+
+    rewritten_src = "刚才那个问题我已经帮你查清楚了，没问题的。"
+    assert parse_split_response(rewritten_src, '["刚才那个问题我查清楚了，", "完全没问题的。"]') == [rewritten_src]
+
+
+async def test_split_text_with_llm_short_code_error_and_normal():
+    """过短文本与代码块跳过 LLM 请求；异常安全回退；正常长句切分为多段气泡。"""
+    from unittest.mock import AsyncMock
+
+    from core.sentence_splitter import split_text_with_llm
+
+    with patch("core.sentence_splitter.llm_chat", new_callable=AsyncMock) as mock_llm:
+        assert await split_text_with_llm("太短了", min_length=18) == ["太短了"]
+        code_text = "给你写好了：\n```python\nprint('hi')\nprint('ok')\n```"
+        assert await split_text_with_llm(code_text, min_length=5) == [code_text]
+        mock_llm.assert_not_awaited()
+
+    err_text = "第一句话其实挺长的，第二句话也差不多长，应该拆开。"
+    with patch("core.sentence_splitter.llm_chat", new_callable=AsyncMock, side_effect=RuntimeError("boom")):
+        assert await split_text_with_llm(err_text, min_length=10) == [err_text]
+
+    normal_text = "我刚刚看了一眼群消息，好像大家都在讨论晚饭吃什么。"
+    mock_resp = '["我刚刚看了一眼群消息，", "好像大家都在讨论晚饭吃什么。"]'
+    with patch("core.sentence_splitter.llm_chat", new_callable=AsyncMock, return_value=mock_resp):
+        parts = await split_text_with_llm(normal_text, min_length=10)
+    assert parts == ["我刚刚看了一眼群消息", "好像大家都在讨论晚饭吃什么。"]
+
+

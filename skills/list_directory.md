@@ -12,7 +12,7 @@
 ## 示例
 ```python
 from list_directory import list_directory
-items = list_directory('D:/Asumi')
+items = list_directory('./workspace')
 for item in items:
     print(f"{item['name']} ({item['type']}, {item['size']} bytes)")
 ```

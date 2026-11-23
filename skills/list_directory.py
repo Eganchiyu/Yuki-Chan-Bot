@@ -22,5 +22,7 @@ def list_directory(path):
 
 if __name__ == '__main__':
     import json
-    result = list_directory('D:/Asumi')
+    import sys
+    target = sys.argv[1] if len(sys.argv) > 1 else '.'
+    result = list_directory(target)
     print(json.dumps(result, ensure_ascii=False, indent=2))

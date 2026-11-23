@@ -8,10 +8,10 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 import core.engine.engine_reply as er
-import core.phone_focus as pf
 from core.engine.engine import YukiEngine
 from core.engine.engine_reply import EngineReplyService
-from core.phone_focus import SUMMARY_PREFIX, PhoneFocusManager
+from core.focus import focus_manager
+from core.focus.domains.phone import PHONE
 from core.toolchain import (
     SKIP_REPLY_MARKER,
     FunctionRegistry,
@@ -20,6 +20,8 @@ from core.toolchain import (
     ToolSpec,
 )
 from core.tools import TOOL_SPECS
+
+SUMMARY_PREFIX = PHONE.effective_summary_prefix
 
 
 class InMemoryHistory:
@@ -83,9 +85,9 @@ def _build_reply_service(history: InMemoryHistory | None = None, max_rounds: int
 
     # 用假 handler 替换 phone_start / phone_action，避免真实触发 ADB
     async def fake_phone_start(context, goal: str = "") -> ToolResult:
-        pf.phone_focus_manager.enter(context.chat_id, goal=goal)
+        focus_manager.enter(context.chat_id, "phone", goal=goal)
         if goal:
-            pf.phone_focus_manager.record_step(context.chat_id, f"开始操作手机: {goal}")
+            focus_manager.record_step(context.chat_id, f"开始操作手机: {goal}", domain="phone")
         return ToolResult(
             success=True,
             content="【已进入手机聚焦模式】首屏控件树 [#1 外卖]",
@@ -94,7 +96,7 @@ def _build_reply_service(history: InMemoryHistory | None = None, max_rounds: int
         )
 
     async def fake_phone_action(context, action: str = "inspect", target: str = "", note: str = "", remember: bool = True, **_kw) -> ToolResult:
-        pf.phone_focus_manager.record_step(context.chat_id, f"{action} {target}".strip(), note)
+        focus_manager.record_step(context.chat_id, f"{action} {target}".strip(), note, domain="phone")
         return ToolResult(
             success=True,
             content=f"已执行 {action} {target} -> 控件树 [#2 立即下单]",
@@ -133,9 +135,9 @@ def _build_reply_service(history: InMemoryHistory | None = None, max_rounds: int
 def _clean_focus_state(monkeypatch):
     """每个测试独立重置聚焦状态机与调用延迟。"""
     monkeypatch.setattr(er.cfg.timing, "tool_call_delay_seconds", 0.0)
-    pf.phone_focus_manager._states.clear()
+    focus_manager._states.clear()
     yield
-    pf.phone_focus_manager._states.clear()
+    focus_manager._states.clear()
 
 
 # ==================== 1. 同轮切换 + 4. 禁止同轮重入 ====================
@@ -286,10 +288,10 @@ async def test_snapshot_idle_more_than_five_turns_auto_exits(monkeypatch):
     svc, history, _, _ = _build_reply_service()
 
     # 先进入聚焦并记录一步
-    pf.phone_focus_manager.enter("c1", goal="看物流")
-    pf.phone_focus_manager.record_step("c1", "launch 菜鸟", "查快递")
+    focus_manager.enter("c1", "phone", goal="看物流")
+    focus_manager.record_step("c1", "launch 菜鸟", "查快递", domain="phone")
     history.append_session_message(
-        "c1", "tool", '{"success": true}', name="phone_action", phone_focus_work=True
+        "c1", "tool", '{"success": true}', name="phone_action", focus_work="phone"
     )
 
     async def fake_llm_chat_raw(messages, tools=None, **_kwargs):
@@ -301,12 +303,12 @@ async def test_snapshot_idle_more_than_five_turns_auto_exits(monkeypatch):
     for _ in range(5):
         sess = history.get_session("c1")
         await svc.chat_with_tools("c1", "闲聊", sess, "group", list(sess))
-        assert pf.phone_focus_manager.is_focused("c1") is True
+        assert focus_manager.is_focused("c1", "phone") is True
 
     # 第 6 轮闲置：自动退出并写入兜底总结
     sess = history.get_session("c1")
     await svc.chat_with_tools("c1", "还在闲聊", sess, "group", list(sess))
-    assert pf.phone_focus_manager.is_focused("c1") is False
+    assert focus_manager.is_focused("c1", "phone") is False
 
     persisted = history.get_session("c1")
     assert all(m.get("role") != "tool" for m in persisted)
@@ -386,7 +388,7 @@ async def test_snapshot_all_turn_exits_call_after_turn_once(monkeypatch, exit_ki
 async def test_b1_same_batch_action_and_finish_does_not_leak_work_record(monkeypatch):
     """当模型在同一批 tool_calls 中同时调用 phone_action 与 phone_finish 时，历史中不应残留 phone_action 记录。"""
     svc, history, _, _ = _build_reply_service()
-    pf.phone_focus_manager.enter("c1", goal="点咖啡")
+    focus_manager.enter("c1", "phone", goal="点咖啡")
 
     responses = [
         {

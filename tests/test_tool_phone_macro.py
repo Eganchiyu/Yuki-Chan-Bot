@@ -521,12 +521,11 @@ def test_registry_get_tools_switches_between_default_and_phone_focus():
 
 
 async def test_phone_focus_enter_and_finish_overwrites_work_records_preserving_chat(monkeypatch):
-    from core.phone_focus import PhoneFocusManager, SUMMARY_PREFIX, phone_finish_tool, phone_start_tool
-    import core.phone_focus as pf
+    from core.focus import FocusManager, focus_manager
+    from core.focus.domains.phone import PHONE, phone_finish_tool, phone_start_tool
 
-    mgr = PhoneFocusManager(max_idle_turns=5)
-    monkeypatch.setattr(pf, "phone_focus_manager", mgr)
-    monkeypatch.setattr(tp, "phone_focus_manager", mgr)
+    summary_prefix = PHONE.effective_summary_prefix
+    focus_manager._states.clear()
 
     async def fake_ensure():
         return "device"
@@ -562,34 +561,40 @@ async def test_phone_focus_enter_and_finish_overwrites_work_records_preserving_c
     ctx = _context()
     ctx.metadata["history_manager"] = fake_history
 
-    start_res = await phone_start_tool(ctx, goal="点汉堡和可乐")
-    assert start_res.success is True
-    assert mgr.is_focused("c1") is True
-    assert "已进入手机聚焦模式" in start_res.content
+    try:
+        start_res = await phone_start_tool(ctx, goal="点汉堡和可乐")
+        assert start_res.success is True
+        assert focus_manager.is_focused("c1", "phone") is True
+        assert "已进入手机聚焦模式" in start_res.content
 
-    finish_res = await phone_finish_tool(ctx, summary="在美团帮阿澄点好了汉堡和可乐")
-    assert finish_res.success is True
-    assert mgr.is_focused("c1") is False
+        finish_res = await phone_finish_tool(ctx, summary="在美团帮阿澄点好了汉堡和可乐")
+        assert finish_res.success is True
+        assert focus_manager.is_focused("c1", "phone") is False
 
-    # 工作记录被清除，工作期间插入的群友消息和正常回复按序保留，并以 USER 身份注入总结
-    roles_and_contents = [(m["role"], m["content"]) for m in fake_history.session]
-    assert roles_and_contents == [
-        ("system", "sys"),
-        ("user", "阿澄: 帮我点个汉堡"),
-        ("user", "群友B: 顺便看看有没有可乐"),
-        ("assistant", "好呀，看到可乐了"),
-        ("user", f"{SUMMARY_PREFIX}在美团帮阿澄点好了汉堡和可乐"),
-    ]
+        # 工作记录被清除，工作期间插入的群友消息和正常回复按序保留，并以 USER 身份注入总结
+        roles_and_contents = [(m["role"], m["content"]) for m in fake_history.session]
+        assert roles_and_contents == [
+            ("system", "sys"),
+            ("user", "阿澄: 帮我点个汉堡"),
+            ("user", "群友B: 顺便看看有没有可乐"),
+            ("assistant", "好呀，看到可乐了"),
+            ("user", f"{summary_prefix}在美团帮阿澄点好了汉堡和可乐"),
+        ]
+    finally:
+        focus_manager._states.clear()
 
 
 def test_phone_focus_auto_exits_after_more_than_five_idle_turns():
-    from core.phone_focus import PhoneFocusManager, SUMMARY_PREFIX
+    from core.focus import FocusManager
+    from core.focus.domains.phone import PHONE
+
+    summary_prefix = PHONE.effective_summary_prefix
 
     class _FakeHistory:
         def __init__(self):
             self.session = [
                 {"role": "user", "content": "帮我看下手机"},
-                {"role": "tool", "name": "phone_action", "content": "{}", "phone_focus_work": True},
+                {"role": "tool", "name": "phone_action", "content": "{}", "focus_work": "phone"},
             ]
 
         def get_session(self, cid):
@@ -600,21 +605,22 @@ def test_phone_focus_auto_exits_after_more_than_five_idle_turns():
             return self.session
 
     history = _FakeHistory()
-    mgr = PhoneFocusManager(max_idle_turns=5)
-    mgr.enter("c1", goal="查美团订单")
-    mgr.record_step("c1", "launch com.sankuai.meituan", "打开美团")
+    mgr = FocusManager(max_idle_turns=5)
+    mgr.register(PHONE)
+    mgr.enter("c1", "phone", goal="查美团订单")
+    mgr.record_step("c1", "launch com.sankuai.meituan", "打开美团", domain="phone")
 
     # 前 5 轮闲置不退出（限制大于 5 轮才退出）
     for _ in range(5):
-        assert mgr.after_turn("c1", phone_tools_used=False, history_manager=history) is False
-        assert mgr.is_focused("c1") is True
+        assert mgr.after_turn("c1", set(), history=history) is None
+        assert mgr.is_focused("c1", "phone") is True
 
     # 第 6 轮（>5 轮）闲置自动退出并注入 USER 总结
-    assert mgr.after_turn("c1", phone_tools_used=False, history_manager=history) is True
-    assert mgr.is_focused("c1") is False
+    assert mgr.after_turn("c1", set(), history=history) is not None
+    assert mgr.is_focused("c1", "phone") is False
     assert all(m.get("role") != "tool" for m in history.session)
     assert history.session[-1]["role"] == "user"
-    assert history.session[-1]["content"].startswith(SUMMARY_PREFIX)
+    assert history.session[-1]["content"].startswith(summary_prefix)
     assert "查美团订单" in history.session[-1]["content"]
 
 

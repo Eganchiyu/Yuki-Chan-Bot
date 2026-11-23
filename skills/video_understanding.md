@@ -14,7 +14,7 @@
 
 - `video_path` (str): 视频文件路径（必填）
 - `question` (str): 可选问题；不传时默认概括视频主体信息、场景、人物/物体、动作和可能事件
-- `--config` (str): 可选配置文件路径，默认 `D:/Projects/YukiV6/configs/config.yaml`
+- `--config` (str): 可选配置文件路径，默认 `configs/config.yaml`
 
 ## 保护与限制
 
@@ -34,11 +34,9 @@
 
 ## 调用示例
 
-为兼容 Windows 终端默认 GBK 编码，建议运行前设置 `PYTHONIOENCODING=utf-8`，避免中文路径、中文文件名或中文输出触发编码错误。
-
 ```bash
-set PYTHONIOENCODING=utf-8 && python "D:/Projects/YukiV6/skills/video_understanding.py" "D:/Projects/YukiV6/workspace/姐姐大人的视频.mp4"
-set PYTHONIOENCODING=utf-8 && python D:/Projects/YukiV6/skills/video_understanding.py C:/Users/eganc/Desktop/Demo.mp4 "概括主体信息" --config D:/Projects/YukiV6/configs/config.yaml
+python3 skills/video_understanding.py "workspace/demo.mp4"
+python3 skills/video_understanding.py "workspace/demo.mp4" "概括主体信息" --config configs/config.yaml
 ```
 
 ## 依赖

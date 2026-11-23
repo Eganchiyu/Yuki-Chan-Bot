@@ -30,8 +30,8 @@ def ocr_image(image_path: str, lang: list = None, gpu: bool = False) -> str:
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:
-        print("用法: python ocr_image.py <图片路径> [lang] [gpu]")
-        print("示例: python ocr_image.py D:/Projects/YukiV6/data/image_store/027.jpg")
+        print("用法: python skills/ocr_image.py <图片路径> [lang] [gpu]")
+        print("示例: python skills/ocr_image.py data/image_store/027.jpg")
         sys.exit(1)
 
     image_path = sys.argv[1]

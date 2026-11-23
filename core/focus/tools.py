@@ -52,29 +52,18 @@ def make_focus_finish_handler(
             if isinstance(context.metadata, dict)
             else None
         )
-        if hasattr(mgr, "exit") and isinstance(mgr, FocusManager):
-            exit_info = mgr.exit(
-                context.chat_id,
-                history=history_manager,
-                summary=summary,
-                reason="finish",
-                domain=domain.name,
-            )
-            final_summary = exit_info.summary if exit_info else mgr.build_fallback_summary(None, summary, domain=domain.name)
-        else:
-            # 兼容 PhoneFocusManager 实例
-            final_summary = mgr.exit_and_summarize(
-                context.chat_id,
-                history_manager=history_manager,
-                summary=summary,
-            )
-            from core.focus.manager import FocusExit
-            exit_info = FocusExit(
-                chat_id=str(context.chat_id),
-                domain=domain.name,
-                summary=final_summary,
-                reason="finish",
-            )
+        exit_info = mgr.exit(
+            context.chat_id,
+            history=history_manager,
+            summary=summary,
+            reason="finish",
+            domain=domain.name,
+        )
+        final_summary = (
+            exit_info.summary
+            if exit_info
+            else mgr.build_fallback_summary(None, summary, domain=domain.name)
+        )
 
         if isinstance(context.metadata, dict):
             exits = context.metadata.setdefault("focus_exits", [])
