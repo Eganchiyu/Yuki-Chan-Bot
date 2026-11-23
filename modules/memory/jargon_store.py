@@ -46,18 +46,32 @@ class JargonStore:
     def __init__(self, db_path: str = _DEFAULT_DB_PATH) -> None:
         self.db_path = db_path
         self._lock = threading.Lock()
+        self._conn: Optional[sqlite3.Connection] = None
+        self._verified_cache: Optional[List[JargonRecord]] = None
         self._init_db()
 
-    def _connect(self) -> sqlite3.Connection:
-        parent = os.path.dirname(os.path.abspath(self.db_path))
-        if parent:
-            os.makedirs(parent, exist_ok=True)
-        conn = sqlite3.connect(self.db_path, timeout=10.0)
-        conn.row_factory = sqlite3.Row
-        return conn
+    def _get_conn_locked(self) -> sqlite3.Connection:
+        if self._conn is None:
+            parent = os.path.dirname(os.path.abspath(self.db_path))
+            if parent:
+                os.makedirs(parent, exist_ok=True)
+            conn = sqlite3.connect(self.db_path, timeout=10.0, check_same_thread=False)
+            conn.row_factory = sqlite3.Row
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA synchronous=NORMAL")
+            self._conn = conn
+        return self._conn
+
+    def close(self) -> None:
+        with self._lock:
+            if self._conn is not None:
+                self._conn.close()
+                self._conn = None
+            self._verified_cache = None
 
     def _init_db(self) -> None:
-        with self._lock, self._connect() as conn:
+        with self._lock:
+            conn = self._get_conn_locked()
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS jargon (
@@ -123,7 +137,8 @@ class JargonStore:
         now = time.time()
         updated: List[JargonRecord] = []
 
-        with self._lock, self._connect() as conn:
+        with self._lock:
+            conn = self._get_conn_locked()
             for raw_content, evidence_snippet in candidates:
                 content = " ".join((raw_content or "").strip().split())
                 key = _normalize_key(content)
@@ -184,6 +199,7 @@ class JargonStore:
                     rec.updated_at = now
                     updated.append(rec)
             conn.commit()
+            self._verified_cache = None
         return updated
 
     def update_inference_result(
@@ -201,7 +217,8 @@ class JargonStore:
             return
         flag_val = None if is_jargon is None else (1 if is_jargon else 0)
         now = time.time()
-        with self._lock, self._connect() as conn:
+        with self._lock:
+            conn = self._get_conn_locked()
             conn.execute(
                 """
                 UPDATE jargon
@@ -219,19 +236,23 @@ class JargonStore:
                 ),
             )
             conn.commit()
+            self._verified_cache = None
 
     def load_verified_jargons(self, chat_id: str) -> List[JargonRecord]:
         """读取已确认为真黑话且有释义的条目（优先本群出现过的，按频次降序）。"""
         cid = str(chat_id)
-        with self._lock, self._connect() as conn:
-            rows = conn.execute(
-                """
-                SELECT * FROM jargon
-                WHERE is_jargon = 1 AND meaning != ''
-                ORDER BY count DESC
-                """
-            ).fetchall()
-        records = [self._row_to_record(r) for r in rows]
+        with self._lock:
+            if self._verified_cache is None:
+                conn = self._get_conn_locked()
+                rows = conn.execute(
+                    """
+                    SELECT * FROM jargon
+                    WHERE is_jargon = 1 AND meaning != ''
+                    ORDER BY count DESC
+                    """
+                ).fetchall()
+                self._verified_cache = [self._row_to_record(r) for r in rows]
+            records = list(self._verified_cache)
         # 本群出现过的排前面
         records.sort(
             key=lambda r: (1 if cid in r.session_counts else 0, r.session_counts.get(cid, 0), r.count),
@@ -245,7 +266,8 @@ class JargonStore:
         if only_verified:
             sql += " WHERE is_jargon = 1"
         sql += " ORDER BY count DESC, updated_at DESC LIMIT ?"
-        with self._lock, self._connect() as conn:
+        with self._lock:
+            conn = self._get_conn_locked()
             rows = conn.execute(sql, (max(1, int(limit)),)).fetchall()
         return [self._row_to_record(r) for r in rows]
 

@@ -2,6 +2,7 @@ import datetime
 import json
 import os
 import re
+import uuid
 import concurrent.futures
 import warnings
 
@@ -146,9 +147,12 @@ class MemoryRAG:
         if not content or not content.strip():
             return None
 
-        where_filter = {"timestamp": {"$gte": datetime.datetime.now().timestamp() - 86400}}
-        if chat_id is not None:
-            where_filter["chat_id"] = str(chat_id)
+        ts_cond = {"timestamp": {"$gte": datetime.datetime.now().timestamp() - 86400}}
+        where_filter = (
+            {"$and": [ts_cond, {"chat_id": str(chat_id)}]}
+            if chat_id is not None
+            else ts_cond
+        )
 
         try:
             existing = self.collection.get(where=where_filter)
@@ -160,7 +164,10 @@ class MemoryRAG:
             logger.warning(f"[RAG] 去重检查跳过: {e}")
 
         embedding = self.model.encode(content).tolist()
-        doc_id = f"mem_{memory_type}_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}_{hash(content) % 10000:04d}"
+        doc_id = (
+            f"mem_{memory_type}_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}"
+            f"_{uuid.uuid4().hex[:8]}"
+        )
         metadata = self._build_memory_metadata(
             memory_type=memory_type,
             chat_id=chat_id,

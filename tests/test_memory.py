@@ -309,3 +309,22 @@ def test_notebook_legacy_content_migrates_to_daily(tmp_path):
     assert store.load_zones() == {"daily": "旧版随手记", "plans": ""}
     store.save_zone("plans", "长期目标")
     assert store.load_zones() == {"daily": "旧版随手记", "plans": "长期目标"}
+
+
+def test_rag_save_memory_deduplicates_with_chat_id_under_chroma():
+    """ChromaDB 真实 EphemeralClient 下，带 chat_id 的多条件 $and 24h 去重正常生效且不抛异常。"""
+    client = chromadb.EphemeralClient()
+    rag = object.__new__(MemoryRAG)
+    rag.collection = client.get_or_create_collection(name="test_dedup_chat")
+    rag.model = _FakeModel()
+    rag.name_blacklist = []
+
+    first_id = rag.save_diary("【日记(2026-11-23 12:00)】：今天在群里聊了技术债修复", chat_id="10001")
+    dup_id = rag.save_diary("【日记(2026-11-23 12:00)】：今天在群里聊了技术债修复", chat_id="10001")
+    other_chat_id = rag.save_diary("【日记(2026-11-23 12:00)】：今天在群里聊了技术债修复", chat_id="20002")
+
+    assert first_id is not None
+    assert dup_id is None
+    assert other_chat_id is not None
+    assert rag.collection.count() == 2
+

@@ -921,3 +921,10 @@
   - `core/prompts.py::get_base_setting` 补充口语浓缩（省略成分、QQ 群聊口语）与口吻铁律（始终保持 Yuki 风格）；
   - 新增 `modules/memory/style_{store,learner,selector}.py`（`data/style_habits.db`），在 `engine_diary.py::do_summarize` 旁路从 `user` 发言提取 `(situation, style)`，在 `build_chat_context` 中按分词重叠 + 180s 冷却防刷屏零延迟挑选最多 3 条注入；
   - `core/config/schema.py` 新增 `style_learning_enabled`、`style_inject_limit`、`style_cooldown_seconds`；新增 `tests/test_style_habits.py`。
+
+## 2026-11-23 技术债修复 Phase 1：正确性止血与事件循环解绑
+
+- **ChromaDB 24h 去重与 ID 碰撞修复**（`modules/memory/rag.py`）：`save_memory` 多条件查询统一使用 `{"$and": [...]}` 修复 Chroma 0.5+ 下静默失效问题，`doc_id` 改用 `uuid4().hex[:8]` 消除同一秒多群并发写入冲突。
+- **写日记并发合并加固**（`core/engine/engine_diary.py`, `core/session_pipeline.py`）：新增 `merge_summarized_session()`，支持在 `sync_system_prompts` 更新首条 system 或 `ToolHistoryPruner` 折叠工具消息后仍按对话尾锚点安全保留期间新增消息；摘要异常回退时跳过 `replace_session` 防止覆盖回滚；移除 `summarize_idle_session` 中对非数字 `chat_id` 的强制 `int()` 转换。
+- **热路径解绑 Event Loop 与后台任务托管**：新增 `utils/background_tasks.py`（强引用 + 异常回调）托管写日记/黑话挖掘/风格学习协程；`SessionPipeline.retrieve_memories` 改走 `asyncio.to_thread`；`JargonStore` 与 `StyleStore` 启用 WAL 长连接复用与读内存缓存；修复 `main.py` 重启通知闭包变量引用。
+- **验证**：定向单测（`test_memory`、`test_pipeline`、`test_diary_filter`、`test_jargon`、`test_style_habits` 共 35 passed）与 `compileall` 全部通过。

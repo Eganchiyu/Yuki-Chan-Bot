@@ -10,10 +10,59 @@ from core.history_filter import dialogue_messages
 from core.prompts import get_base_setting, get_summary_prompt
 from modules.memory.jargon_miner import mine_jargons_background
 from modules.memory.style_learner import learn_styles_background
+from utils.background_tasks import spawn_background_task
 from utils.llm_client import llm_chat
 from utils.logger import get_logger
 
 logger = get_logger("engine")
+
+
+def merge_summarized_session(
+    snapshot: list,
+    summarized: list | None,
+    current: list | None,
+) -> list | None:
+    """将压缩后的摘要会话与等待 LLM 期间新到达的消息安全合并。
+
+    - 若 `summarized is snapshot`（摘要失败回退原引用），返回 `None` 提示跳过回写，防止覆盖回滚并发新消息；
+    - 即使等待期间 `sync_system_prompts` 更新了首条 system 或 `ToolHistoryPruner` 折叠了工具消息，
+      仍能通过对话消息序列/尾锚点识别增量消息并拼接到摘要尾部。
+    """
+    if summarized is None or summarized is snapshot:
+        return None
+    merged_head = list(summarized)
+    if not isinstance(current, list) or not current:
+        return merged_head
+
+    # 若期间更新了 system 提示词，同步保留最新 system 消息
+    if (
+        merged_head
+        and merged_head[0].get("role") == "system"
+        and current[0].get("role") == "system"
+    ):
+        merged_head[0] = current[0]
+
+    tail: list = []
+    snap_len = len(snapshot)
+    if len(current) >= snap_len and current[:snap_len] == snapshot:
+        tail = current[snap_len:]
+    else:
+        snap_chats = dialogue_messages(snapshot)
+        if len(current) >= snap_len and dialogue_messages(current[:snap_len]) == snap_chats:
+            tail = current[snap_len:]
+        elif snap_chats:
+            anchor = snap_chats[-1]
+            anchor_sig = (anchor.get("role"), anchor.get("content"), anchor.get("time"))
+            for idx in range(len(current) - 1, -1, -1):
+                msg = current[idx]
+                if (
+                    isinstance(msg, dict)
+                    and (msg.get("role"), msg.get("content"), msg.get("time")) == anchor_sig
+                ):
+                    tail = current[idx + 1 :]
+                    break
+
+    return merged_head + tail
 
 
 class EngineDiaryService:
@@ -32,15 +81,15 @@ class EngineDiaryService:
         logger.info(f"[Engine] [{chat_id}] 记忆过长，{cfg.ROBOT_NAME.title()} 正在写日记...")
         dialogue_msgs = dialogue_messages(history)
         if getattr(cfg, "JARGON_ENABLED", True) and dialogue_msgs:
-            try:
-                asyncio.create_task(mine_jargons_background(str(chat_id), dialogue_msgs))
-            except RuntimeError:
-                pass
+            spawn_background_task(
+                mine_jargons_background(str(chat_id), dialogue_msgs),
+                name=f"mine_jargons:{chat_id}",
+            )
         if getattr(cfg, "STYLE_LEARNING_ENABLED", True) and dialogue_msgs:
-            try:
-                asyncio.create_task(learn_styles_background(str(chat_id), dialogue_msgs))
-            except RuntimeError:
-                pass
+            spawn_background_task(
+                learn_styles_background(str(chat_id), dialogue_msgs),
+                name=f"learn_styles:{chat_id}",
+            )
         content_to_summarize = json.dumps(dialogue_msgs, ensure_ascii=False)
         try:
             messages = [
@@ -94,16 +143,14 @@ class EngineDiaryService:
         if focus_manager.is_focused(chat_id):
             logger.debug(f"[Engine] [{chat_id}] 处于聚焦模式中，跳过空闲日记总结")
             return
-        new_session = await self.do_summarize(int(chat_id), session)
+        cid_str = str(chat_id)
+        normalized_cid = int(cid_str) if cid_str.isdigit() else cid_str
+        summarized = await self.do_summarize(normalized_cid, session)
         current = (
             self.history.get_session(chat_id)
             if hasattr(self.history, "get_session")
             else None
         )
-        if (
-            isinstance(current, list)
-            and len(current) > len(session)
-            and current[: len(session)] == session
-        ):
-            new_session = list(new_session) + current[len(session) :]
-        self.history.replace_session(chat_id, new_session)
+        merged = merge_summarized_session(session, summarized, current)
+        if merged is not None:
+            self.history.replace_session(chat_id, merged)

@@ -317,6 +317,44 @@ async def test_summarize_preserves_new_messages_appended_during_llm_wait():
     )
 
 
+async def test_summarize_preserves_arrivals_when_prefix_mutated_or_failed():
+    """等待写日记期间即使 system 提示词更新或工具消息折叠，新消息仍保留；总结失败则跳过回写防回滚。"""
+    source_session = [
+        {"role": "system", "content": "旧系统提示"},
+        {"role": "user", "content": "旧消息1", "time": "10:00"},
+        {"role": "tool", "name": "search_diary", "content": "很长的原始工具返回"},
+        {"role": "assistant", "content": "旧回复1", "time": "10:01"},
+    ]
+    mutated_current = [
+        {"role": "system", "content": "新系统提示"},
+        {"role": "user", "content": "旧消息1", "time": "10:00"},
+        {"role": "tool", "name": "search_diary", "content": "[已折叠]"},
+        {"role": "assistant", "content": "旧回复1", "time": "10:01"},
+        {"role": "user", "content": "并发新消息A", "time": "10:02"},
+    ]
+    history = MagicMock()
+    history.get_session.return_value = mutated_current
+
+    # 1) 总结成功且 chat_id 为非纯数字：不抛 ValueError，保留最新 system 与并发新消息A
+    diary_service = EngineDiaryService(MagicMock(), history)
+    diary_service.do_summarize = AsyncMock(return_value=[{"role": "system", "content": "旧系统提示"}])
+    await diary_service.summarize_idle_session("debug_room_1", source_session)
+    diary_service.do_summarize.assert_awaited_once_with("debug_room_1", source_session)
+    history.replace_session.assert_called_once_with(
+        "debug_room_1",
+        [
+            {"role": "system", "content": "新系统提示"},
+            {"role": "user", "content": "并发新消息A", "time": "10:02"},
+        ],
+    )
+
+    # 2) 总结失败回退原引用：绝不调用 replace_session 覆盖回滚并发新消息
+    history.replace_session.reset_mock()
+    diary_service.do_summarize = AsyncMock(return_value=source_session)
+    await diary_service.summarize_idle_session("debug_room_1", source_session)
+    history.replace_session.assert_not_called()
+
+
 async def test_cancel_pending_clears_buffer_and_timer():
     """cancel_pending 应同时清空 message_buffer 并取消正在倒计时的 _timer_tasks。"""
     pipeline = _create_mock_pipeline()

@@ -30,6 +30,7 @@ from core.toolchain import SKIP_REPLY_MARKER
 from init import default_group_active
 from modules.debug.context_snapshot import PIPELINE_STAGES, context_snapshot_store
 from modules.vision.prefetch import prefetch_images, resolve_image
+from utils.background_tasks import spawn_background_task
 from utils.logger import get_logger
 from utils.paths import normalize_stored_path
 
@@ -658,7 +659,8 @@ class SessionPipeline:
         ]
         dynamic_top_k = 10 if len(combined_text) > 100 else 8
 
-        relevant_diaries = self.memory_rag.search_diaries(
+        relevant_diaries = await asyncio.to_thread(
+            self.memory_rag.search_diaries,
             combined_text,
             chat_id=chat_id,
             speaker_names=speaker_names,
@@ -1134,7 +1136,10 @@ class SessionPipeline:
             and dialogue_length(session) > cfg.DIARY_MAX_LENGTH
         ):
             history_snapshot = session.copy()
-            asyncio.create_task(self._background_summarize(chat_id, history_snapshot))
+            spawn_background_task(
+                self._background_summarize(chat_id, history_snapshot),
+                name=f"bg_summarize:{chat_id}",
+            )
 
         # 破冰模式：递增失败计数
         if context.get("ice_break"):
@@ -1148,6 +1153,8 @@ class SessionPipeline:
 
     async def _background_summarize(self, chat_id, history_snapshot):
         """后台处理摘要，不阻塞主流程；总结期间新增的消息自动追加回尾部，防止并发覆盖。"""
+        from core.engine.engine_diary import merge_summarized_session
+
         cid = str(chat_id)
         writing_diary = getattr(self.yuki, "writing_diary", None)
         if isinstance(writing_diary, set):
@@ -1159,14 +1166,10 @@ class SessionPipeline:
                 if hasattr(self.history_manager, "get_session")
                 else None
             )
-            if (
-                isinstance(current, list)
-                and len(current) > len(history_snapshot)
-                and current[: len(history_snapshot)] == history_snapshot
-            ):
-                summarized_list = list(summarized_list) + current[len(history_snapshot) :]
-            self.history_manager.replace_session(chat_id, summarized_list)
-            logger.info(f"[Pipeline] [{chat_id}] 日记写入完成，历史已同步")
+            merged = merge_summarized_session(history_snapshot, summarized_list, current)
+            if merged is not None:
+                self.history_manager.replace_session(chat_id, merged)
+                logger.info(f"[Pipeline] [{chat_id}] 日记写入完成，历史已同步")
         except Exception as e:
             logger.error(f"[Pipeline] [{chat_id}] 后台摘要失败: {e}")
         finally:

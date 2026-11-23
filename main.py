@@ -25,6 +25,7 @@ logger = get_logger("main")
 
 group_active_state = None  # 启动时由 ensure_group_state() 全量补齐（缺省=休眠）
 session_pipeline = None
+runtime_components = None
 
 
 # ==================== 初始化函数 ====================
@@ -140,7 +141,7 @@ def start_context_debug_webui_if_enabled():
         logger.error(f"[ContextDebug] WebUI 启动失败: {exc}")
 
 
-async def _send_restart_notice(payload) -> tuple:
+async def _send_restart_notice(payload, target_components: dict | None = None) -> tuple:
     """容器内收到「即将重启」通知：私聊告诉主人一声。
 
     为什么由容器自己发：supervisor 在宿主机，手里只有 HTTP 探针端口，
@@ -151,7 +152,8 @@ async def _send_restart_notice(payload) -> tuple:
     重启只有主人能做，通知也只该去找主人。
     """
     text = str(payload.get("text") or "⚙️ Yuki 进程重启中，稍等十几秒…")
-    sender = getattr(components.get("engine"), "sender", None)
+    comps = target_components if target_components is not None else (runtime_components or {})
+    sender = getattr(comps.get("engine"), "sender", None) or getattr(session_pipeline, "sender", None)
     if sender is None:
         return False, "sender 不可用"
     master = str(getattr(cfg.target, "qq", "") or "").strip()
@@ -165,23 +167,25 @@ async def _send_restart_notice(payload) -> tuple:
     return True, f"已私聊通知主人 {master}"
 
 
-def _install_restart_notifier() -> None:
+def _install_restart_notifier(target_components: dict | None = None) -> None:
     """把 /notify 的 HTTP 线程回调接到当前事件循环上。"""
     from utils.health_server import set_notifier
 
     loop = asyncio.get_running_loop()
 
     def _notifier(payload):
-        future = asyncio.run_coroutine_threadsafe(_send_restart_notice(payload), loop)
+        future = asyncio.run_coroutine_threadsafe(
+            _send_restart_notice(payload, target_components), loop
+        )
         return future.result(timeout=6)   # 让 supervisor 等到消息真的发出去
 
     set_notifier(_notifier)
     logger.info("[System] 重启通知端点已就绪：POST /notify")
 
 
-async def run_runtime() -> None:
+async def run_runtime(target_components: dict | None = None) -> None:
     try:
-        _install_restart_notifier()
+        _install_restart_notifier(target_components)
         await napcat_listen(session_pipeline.sender, session_pipeline, "mixed")
     finally:
         from utils.llm_client import close_global_session
@@ -294,6 +298,7 @@ if __name__ == "__main__":
 
     try:
         components = initialize_components()
+        runtime_components = components
         group_active_state = ensure_group_state(load_group_state(), cfg.TARGET_GROUPS)
         session_pipeline = ModeAwarePipeline(components, group_active_state, mode_router)
         components["engine"].process_callback = main_process
@@ -313,7 +318,7 @@ if __name__ == "__main__":
             logger.info("[System] DRY_RUN 通过：初始化成功，跳过 NapCat 接管，退出码 0")
             sys.exit(0)
 
-        asyncio.run(run_runtime())
+        asyncio.run(run_runtime(components))
 
     except KeyboardInterrupt:
         logger.info("[Main] 收到中断信号，正在退出...")
