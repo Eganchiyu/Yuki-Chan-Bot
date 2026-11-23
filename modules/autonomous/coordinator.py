@@ -534,11 +534,14 @@ class AutonomousCoordinator:
         return None
 
     def _pick_candidate(self, now: float) -> str | None:
-        """候选群 = 白名单 ∩ TARGET_GROUPS，按「静默最久 → 精力最高」取第一个。"""
+        """候选群 = 白名单 ∩ TARGET_GROUPS（且未休眠），按「静默最久 → 精力最高」取第一个。"""
         best = None
         best_key = None
+        group_state = getattr(self.pipeline, "group_active_state", None)
         for gid in self.enabled_group_ids():
             if not self.is_group_enabled(gid):
+                continue
+            if isinstance(group_state, dict) and group_state.get(str(gid)) is False:
                 continue
             last = float(self.pipeline.yuki.last_message_time.get(gid, 0.0) or 0.0)
             idle_minutes = (now - last) / 60 if last else 1e9

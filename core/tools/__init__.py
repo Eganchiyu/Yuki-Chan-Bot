@@ -8,7 +8,7 @@ from core.focus.domains.art import (
     art_start_tool,
 )
 from core.focus.domains.browser import browser_finish_tool, browser_start_tool
-from core.phone_focus import phone_finish_tool, phone_start_tool
+from core.focus.domains.phone import phone_finish_tool, phone_start_tool
 from .tools import TOOL_HANDLERS, TOOL_SCHEMAS, TOOL_SPECS
 from .tools_browser import browser_action_tool
 from .tools_diary import search_diary_tool

@@ -263,3 +263,85 @@ def reset_reply_watch():
         task.cancel()
     _tasks.clear()
     _watches.clear()
+
+
+# ==================== 心情高涨（High Spirits）追击护栏与事件构造 ====================
+
+def high_spirits_burst_left(yuki, chat_id: str) -> int | None:
+    """读连发护栏剩余额度；brain 未升级时返回 None（保持旧行为）。"""
+    getter = getattr(yuki, "high_spirits_burst_remaining", None)
+    if not callable(getter):
+        return None
+    try:
+        return max(0, int(getter(chat_id)))
+    except Exception:
+        return None
+
+
+def high_spirits_guard_active(yuki, chat_id: str) -> bool:
+    """高涨期内连发额度已用完：此时不再登记任何主动追击。"""
+    active = getattr(yuki, "high_spirits_active", None)
+    if not callable(active):
+        return False
+    try:
+        if not active(chat_id):
+            return False
+    except Exception:
+        return False
+    return high_spirits_burst_left(yuki, chat_id) == 0
+
+
+def high_spirits_can_followup(yuki, chat_id: str) -> bool:
+    """能否在回群第一句后再补一句：高涨有效 + 补发配额 + 连发护栏都允许。"""
+    active = getattr(yuki, "high_spirits_active", None)
+    turns_left = getattr(yuki, "high_spirits_turns_left", None)
+    if not callable(active) or not callable(turns_left):
+        return False
+    try:
+        if not active(chat_id) or turns_left(chat_id) <= 0:
+            return False
+    except Exception:
+        return False
+    burst_left = high_spirits_burst_left(yuki, chat_id)
+    return burst_left is None or burst_left > 0
+
+
+def build_high_spirits_event_builder(yuki, chat_id: str, followup_window: float):
+    """心情高涨时构造「再轻轻补一句」的被动事件；额度/空隙不允许时返回 None。"""
+    if not high_spirits_can_followup(yuki, chat_id):
+        return None
+
+    gap = max(1.0, float(followup_window))
+
+    def _builder(watch):
+        if not high_spirits_can_followup(yuki, chat_id):
+            logger.info(f"[Pipeline] {chat_id} 心情高涨连发额度已用完，放弃补发")
+            return None
+        gap_ok = getattr(yuki, "high_spirits_gap_elapsed", None)
+        if callable(gap_ok):
+            try:
+                if not gap_ok(chat_id, gap):
+                    logger.info(
+                        f"[Pipeline] {chat_id} 心情高涨连发空隙未到（需 {gap:.0f}s），放弃补发"
+                    )
+                    return None
+            except Exception:
+                pass
+        left = yuki.consume_high_spirits_turn(chat_id)
+        logger.info(f"[Pipeline] {chat_id} 心情高涨被动窗口到期，轻轻补一句（剩余配额 {left} 轮）")
+        return {
+            "content": (
+                "【心情高涨·轻轻补一句】你刚在独处时光里做出了自己挺喜欢的东西，"
+                "回到群里心情还很好。这是回群后最多两句里的第二句——"
+                "用你平时那种软软的、带点小得意的电子妹妹语气，只说一两句就好，"
+                "可以带「喵」「～」和小表情。不要像汇报工作，不要重复上一句，"
+                "也不要再展开成长篇或连发第三条。"
+            ),
+            "raw_text": "",
+            "name": "系统",
+            "time": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "source": "yuki.high_spirits",
+            "is_reply_watch_event": True,
+        }
+
+    return _builder

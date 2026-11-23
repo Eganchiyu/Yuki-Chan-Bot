@@ -77,9 +77,20 @@ class EngineDiaryService:
             return history
 
     async def summarize_idle_session(self, chat_id, session):
-        """摘要单个空闲会话并按会话粒度回写（聚焦模式期间跳过）。"""
+        """摘要单个空闲会话并按会话粒度回写（聚焦模式期间跳过；总结期间新到消息保留）。"""
         if focus_manager.is_focused(chat_id):
             logger.debug(f"[Engine] [{chat_id}] 处于聚焦模式中，跳过空闲日记总结")
             return
         new_session = await self.do_summarize(int(chat_id), session)
+        current = (
+            self.history.get_session(chat_id)
+            if hasattr(self.history, "get_session")
+            else None
+        )
+        if (
+            isinstance(current, list)
+            and len(current) > len(session)
+            and current[: len(session)] == session
+        ):
+            new_session = list(new_session) + current[len(session) :]
         self.history.replace_session(chat_id, new_session)

@@ -632,3 +632,120 @@ def test_zako_clean_tags_strips_disambiguation_and_duplicates(tmp_path):
     assert bare.available() is False
     assert bare.clean_tags("1girl, apron, apron") == "1girl, apron"
     assert bare.sample() is None
+
+
+async def test_prepare_art_gacha_jump_enters_and_reuses_art_focus(tmp_path, monkeypatch):
+    """硬编码 /抽图 状态跳跃：首次进入注入完整指南+资产并抽卡；二次再抽直接抽卡并保持创作模式。"""
+    from core.focus.domains.art import prepare_art_gacha_jump
+    from core.focus.view import ToolView
+    from core.history_manager import HistoryManager
+    from core.tools.tools import TOOL_SPECS
+    from core.toolchain import FunctionRegistry
+
+    reg = FunctionRegistry()
+    reg.scan_and_register(TOOL_SPECS)
+
+    hist = HistoryManager(history_file=str(tmp_path / "hist.json"))
+    cid = "c_jump_1"
+    assert not focus_manager.is_focused(cid, "art")
+
+    res1 = prepare_art_gacha_jump(cid, history=hist)
+    assert res1["entered_art"] is True
+    assert res1["prompt"]
+    assert focus_manager.is_focused(cid, "art") is True
+
+    view = ToolView.resolve(reg, focus_manager, cid)
+    assert "art_draw" in view
+    assert "art_finish" in view
+    assert "art_start" not in view
+
+    session1 = hist.get_session(cid)
+    names1 = [m.get("name") for m in session1 if m.get("role") == "tool"]
+    assert names1 == ["art_start", "art_gacha"]
+    assert "二次元艺术总监生图指南" in session1[0]["content"]
+    assert "yuki" in session1[0]["content"]
+    assert all(m.get("focus_work") == "art" for m in session1)
+
+    # 第二次直接再抽图：不重复注入 art_start，只新增 art_gacha，并保持创作模式
+    res2 = prepare_art_gacha_jump(cid, history=hist)
+    assert res2["entered_art"] is False
+    assert res2["prompt"]
+    assert focus_manager.is_focused(cid, "art") is True
+
+    session2 = hist.get_session(cid)
+    names2 = [m.get("name") for m in session2 if m.get("role") == "tool"]
+    assert names2 == ["art_start", "art_gacha", "art_gacha"]
+
+
+async def test_handle_art_gacha_command_routes_and_ignores_unrelated():
+    """/抽图 与 /抽图 <附言> 应以 art_gacha_jump 标记入队且跳过防抖。"""
+    import asyncio
+    from modules.QQNapcatListen.commands import handle_art_gacha_command
+
+    calls = []
+
+    class _FakePipeline:
+        async def enqueue_message(self, chat_id, mode, message_obj=None, debounce_flag=True, force_reply=None):
+            calls.append((chat_id, mode, message_obj, debounce_flag, force_reply))
+
+    pipe = _FakePipeline()
+    assert handle_art_gacha_command(pipe, None, 12345, 999, "普通聊天") is False
+    assert handle_art_gacha_command(pipe, None, 12345, 999, "/抽图什么") is False
+    assert handle_art_gacha_command(pipe, None, 12345, 999, "/抽图", sender_name="测试", send_mode="group") is True
+    assert handle_art_gacha_command(pipe, None, 999, 999, "/抽图 画yuki", sender_name="主人", send_mode="master_private") is True
+
+    await asyncio.sleep(0)
+    assert len(calls) == 2
+    assert calls[0][0] == "12345"
+    assert calls[0][1] == "group"
+    assert "art_gacha_jump" in calls[0][2].tags
+    assert calls[0][3] is False
+    assert calls[0][4] is True
+    assert calls[1][0] == "999"
+    assert calls[1][1] == "master_private"
+    assert "art_gacha_jump" in calls[1][2].tags
+    assert calls[1][2].raw_text == "/抽图 画yuki"
+
+
+async def test_pipeline_prepare_chat_context_art_gacha_custom_note(tmp_path):
+    """SessionPipeline.prepare_chat_context 遇到 /抽图 <附言> 时注入自定义要求并保留创作模式上下文。"""
+    from types import SimpleNamespace
+    from core.history_manager import HistoryManager
+    from core.session_pipeline import SessionPipeline
+
+    hist = HistoryManager(history_file=str(tmp_path / "pipe_hist.json"))
+    yuki = SimpleNamespace(
+        get_setting=lambda mode: "sys prompt",
+        message_buffer={},
+    )
+    pipeline = SessionPipeline(
+        components={
+            "sender": SimpleNamespace(),
+            "meme_processor": None,
+            "yuki": yuki,
+            "history_manager": hist,
+            "memory_rag": None,
+            "engine": None,
+        },
+        group_active_state={},
+    )
+    cid = "c_pipe_gacha"
+    ctx = {
+        "chat_id": cid,
+        "mode": "group",
+        "combined_text": '【"主人"】说: /抽图 用我的资产图和yuki的资产图合照',
+        "incoming_messages": [
+            {
+                "raw_text": "/抽图 用我的资产图和yuki的资产图合照",
+                "tags": ["group", "art_gacha_jump"],
+            }
+        ],
+        "native_images": [],
+    }
+    out = await pipeline.prepare_chat_context(ctx)
+    assert out["art_gacha_jump"] is True
+    assert out["force_reply"] is True
+    assert "用我的资产图和yuki的资产图合照" in out["combined_text"]
+    assert "请务必优先满足该要求" in out["combined_text"]
+    assert focus_manager.is_focused(cid, "art") is True
+    assert focus_manager.active(cid).goal == "用我的资产图和yuki的资产图合照"

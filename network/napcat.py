@@ -51,6 +51,14 @@ def _is_private(mode: str) -> bool:
     return mode in {"private", "master_private"}
 
 
+def _sanitize_download_filename(name: str | None, fallback: str) -> str:
+    """清理下载文件名，剥离路径组件以防目录穿越。"""
+    raw = str(name or "").replace("\\", "/").strip()
+    base = os.path.basename(raw).strip().strip(".")
+    base = re.sub(r"[\x00-\x1f/\\]+", "_", base)
+    return base or fallback
+
+
 # ==================== CQ 码文本工具（纯函数，无 I/O） ====================
 
 def smart_truncate(content, max_len=None, suffix="..."):
@@ -327,8 +335,24 @@ class NapCatGateway:
     async def send_local_image(self, chat_id, local_path, mode="private"):
         return await self.send(chat_id, f"[CQ:image,file=file:///{os.path.abspath(local_path)}]", mode=mode)
 
-    async def send_local_file(self, chat_id, local_path, mode="private"):
-        return await self.send(chat_id, f"[CQ:file,file=file:///{os.path.abspath(local_path)}]", mode=mode)
+    async def send_local_file(self, chat_id, local_path, mode="private", name: str | None = None):
+        """发送本地文件：优先使用 upload_private_file / upload_group_file 动作，失败时回退 CQ 码。"""
+        abs_path = os.path.abspath(local_path)
+        file_name = name or os.path.basename(abs_path)
+        is_private = _is_private(mode)
+        action = "upload_private_file" if is_private else "upload_group_file"
+        params = {
+            "user_id" if is_private else "group_id": int(chat_id),
+            "file": abs_path,
+            "name": file_name,
+        }
+        resp = await self.call(action, params, timeout=FILE_TIMEOUT)
+        if isinstance(resp, dict) and resp.get("status") in (None, "ok") and resp.get("retcode", 0) == 0:
+            data = resp.get("data")
+            mid = data.get("message_id") if isinstance(data, dict) else None
+            return mid if mid is not None else True
+        logger.warning(f"[NapCat] {action} 未成功，回退 CQ:file 方式发送: {file_name}")
+        return await self.send(chat_id, f"[CQ:file,file=file:///{abs_path}]", mode=mode)
 
     async def send_local_voice(self, chat_id, local_path, mode="group"):
         return await self.send(chat_id, f"[CQ:record,file=file:///{os.path.abspath(local_path)}]", mode=mode)
@@ -377,7 +401,8 @@ class NapCatGateway:
             except Exception as exc:
                 logger.error(f"[NapCat] 读取本地文件失败: {exc}")
 
-        name = filename or data.get("file_name") or f"file_{datetime.now():%Y%m%d_%H%M%S}_{str(file_id)[:8]}"
+        fallback_name = f"file_{datetime.now():%Y%m%d_%H%M%S}_{str(file_id)[:8]}"
+        name = _sanitize_download_filename(filename or data.get("file_name"), fallback_name)
 
         if content is None:
             if data.get("url"):

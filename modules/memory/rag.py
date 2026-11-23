@@ -194,34 +194,6 @@ class MemoryRAG:
             importance=3,
         )
 
-    def search_memory(self, query, chat_id=None, top_k=cfg.RETRIEVAL_TOP_K, threshold=1.0):
-        if not query.strip():
-            return []
-
-        query_emb = self.model.encode(query).tolist()
-        where_filter = {}
-        if chat_id is not None:
-            where_filter["chat_id"] = {"$in": [str(chat_id), "manual_record"]}
-
-        results = self.collection.query(
-            query_embeddings=[query_emb],
-            n_results=top_k,
-            where=where_filter,
-            include=["documents", "distances"]
-        )
-
-        if results['documents'] and results['documents'][0]:
-            docs = results['documents'][0]
-            distances = results['distances'][0]
-            filtered = []
-            seen = set()
-            for doc, dist in zip(docs, distances):
-                if dist <= threshold and doc not in seen:
-                    filtered.append(doc)
-                    seen.add(doc)
-            return filtered
-        return []
-
     def search_diaries(self, query_text, chat_id=None, n_results=8, top_k_keywords=5, speaker_names=None):
         """
         全局日记检索：取消按群聊硬过滤，对当前群聊和当前发言者做重排加权。

@@ -16,13 +16,19 @@ class EngineMonitorService:
     """负责引擎后台巡检任务。"""
 
     def __init__(self, yuki, history, diary_service, get_napcat_online: Callable[[], bool],
-                 get_process_callback, get_autonomous: Callable[[], object] | None = None):
+                 get_process_callback, get_autonomous: Callable[[], object] | None = None,
+                 get_group_active_state: Callable[[], dict | None] | None = None):
         self.yuki = yuki
         self.history = history
         self.diary_service = diary_service
         self.get_napcat_online = get_napcat_online
         self.get_process_callback = get_process_callback
         self.get_autonomous = get_autonomous or (lambda: None)
+        self.get_group_active_state = get_group_active_state or (lambda: None)
+
+    def _is_group_sleeping(self, cid: str) -> bool:
+        state = self.get_group_active_state()
+        return isinstance(state, dict) and state.get(str(cid)) is False
 
     def _autonomous_busy(self) -> bool:
         """非聊天模式进行中：冻结期不写日记、不触发破冰。"""
@@ -52,7 +58,6 @@ class EngineMonitorService:
                     await coordinator.auto_trigger_check()
                 except Exception as exc:
                     logger.warning(f"[Engine] 自主轮自动触发检查失败: {exc}")
-            history_dict = self.history.load()
             for cid, last_msg in list(self.yuki.last_message_time.items()):
                 if cid in self.yuki.writing_diary:
                     continue
@@ -63,17 +68,22 @@ class EngineMonitorService:
                 if idle_seconds < cfg.DIARY_IDLE_SECONDS:
                     continue
 
-                if cid not in history_dict:
+                session = (
+                    self.history.get_session(cid)
+                    if hasattr(self.history, "get_session")
+                    else (self.history.load().get(cid) or [])
+                )
+                if not session:
                     continue
                 # 轮数只算聊天，工具调用与工具输出不算（否则连着用几次工具就触发日记）
-                dialogue_count = dialogue_length(history_dict[cid])
+                dialogue_count = dialogue_length(session)
                 if dialogue_count < cfg.DIARY_MIN_TURNS:
                     continue
 
                 logger.info(f"[Engine] 群 {cid} 空闲 {idle_seconds:.0f}s，聊天轮数 {dialogue_count}，触发日记")
                 self.yuki.writing_diary.add(cid)
                 try:
-                    await self.diary_service.summarize_idle_session(cid, history_dict[cid])
+                    await self.diary_service.summarize_idle_session(cid, session)
                 finally:
                     self.yuki.writing_diary.discard(cid)
 
@@ -92,6 +102,8 @@ class EngineMonitorService:
 
             async with self.yuki.lock:
                 for cid in target_list:
+                    if self._is_group_sleeping(cid):
+                        continue
                     self.yuki.update_energy(chat_id=cid)
                     self.yuki.update_desire_to_reply(cid)
                     activity = self.yuki.group_activity.get(cid, 0.0)

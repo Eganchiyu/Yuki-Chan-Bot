@@ -92,19 +92,16 @@ async def _run_maid_task(engine, yuki_state, history_manager, task, runtime, sem
 
 
 def _remember_chat_state(yuki_state, chat_id, goal, mode):
-    """兼容旧字段：/查询、重启通知、上下文快照都还读 maid_current_tasks / maid_active_chats。"""
+    """兼容旧字段：/查询、上下文快照仍读 maid_current_tasks。"""
+    del mode
     yuki_state.maid_current_tasks[chat_id] = goal
-    if hasattr(yuki_state, "maid_active_chats"):
-        yuki_state.maid_active_chats[chat_id] = mode
 
 
 def _forget_chat_state(yuki_state, runtime, chat_id):
-    """本会话还有别的任务在跑就留着，否则清掉这两个兼容字段。"""
+    """本会话还有别的任务在跑就留着，否则清掉兼容字段。"""
     if runtime.active_for_chat(chat_id):
         return
     try:
         yuki_state.maid_current_tasks.pop(chat_id, None)
     except AttributeError:
         pass
-    if hasattr(yuki_state, "maid_active_chats"):
-        yuki_state.maid_active_chats.pop(chat_id, None)

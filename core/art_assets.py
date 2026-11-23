@@ -385,13 +385,49 @@ class ArtAssetStore:
             f"{desc} | reference: {item['reference']}"
         )
 
+    @staticmethod
+    def _cell(text: Any, limit: int = 0) -> str:
+        """表格单元：压成一行、转义竖线，可选截断。"""
+        value = str(text or "").replace("\n", " ").replace("|", "\\|").strip()
+        if limit and len(value) > limit:
+            value = value[: limit - 1] + "…"
+        return value or "-"
+
+    def _reference_status(self, item: dict[str, Any]) -> str:
+        """参考图状态：存在则给文件名，缺失则明确标记。"""
+        ref = str(item.get("reference") or "").strip()
+        if not ref:
+            return "⚠️ 未设置"
+        path = ref if os.path.isabs(ref) else os.path.join(BASE_DIR, ref)
+        if os.path.isfile(path):
+            return f"✅ {os.path.basename(path)}"
+        return f"⚠️ 缺失 {os.path.basename(path)}"
+
     def format_overview(self) -> str:
+        """已登记资产简明表格（进入艺术模式时自动展示，也用于 list/登记后回显）。"""
         items = self.list()
         if not items:
             return "当前已登记艺术资产：暂无（可用 art_asset action=\"register\" 登记立绘参考图）"
-        lines = [f"当前已登记艺术资产（共 {len(items)} 项）："]
+        lines = [
+            f"当前已登记艺术资产（共 {len(items)} 项）：",
+            "| key | 人物 | 标签 | 外貌要点 | 参考图 |",
+            "| --- | --- | --- | --- | --- |",
+        ]
         for item in items:
-            lines.append(self.format_asset_line(item))
+            key = self._cell(item.get("key"))
+            aliases = [str(a) for a in (item.get("aliases") or []) if str(a).strip()]
+            if len(aliases) > 3:
+                alias_part = f"（别名 {', '.join(aliases[:3])} 等）"
+            elif aliases:
+                alias_part = f"（别名 {', '.join(aliases)}）"
+            else:
+                alias_part = ""
+            owner = self._cell(f"{item.get('owner') or item.get('key')}{alias_part}")
+            tags = self._cell("/".join(item.get("tags") or []))
+            desc = self._cell(item.get("description") or "暂无外貌描述", limit=80)
+            lines.append(
+                f"| {key} | {owner} | {tags} | {desc} | {self._reference_status(item)} |"
+            )
         return "\n".join(lines)
 
 

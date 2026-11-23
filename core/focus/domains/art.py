@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import re
+import time
 from typing import Any
 
 from core.art_assets import _clean_ref, art_asset_store
@@ -118,6 +119,76 @@ _ART_DIRECTOR_GUIDE = (
 )
 
 
+def build_art_start_content() -> tuple[str, list[dict]]:
+    """构造进入艺术创作模式时的完整指南文本与已登记资产列表。"""
+    overview = art_asset_store.format_overview()
+    assets_data = art_asset_store.list()
+    header = (
+        "【已进入艺术创作聚焦模式】已展开 art_draw / art_gacha / art_asset / art_finish 工具，并收起其他无关日常工具。\n"
+        "- 画图用 `art_draw`：可通过 `assets=[\"yuki\", \"master\"]` 直接选用下方已登记的角色参考图（支持单张或多张同框），"
+        "也可同时传 `image_paths=[\"[img:001]\"]` 混用群聊临时参考图。"
+        "**art_draw 是异步的**：提交后立刻返回，后台画完会自动把图发到会话里并提醒你；你不用等，也不要再用 `send_qq_file` 重发成品。\n"
+        "- 提示词抽卡用 `art_gacha`：想抽风格盲盒或找创作灵感时，抽一发二次元 Prompt 草稿给你参考与微调（不会直接生图），满意后再调用 `art_draw`。\n"
+        "- 资产管理用 `art_asset`：支持登记群友/角色立绘或三视图（`register`）、修改（`update`）、删除（`delete`）或查看列表（`list`）。\n"
+        "- 创作与发图全部完成后，请调用 `art_finish(summary=\"...\")` 收起画板并写一句简短这段工作的总结。\n\n"
+        f"{_ART_DIRECTOR_GUIDE}"
+    )
+    return f"{header}\n\n{overview}", assets_data
+
+
+def prepare_art_gacha_jump(
+    chat_id: Any,
+    history: Any = None,
+    goal: str = "抽图创作",
+) -> dict[str, Any]:
+    """硬编码状态跳跃：直接进入创作模式（若未进入则注入完整指南与个人资产）并自动抽卡。"""
+    cid = str(chat_id)
+    already_focused = focus_manager.is_focused(cid, ART.name)
+    focus_manager.enter(cid, ART.name, goal=goal, history=history)
+
+    if not already_focused:
+        art_start_content, _ = build_art_start_content()
+        focus_manager.record_step(cid, f"开始艺术创作: {goal}", domain=ART.name)
+        if history is not None:
+            history.append_session_message(
+                cid,
+                "tool",
+                art_start_content,
+                name="art_start",
+                tool_call_id=f"jump_art_start_{int(time.time() * 1000)}",
+                focus_work=ART.name,
+                save_immediately=False,
+                return_snapshot=False,
+            )
+
+    drawn = art_gacha_store.draw()
+    gacha_prompt = str(drawn.get("prompt") or "").strip()
+    gacha_source = str(drawn.get("source") or "")
+    if not gacha_prompt:
+        pools = art_gacha_store.load()
+        gacha_prompt = art_gacha_store._slot_prompt(pools.get("slots") or {}, __import__("random").Random())
+        gacha_source = "slot"
+
+    focus_manager.record_step(cid, "提示词抽卡", gacha_source, domain=ART.name)
+    if history is not None:
+        history.append_session_message(
+            cid,
+            "tool",
+            gacha_prompt,
+            name="art_gacha",
+            tool_call_id=f"jump_art_gacha_{int(time.time() * 1000)}",
+            focus_work=ART.name,
+            save_immediately=False,
+            return_snapshot=False,
+        )
+
+    return {
+        "entered_art": not already_focused,
+        "source": gacha_source,
+        "prompt": gacha_prompt,
+    }
+
+
 async def art_start_tool(context, goal: str = "") -> ToolResult:
     """进入艺术创作聚焦模式，立即返回当前已登记的艺术资产列表与创作工具说明。"""
     history = (
@@ -129,20 +200,7 @@ async def art_start_tool(context, goal: str = "") -> ToolResult:
     if goal:
         focus_manager.record_step(context.chat_id, f"开始艺术创作: {goal}", domain=ART.name)
 
-    overview = art_asset_store.format_overview()
-    assets_data = art_asset_store.list()
-
-    header = (
-        "【已进入艺术创作聚焦模式】已展开 art_draw / art_gacha / art_asset / art_finish 工具，并收起其他无关日常工具。\n"
-        "- 画图用 `art_draw`：可通过 `assets=[\"yuki\", \"master\"]` 直接选用下方已登记的角色参考图（支持单张或多张同框），"
-        "也可同时传 `image_paths=[\"[img:001]\"]` 混用群聊临时参考图。"
-        "**art_draw 是异步的**：提交后立刻返回，后台画完会自动把图发到会话里并提醒你；你不用等，也不要再用 `send_qq_file` 重发成品。\n"
-        "- 提示词抽卡用 `art_gacha`：想抽风格盲盒或找创作灵感时，抽一发二次元 Prompt 草稿给你参考与微调（不会直接生图），满意后再调用 `art_draw`。\n"
-        "- 资产管理用 `art_asset`：支持登记群友/角色立绘或三视图（`register`）、修改（`update`）、删除（`delete`）或查看列表（`list`）。\n"
-        "- 创作与发图全部完成后，请调用 `art_finish(summary=\"...\")` 收起画板并写一句简短这段工作的总结。\n\n"
-        f"{_ART_DIRECTOR_GUIDE}"
-    )
-    content = f"{header}\n\n{overview}"
+    content, assets_data = build_art_start_content()
     return ToolResult(
         success=True,
         content=content,

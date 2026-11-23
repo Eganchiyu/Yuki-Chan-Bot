@@ -7,6 +7,8 @@ from core.focus.domains.art import (
     art_finish_tool,
     art_gacha_tool,
     art_start_tool,
+    build_art_start_content,
+    prepare_art_gacha_jump,
 )
 from core.focus.domains.browser import (
     BROWSER,
@@ -25,6 +27,8 @@ __all__ = [
     "art_gacha_tool",
     "art_asset_tool",
     "art_finish_tool",
+    "build_art_start_content",
+    "prepare_art_gacha_jump",
     "BROWSER",
     "browser_start_tool",
     "browser_finish_tool",

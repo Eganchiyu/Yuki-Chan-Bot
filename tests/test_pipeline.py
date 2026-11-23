@@ -296,3 +296,40 @@ async def test_engine_idle_summarize():
     diary_service.history.replace_session.assert_called_once_with("12345", [{"role": "system", "content": "系统"}])
     diary_service.history.save.assert_not_called()
 
+
+async def test_summarize_preserves_new_messages_appended_during_llm_wait():
+    """后台/空闲写日记等待 LLM 期间新到达的会话消息，在回写时必须保留在摘要尾部。"""
+    source_session = [
+        {"role": "system", "content": "系统"},
+        {"role": "user", "content": "旧消息1"},
+    ]
+    new_arrival = {"role": "user", "content": "写日记期间的新消息"}
+    history = MagicMock()
+    history.get_session.return_value = source_session + [new_arrival]
+
+    diary_service = EngineDiaryService(MagicMock(), history)
+    diary_service.do_summarize = AsyncMock(return_value=[{"role": "system", "content": "系统"}])
+
+    await diary_service.summarize_idle_session("12345", source_session)
+    history.replace_session.assert_called_once_with(
+        "12345",
+        [{"role": "system", "content": "系统"}, new_arrival],
+    )
+
+
+async def test_cancel_pending_clears_buffer_and_timer():
+    """cancel_pending 应同时清空 message_buffer 并取消正在倒计时的 _timer_tasks。"""
+    pipeline = _create_mock_pipeline()
+    await pipeline.enqueue_message(
+        "12345", "group",
+        message_obj=IncomingMessage(name="A", content="hi", raw_text="hi"),
+        debounce_flag=True,
+    )
+    assert "12345" in pipeline._timer_tasks
+    assert len(pipeline.yuki.message_buffer["12345"]) == 1
+
+    pipeline.cancel_pending("12345")
+    await asyncio.sleep(0)
+    assert pipeline.yuki.message_buffer["12345"] == []
+    assert "12345" not in pipeline._timer_tasks
+

@@ -111,6 +111,23 @@ async def test_gateway_send_returns_message_id(napcat_url):
         await gateway.close()
 
 
+async def test_gateway_send_local_file_uses_upload_action_and_sanitizes_download_name(napcat_url):
+    """send_local_file 优先走 upload_*_file 动作，且下载文件名清洗路径穿越字符。"""
+    from network.napcat import _sanitize_download_filename
+
+    assert _sanitize_download_filename("../../etc/passwd", "fb.txt") == "passwd"
+    assert _sanitize_download_filename("..\\", "fb.txt") == "fb.txt"
+
+    gateway = NapCatGateway(napcat_url, "")
+    try:
+        res_group = await gateway.send_local_file("1057020972", "/tmp/report.pdf", mode="group")
+        res_priv = await gateway.send_local_file("123456", "/tmp/report.pdf", mode="private")
+        assert res_group is not None
+        assert res_priv is not None
+    finally:
+        await gateway.close()
+
+
 # ==================== 入站策略：@检测、快速唤醒、BOT过滤、戳一戳 ====================
 
 def _make_pipeline():

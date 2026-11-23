@@ -258,3 +258,32 @@ async def test_catchup_skipped_while_group_sleeping():
         cp.build_catchup_event = original
     assert called == []
     pipeline.yuki.pop_buffer.assert_not_called()
+
+
+async def test_catchup_enqueues_synthetic_event_for_active_group(monkeypatch):
+    """活跃群在退出独处后执行 handle_catchup，应以 (cid, mode) 正常投递合成补台事件。"""
+    from config import cfg
+
+    gid = str(cfg.TARGET_GROUPS[0]) if cfg.TARGET_GROUPS else "12345"
+    pipeline = _make_pipeline()
+    pipeline.group_active_state[gid] = True
+    pipeline.yuki.pop_buffer = MagicMock(return_value=[{
+        "name": "月白", "content": '【"月白"】说: 有人在吗', "raw_text": "有人在吗",
+        "source": "napcat.group", "is_bot": False,
+    }])
+
+    enqueued = []
+
+    async def fake_enqueue(self, chat_id, mode, message_obj=None, debounce_flag=True,
+                           force_reply=None, ice_break=False):
+        enqueued.append((chat_id, mode, message_obj, debounce_flag, force_reply))
+        return None
+
+    monkeypatch.setattr(SessionPipeline, "enqueue_message", fake_enqueue)
+    await pipeline.handle_catchup(gid)
+    assert len(enqueued) == 1
+    chat_id, mode, event, debounce_flag, force_reply = enqueued[0]
+    assert chat_id == gid
+    assert mode == "group"
+    assert event["is_catchup"] is True
+    assert debounce_flag is False and force_reply is True

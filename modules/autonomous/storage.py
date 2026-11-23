@@ -122,12 +122,12 @@ class AutonomousStateStore:
     def __init__(self, path: str = STATE_PATH):
         self.path = os.path.abspath(path)
         self._lock = threading.Lock()
+        self._cache_key: tuple[str, float] | None = None
+        self._cache_data: dict | None = None
 
-    # -- 通用 --
-    def load(self) -> dict:
-        data = _load_json(self.path, {})
-        if not isinstance(data, dict):
-            data = {}
+    @staticmethod
+    def _ensure_defaults(data: dict) -> dict:
+        data = json.loads(json.dumps(data)) if isinstance(data, dict) else {}
         data.setdefault("version", 1)
         data.setdefault("daily", {"date": "", "auto_runs": 0})
         data.setdefault("last_run_at", 0.0)
@@ -136,9 +136,32 @@ class AutonomousStateStore:
         data.setdefault("active_mode", {})
         return data
 
+    # -- 通用 --
+    def load(self) -> dict:
+        with self._lock:
+            try:
+                mtime = os.path.getmtime(self.path) if os.path.exists(self.path) else -1.0
+            except OSError:
+                mtime = -1.0
+            key = (self.path, mtime)
+            if self._cache_key == key and self._cache_data is not None:
+                return self._ensure_defaults(self._cache_data)
+            raw = _load_json(self.path, {})
+            if not isinstance(raw, dict):
+                raw = {}
+            self._cache_key = key
+            self._cache_data = raw
+            return self._ensure_defaults(raw)
+
     def save(self, data: dict) -> None:
         with self._lock:
             _write_json(self.path, data)
+            try:
+                mtime = os.path.getmtime(self.path)
+            except OSError:
+                mtime = -1.0
+            self._cache_key = (self.path, mtime)
+            self._cache_data = json.loads(json.dumps(data))
 
     # -- 日配额 --
     def auto_runs_today(self, now: float | None = None) -> int:

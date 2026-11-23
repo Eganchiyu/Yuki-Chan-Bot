@@ -120,7 +120,7 @@ class ModeAwarePipeline(SessionPipeline):
             self.mode_router.clear_catchup(cid)
             return
         await super().enqueue_message(
-            catchup_mode(cid), message_obj=event, debounce_flag=False, force_reply=True,
+            cid, catchup_mode(cid), message_obj=event, debounce_flag=False, force_reply=True,
         )
 
     def _inner_event_from_history(self, chat_id: str) -> dict | None:

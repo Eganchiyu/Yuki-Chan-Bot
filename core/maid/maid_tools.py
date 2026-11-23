@@ -6,6 +6,21 @@ DIARY_PREVIEW_MAX = 8
 DIARY_LOCAL_QUOTA = 6
 DIARY_OTHER_QUOTA = 2
 
+_CLIENT_CACHE: dict[tuple[object, str], object] = {}
+
+
+def _get_diary_client(path: str):
+    """复用 Chroma PersistentClient 实例；测试 monkeypatch PersistentClient 类时自动隔离。"""
+    import chromadb
+
+    cls = chromadb.PersistentClient
+    key = (cls, str(path))
+    client = _CLIENT_CACHE.get(key)
+    if client is None:
+        client = cls(path=path)
+        _CLIENT_CACHE[key] = client
+    return client
+
 
 def _diary_labels(chat_id, chat_mode):
     """返回（本对话标签, 跨对话标签生成函数）。"""
@@ -52,11 +67,10 @@ def search_diary_fast(date_str=None, keyword=None, chat_id=None, chat_mode=None)
     别的群的占少数；本对话 0 命中时只用别的群并明确说明，全部 0 命中时直接说明没有记录。
     """
     try:
-        import chromadb
         from config import cfg
 
-        # 绕过 RAG，直接连接配置中的向量数据库目录
-        client = chromadb.PersistentClient(path=cfg.VECTOR_DB_PATH)
+        # 绕过 RAG，直接连接配置中的向量数据库目录（复用客户端缓存）
+        client = _get_diary_client(cfg.VECTOR_DB_PATH)
 
         # 2. 获取 Collection（不加载任何 Embedding 模型）
         collection = client.get_collection(name="diaries")
@@ -82,70 +96,114 @@ def search_diary_fast(date_str=None, keyword=None, chat_id=None, chat_mode=None)
             )
 
         include = ["documents", "metadatas"]
-        if conditions:
+        cid_str = str(chat_id) if chat_id is not None else None
+        local_label, other_label = _diary_labels(chat_id, chat_mode)
+
+        if not conditions:
+            # 无日期无关键词：先只拉轻量 metadatas + ids 完成软比例抽样，再按抽中的 8 个 id 取正文
+            meta_results = collection.get(include=["metadatas"])
+            all_ids = meta_results.get("ids") or []
+            all_metas = meta_results.get("metadatas") or [None] * len(all_ids)
+            inline_docs = meta_results.get("documents")
+            if not all_ids and not inline_docs:
+                return "记忆库目前是空的。"
+            if all_ids:
+                local_idx, other_idx = [], []
+                for idx_i, meta in enumerate(all_metas):
+                    doc_cid = (meta or {}).get("chat_id")
+                    doc_cid = str(doc_cid) if doc_cid is not None else None
+                    if cid_str is not None and doc_cid == cid_str:
+                        local_idx.append(idx_i)
+                    else:
+                        other_idx.append(idx_i)
+                picked_l_idx, picked_o_idx = _pick_by_soft_ratio(local_idx, other_idx, DIARY_PREVIEW_MAX)
+                if inline_docs and len(inline_docs) == len(all_ids):
+                    id_to_doc = dict(zip(all_ids, inline_docs))
+                else:
+                    target_ids = [all_ids[i] for i in (picked_l_idx + picked_o_idx)]
+                    try:
+                        doc_res = collection.get(ids=target_ids, include=["documents"])
+                        id_to_doc = dict(zip(doc_res.get("ids") or [], doc_res.get("documents") or []))
+                    except TypeError:
+                        full_res = collection.get(include=include)
+                        id_to_doc = dict(zip(full_res.get("ids") or all_ids, full_res.get("documents") or []))
+                picked_local = [id_to_doc.get(all_ids[i], "") for i in picked_l_idx if id_to_doc.get(all_ids[i])]
+                picked_other = [id_to_doc.get(all_ids[i], "") for i in picked_o_idx if id_to_doc.get(all_ids[i])]
+                other_cids = {
+                    id_to_doc.get(all_ids[i], ""): (
+                        str((all_metas[i] or {}).get("chat_id"))
+                        if (all_metas[i] or {}).get("chat_id") is not None
+                        else None
+                    )
+                    for i in picked_o_idx
+                }
+                total_matched = len(all_ids)
+                total_local = len(local_idx)
+                total_other = len(other_idx)
+            else:
+                candidates = inline_docs or []
+                total_matched = len(candidates)
+                picked_local, picked_other = _pick_by_soft_ratio(candidates, [], DIARY_PREVIEW_MAX)
+                total_local, total_other = len(candidates), 0
+                other_cids = {}
+        else:
             where_document = conditions[0] if len(conditions) == 1 else {"$and": conditions}
             results = collection.get(where_document=where_document, include=include)
-        else:
-            # 无日期无关键词：随机翻看日记本
-            results = collection.get(include=include)
-        candidates = results.get("documents") or []
-        metadatas = results.get("metadatas") or [None] * len(candidates)
+            candidates = results.get("documents") or []
+            metadatas = results.get("metadatas") or [None] * len(candidates)
 
-        if not candidates:
-            return "没有相关记录。" if conditions else "记忆库目前是空的。"
+            if not candidates:
+                return "没有相关记录。"
 
-        # 4. 候选集已经很小，再用正则做精确校验（保持原日期语义）
-        date_pattern = re.compile(rf"【日记\({re.escape(date_str)}.*?\)】") if date_str else None
-        keyword_lower = keyword.lower() if keyword else None
-        matched = []
-        for doc, meta in zip(candidates, metadatas):
-            if date_pattern and not date_pattern.search(doc):
-                continue
-            if keyword_lower is not None and keyword_lower not in doc.lower():
-                continue
-            matched.append((doc, meta or {}))
+            # 4. 候选集已经很小，再用正则做精确校验（保持原日期语义）
+            date_pattern = re.compile(rf"【日记\({re.escape(date_str)}.*?\)】") if date_str else None
+            keyword_lower = keyword.lower() if keyword else None
+            matched = []
+            for doc, meta in zip(candidates, metadatas):
+                if date_pattern and not date_pattern.search(doc):
+                    continue
+                if keyword_lower is not None and keyword_lower not in doc.lower():
+                    continue
+                matched.append((doc, meta or {}))
 
-        if not matched:
-            return "没有相关记录。"
+            if not matched:
+                return "没有相关记录。"
 
-        cid_str = str(chat_id) if chat_id is not None else None
-        local_docs, other_docs = [], []
-        for doc, meta in matched:
-            doc_cid = meta.get("chat_id")
-            doc_cid = str(doc_cid) if doc_cid is not None else None
-            if cid_str is not None and doc_cid == cid_str:
-                local_docs.append(doc)
-            else:
-                other_docs.append(doc)
+            local_docs, other_docs = [], []
+            other_cids = {}
+            for doc, meta in matched:
+                doc_cid = meta.get("chat_id")
+                doc_cid = str(doc_cid) if doc_cid is not None else None
+                other_cids[doc] = doc_cid
+                if cid_str is not None and doc_cid == cid_str:
+                    local_docs.append(doc)
+                else:
+                    other_docs.append(doc)
 
-        local_label, other_label = _diary_labels(chat_id, chat_mode)
-        other_cids = {}
-        for doc, meta in matched:
-            doc_cid = meta.get("chat_id")
-            doc_cid = str(doc_cid) if doc_cid is not None else None
-            other_cids[doc] = doc_cid
-
-        picked_local, picked_other = _pick_by_soft_ratio(local_docs, other_docs, DIARY_PREVIEW_MAX)
+            picked_local, picked_other = _pick_by_soft_ratio(local_docs, other_docs, DIARY_PREVIEW_MAX)
+            total_matched = len(matched)
+            total_local = len(local_docs)
+            total_other = len(other_docs)
 
         # 5. 拼装输出
         header = []
         if cid_str is None:
             header.append(
-                f"随机翻看日记本（共 {len(matched)} 条，抽取 {len(picked_local) + len(picked_other)} 条）："
+                f"随机翻看日记本（共 {total_matched} 条，抽取 {len(picked_local) + len(picked_other)} 条）："
                 if not conditions
-                else f"成功找到 {len(matched)} 条记录，抽取 {len(picked_local) + len(picked_other)} 条展示："
+                else f"成功找到 {total_matched} 条记录，抽取 {len(picked_local) + len(picked_other)} 条展示："
             )
-        elif not local_docs:
+        elif not total_local:
             scope = "本对话" if chat_mode == "private" else "本群"
             header.append(f"{scope}没有相关记录，以下是别的群的日记（共 {len(picked_other)} 条）：")
         elif conditions:
             header.append(
-                f"成功找到 {len(matched)} 条记录（本群 {len(local_docs)} 条 / 别的群 {len(other_docs)} 条），"
+                f"成功找到 {total_matched} 条记录（本群 {total_local} 条 / 别的群 {total_other} 条），"
                 f"抽取本群 {len(picked_local)} 条 + 别的群 {len(picked_other)} 条展示："
             )
         else:
             header.append(
-                f"随机翻看日记本（共 {len(matched)} 条，本群 {len(local_docs)} 条 / 别的群 {len(other_docs)} 条），"
+                f"随机翻看日记本（共 {total_matched} 条，本群 {total_local} 条 / 别的群 {total_other} 条），"
                 f"抽取本群 {len(picked_local)} 条 + 别的群 {len(picked_other)} 条："
             )
 

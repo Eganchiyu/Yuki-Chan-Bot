@@ -200,6 +200,54 @@ def test_search_diary_fast_no_local_or_no_records(monkeypatch):
     assert empty.strip() == "没有相关记录。"
 
 
+def test_search_diary_fast_no_args_samples_ids_before_fetching_docs(monkeypatch):
+    """无参随机翻看时先拉 metadatas 抽样 ID，再仅按抽中的 ID 拉 documents，且复用 PersistentClient。"""
+    entries = [
+        (f"id{i}", f"【日记(2026-05-{i+1:02d} 10:00)】：第{i}篇日记", {"chat_id": "10001" if i < 12 else "20002"})
+        for i in range(20)
+    ]
+    get_calls = []
+    init_count = [0]
+
+    class _TwoStageCollection:
+        def get(self, where_document=None, include=None, ids=None):
+            get_calls.append({"include": include, "ids": ids, "where_document": where_document})
+            if include == ["metadatas"] and ids is None:
+                return {
+                    "ids": [e[0] for e in entries],
+                    "metadatas": [e[2] for e in entries],
+                    "documents": None,
+                }
+            if ids is not None:
+                id_set = set(ids)
+                hit = [e for e in entries if e[0] in id_set]
+                return {
+                    "ids": [e[0] for e in hit],
+                    "documents": [e[1] for e in hit],
+                }
+            return {"ids": [], "documents": [], "metadatas": []}
+
+    col = _TwoStageCollection()
+
+    class _Client:
+        def __init__(self, path=None):
+            init_count[0] += 1
+
+        def get_collection(self, name):
+            return col
+
+    monkeypatch.setattr(chromadb, "PersistentClient", _Client)
+    out1 = maid_tools.search_diary_fast(chat_id="10001", chat_mode="group")
+    out2 = maid_tools.search_diary_fast(chat_id="10001", chat_mode="group")
+    assert "随机翻看日记本（共 20 条" in out1
+    assert "[本群]" in out1 and "[群:20002]" in out1
+    # 两次调用只初始化一次 PersistentClient
+    assert init_count[0] == 1
+    # 第一次调用分两步：1) include=['metadatas'], 2) ids=8个抽样ID, include=['documents']
+    assert get_calls[0]["include"] == ["metadatas"] and get_calls[0]["ids"] is None
+    assert get_calls[1]["include"] == ["documents"] and len(get_calls[1]["ids"]) == maid_tools.DIARY_PREVIEW_MAX
+
+
 # ==================== 跨轮召回缓存 (RecallCacheStore) & 小本本 (NotebookStore) ====================
 
 def test_recall_cache_persistence_and_pipeline_merge(tmp_path, monkeypatch):

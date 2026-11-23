@@ -112,6 +112,7 @@ class SFTTraceLogger:
         self._lock = threading.Lock()
         self._msg_to_turn: dict[str, str] = {}
         self._loaded_index_dir: Optional[str] = None
+        self._digest_to_path: dict[str, str] = {}
 
     def resolve_dir(self) -> str:
         return self.base_dir or _default_sft_dir()
@@ -157,9 +158,24 @@ class SFTTraceLogger:
                 destination = os.path.join(target_dir, filename)
                 if not os.path.exists(destination):
                     temp = destination + ".tmp"
-                    with open(temp, "wb") as dst:
-                        dst.write(payload)
+                    if os.path.exists(temp):
+                        try:
+                            os.unlink(temp)
+                        except OSError:
+                            pass
+                    existing = self._digest_to_path.get(digest)
+                    linked = False
+                    if existing and os.path.isfile(existing):
+                        try:
+                            os.link(existing, temp)
+                            linked = True
+                        except OSError:
+                            linked = False
+                    if not linked:
+                        with open(temp, "wb") as dst:
+                            dst.write(payload)
                     os.replace(temp, destination)
+                self._digest_to_path[digest] = destination
                 relpath = os.path.relpath(destination, self.resolve_dir())
                 archived.append({
                     "path": relpath,
@@ -347,6 +363,88 @@ class SFTTraceLogger:
         except Exception as exc:
             logger.warning(f"[SFT] 写入打标事件失败: {exc}")
             return None
+
+
+def record_pipeline_sft_turn(
+    sft_logger: Any,
+    context: dict,
+    *,
+    capture: Optional[dict] = None,
+    image_store: Any = None,
+    model_name: str = "",
+    outcome_override: Optional[str] = None,
+    answer_raw: str = "",
+    answer_text: str = "",
+) -> Optional[dict[str, Any]]:
+    """从 SessionPipeline 上下文与 Engine 捕获快照拼装并写入一条 SFT 训练轨迹。"""
+    if not sft_logger:
+        return None
+    try:
+        cap = capture if isinstance(capture, dict) else {}
+        senders = []
+        for m in (context.get("message_objs") or context.get("incoming_messages") or []):
+            if isinstance(m, dict):
+                nm = str(m.get("name") or m.get("user_id") or "").strip()
+                if nm and nm not in senders:
+                    senders.append(nm)
+        outcome = outcome_override or cap.get("outcome") or "reply"
+        image_assets = []
+        archive_images = getattr(sft_logger, "archive_images", None)
+        if callable(archive_images):
+            image_attachments = []
+            seen_attachments = set()
+            for message in context.get("session") or []:
+                if not isinstance(message, dict):
+                    continue
+                for attachment in message.get("image_attachments") or []:
+                    if not isinstance(attachment, dict):
+                        continue
+                    key = (str(attachment.get("index") or ""), str(attachment.get("id") or ""))
+                    if key not in seen_attachments:
+                        seen_attachments.add(key)
+                        image_attachments.append(attachment)
+            for attachment in context.get("native_images") or []:
+                if not isinstance(attachment, dict):
+                    continue
+                key = (str(attachment.get("index") or ""), str(attachment.get("id") or ""))
+                if key not in seen_attachments:
+                    seen_attachments.add(key)
+                    image_attachments.append(attachment)
+            image_assets = archive_images(
+                context.get("debug_snapshot_id") or context.get("turn_id") or "unknown",
+                image_attachments,
+                image_store,
+            )
+        record = sft_logger.record_turn({
+            "turn_id": context.get("debug_snapshot_id") or context.get("turn_id"),
+            "chat_id": context.get("chat_id", ""),
+            "mode": context.get("mode", ""),
+            "model": model_name,
+            "ice_break": bool(context.get("ice_break", False)),
+            "outcome": outcome,
+            "llm_rounds": cap.get("llm_rounds", 0),
+            "senders": senders,
+            "combined_text": context.get("combined_text", ""),
+            "relevant_diaries": context.get("relevant_diaries") or [],
+            "input_messages": cap.get("input_messages") or [],
+            "turn_messages": cap.get("turn_messages") or [],
+            "tools_used": cap.get("tools_used") or [],
+            "tool_trace": cap.get("tool_trace") or [],
+            "image_assets": image_assets,
+            "answer_raw": answer_raw,
+            "answer_text": answer_text,
+            "sent_message_ids": list(context.get("sent_message_ids") or []),
+        })
+        if record and record.get("sent_message_ids") and hasattr(sft_logger, "index_messages"):
+            sft_logger.index_messages(
+                record["turn_id"],
+                record["sent_message_ids"],
+                chat_id=record.get("chat_id", ""),
+            )
+        return record
+    except Exception as exc:
+        logger.debug(f"[SFT] 记录训练轨迹异常: {exc}")
+        return None
 
 
 sft_trace_logger = SFTTraceLogger()

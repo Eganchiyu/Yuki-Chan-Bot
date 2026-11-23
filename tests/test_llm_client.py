@@ -188,3 +188,31 @@ async def test_backup_line_degrades_vision_to_text_when_unsupported(monkeypatch)
         fallback_messages_factory=fallback_factory,
     )
     assert factory_calls == []
+
+
+async def test_multi_provider_three_node_failover_chain(monkeypatch):
+    """3 节点 providers 队列：节点1与节点2连续报错熔断后自动顺延到节点3，后续请求直接跳过已熔断节点。"""
+    from config import LLMProviderConfig
+
+    monkeypatch.setattr(
+        cfg,
+        "providers",
+        [
+            LLMProviderConfig(name="node1", base_url="http://n1/v1", api_key="k1", model="m1"),
+            LLMProviderConfig(name="node2", base_url="http://n2/v1", api_key="k2", model="m2"),
+            LLMProviderConfig(name="node3", base_url="http://n3/v1", api_key="k3", model="m3"),
+        ],
+    )
+    llm_client.reset_route_state()
+
+    msg, rec = await _run_chat_raw(
+        monkeypatch,
+        [
+            RuntimeError("n1 down"),
+            RuntimeError("n2 down"),
+            {"role": "assistant", "content": "n3 ok"},
+        ],
+    )
+    assert msg["content"] == "n3 ok"
+    assert [c["base_url"] for c in rec.calls] == ["http://n1/v1", "http://n2/v1", "http://n3/v1"]
+    assert llm_client.get_route_state()["active_provider"] == "node3"

@@ -176,3 +176,41 @@ def test_path_resolution_and_global_cfg():
     assert cfg.get("api", "llm_api_key") is not None
     assert callable(getattr(cfg, "reload", None))
     assert cfg.LLM_BASE_URL and cfg.BACKUP_BASE_URL and cfg.IMAGE_PROCESS_API_URL
+
+
+def test_multi_provider_queue_and_targeted_switch(tmp_path):
+    """Config.providers 支持多渠道队列、YAML 序列化往返、轮转与按序号/名称指定切换。"""
+    from config import LLMProviderConfig
+
+    c = Config(
+        providers=[
+            LLMProviderConfig(name="p1-gemini", base_url="http://p1/v1", api_key="k1", model="gemini-flash", native_vision=True),
+            LLMProviderConfig(name="p2-deepseek", base_url="http://p2/v1", api_key="k2", model="deepseek-chat", native_vision=False),
+            LLMProviderConfig(name="p3-grok", base_url="http://p3/v1", api_key="k3", model="grok-4.6", native_vision=True),
+        ]
+    )
+    routes = c.get_llm_routes()
+    assert [r.name for r in routes] == ["p1-gemini", "p2-deepseek", "p3-grok"]
+    assert c.LLM_MODEL == "gemini-flash" and c.LLM_BASE_URL == "http://p1/v1"
+    assert c.BACKUP_MODEL == "deepseek-chat" and c.BACKUP_BASE_URL == "http://p2/v1"
+
+    # 无参轮转：p1 移到队尾，p2 成首选
+    c.swap_llm_route()
+    assert [r.name for r in c.get_llm_routes()] == ["p2-deepseek", "p3-grok", "p1-gemini"]
+    assert c.LLM_MODEL == "deepseek-chat" and c.LLM_NATIVE_VISION_ENABLED is False
+
+    # 按名称子串指定切换：切到 grok
+    c.swap_llm_route("grok")
+    assert [r.name for r in c.get_llm_routes()][0] == "p3-grok"
+    assert c.LLM_MODEL == "grok-4.6" and c.LLM_NATIVE_VISION_ENABLED is True
+
+    # 按 1-based 序号切换
+    c.swap_llm_route("3")
+    assert c.get_llm_routes()[0].name == "p1-gemini"
+
+    # YAML 往返加载仍还原为 LLMProviderConfig 实例列表
+    yaml_path = tmp_path / "providers.yaml"
+    save_config(c, str(yaml_path))
+    loaded = load_config(str(yaml_path))
+    assert len(loaded.providers) == 3 and isinstance(loaded.providers[0], LLMProviderConfig)
+    assert loaded.LLM_MODEL == "gemini-flash"

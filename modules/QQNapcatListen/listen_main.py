@@ -1,43 +1,57 @@
 """NapCat 入站适配：把事件翻译成会话管道的消息，并做入站策略判定。
 
-依赖只有两个：
-    gateway  —— network.napcat.NapCatGateway，负责收发
-    pipeline —— SessionPipeline，同时持有 yuki / engine / history_manager /
-                group_active_state
-不再有模块级全局与 configure_runtime 注入式 setter。
+宿主机文件 IPC 与斜杠指令处理器已分别拆分至同目录 `host_ipc.py` 与 `commands.py`，
+本模块保留主监听循环并重导出所有原符号，确保现有调用与单测 100% 兼容。
 """
 import asyncio
-import json
-import os
-import re
 import time
 
 from config import cfg
-from core import status as status_cmd
 from core.session_pipeline import IncomingMessage
-from core.sft_logger import sft_trace_logger
-from init import default_group_active, save_group_state
+from init import default_group_active
+from modules.QQNapcatListen.commands import (
+    AUTONOMOUS_COMMANDS,
+    _autonomous,
+    _extract_quoted_message_id,
+    _resolve_sft_logger,
+    _set_group_active,
+    handle_art_gacha_command,
+    handle_autonomous_command,
+    handle_emoji_like_event,
+    handle_force_close_command,
+    handle_group_switch,
+    handle_private_command,
+    handle_sft_quote_label,
+    handle_status_command,
+    switch_llm_route,
+)
+from modules.QQNapcatListen.host_ipc import (
+    MAX_RESTART_PER_HOUR,
+    NETFORCE_WAIT_SECONDS,
+    RESTART_NOTICE_MAX_AGE,
+    _NETFORCE_PENDING_DIR,
+    _NETFORCE_RESULT_FILE,
+    _RESTART_NOTICE_FILE,
+    _ROOT,
+    _STAGING_DIR,
+    _SUPERVISOR_STATE,
+    _format_netforce_reply,
+    _pop_restart_notice,
+    _read_netforce_result,
+    _recent_restart_count,
+    _refresh_flow,
+    _restart_flow,
+    _wait_netforce_result,
+    _write_netforce_request,
+    _write_restart_notice,
+    request_container_restart,
+    send_pending_restart_notice,
+)
 from modules.shot_memory import shot_live_buffer
-from network.napcat import extract_reply_ids, mentions_self, smart_truncate
+from network.napcat import mentions_self, smart_truncate
 from utils.logger import get_logger
 
 logger = get_logger("napcat_listen")
-
-# 容器与宿主用同一个绝对路径（见 deploy/run.sh）：staging 是唯一可写的交接目录，
-# 重启请求写进去，由宿主 deploy/supervisor.py 轮询后执行 run.sh 重建容器。
-_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-_STAGING_DIR = os.path.join(_ROOT, "staging")
-_SUPERVISOR_STATE = os.path.join(_ROOT, "deploy", "state.json")
-# 重启会杀掉进程，所以「重启完成」这句话必须先落盘，等新进程连上 NapCat 再补发
-_RESTART_NOTICE_FILE = os.path.join(_ROOT, "data", "restart_notice.json")
-RESTART_NOTICE_MAX_AGE = 600  # 超过 10 分钟就当作过期，避免隔很久才补发
-MAX_RESTART_PER_HOUR = int(os.environ.get("YUKI_MAX_RESTART_PER_HOUR", 5))
-
-# /刷新 走宿主看门狗：容器内只写请求文件，由 systemd 的 yuki-netforce.path 触发
-# deploy/netwatch.py 做真实探活（必要时重载 mihomo），结果写回 result 文件。
-_NETFORCE_PENDING_DIR = os.path.join(_ROOT, "data", "netforce_pending")
-_NETFORCE_RESULT_FILE = os.path.join(_ROOT, "data", "netforce_result.json")
-NETFORCE_WAIT_SECONDS = 45.0
 
 
 async def start_background_tasks(gateway, pipeline, mode: str):
@@ -52,26 +66,19 @@ async def start_background_tasks(gateway, pipeline, mode: str):
     from core.maid.maid_worker import maid_worker
     asyncio.create_task(maid_worker(engine, yuki, gateway, pipeline.history_manager))
 
-    # /重启 前落盘的「重启完成」消息，等 NapCat 连上后补发回原会话
     asyncio.create_task(send_pending_restart_notice(gateway))
 
-    # 自改会重启容器，把「等结果」的协程打断而宿主的 dsh 还在跑；
-    # 这个巡检负责把那些已完成、却没人汇报的结果捡回来交给 Yuki。
     from core.maid.maid_resume import report_orphaned_results
     asyncio.create_task(report_orphaned_results(engine, yuki, pipeline.history_manager))
 
-    # QZone 社交监控（默认关闭，见 configs/config.yaml 的 qzone_monitor.enabled）
-    # 网关的常驻 reader 已能独立完成请求-响应，监控侧不再需要自己迭代
-    # listen() 或关闭连接，打开此开关不会影响主监听。
     if cfg.qzone_monitor.enabled:
         try:
             from modules.qzone.monitor import ensure_monitor_started
-            asyncio.create_task(ensure_monitor_started(gateway, engine, getattr(engine, 'rag', None)))
+            asyncio.create_task(ensure_monitor_started(gateway, engine, getattr(engine, "rag", None)))
             logger.info("[NapCat] QZone 社交监控已启动")
         except Exception as e:
             logger.warning(f"[NapCat] QZone 监控启动失败: {e}")
 
-    # GitHub 仓库监控（默认关闭，见 configs/config.yaml 的 github_monitor.enabled）
     if cfg.github_monitor.enabled:
         try:
             from modules.github_monitor import ensure_monitor_started
@@ -121,441 +128,14 @@ def _build_group_message(group_id, raw_message, sender_name, user_id, message_id
     )
 
 
-def _recent_restart_count() -> int:
-    """读宿主 supervisor 的历史，统计最近一小时的重启次数（用于提前拦下超额请求）。"""
-    try:
-        with open(_SUPERVISOR_STATE, encoding="utf-8") as f:
-            history = (json.load(f) or {}).get("history") or []
-    except Exception:
-        return 0
-    now = time.time()
-    return sum(
-        1
-        for h in history
-        if isinstance(h, dict)
-        and h.get("result") in {"restarted", "restart_failed"}
-        and now - float(h.get("ts") or 0) < 3600
-    )
-
-
-def request_container_restart(reason: str = "") -> str:
-    """把重启请求投递给宿主 supervisor（它负责跑 deploy/run.sh 重建容器）。
-
-    容器内没有 docker 权限，只能通过 staging/ 交接；supervisor 每 3 秒扫一次。
-    """
-    task_dir = os.path.join(_STAGING_DIR, f"restart_{time.strftime('%Y%m%d_%H%M%S')}")
-    os.makedirs(task_dir, exist_ok=True)
-    payload = {
-        "type": "restart",
-        "summary": reason or "群聊 /重启 指令",
-        "requested_by": "master",
-        "requested_at": time.strftime("%Y-%m-%d %H:%M:%S"),
-    }
-    with open(os.path.join(task_dir, "request.json"), "w", encoding="utf-8") as f:
-        json.dump(payload, f, ensure_ascii=False, indent=2)
-    return task_dir
-
-
-def _write_netforce_request() -> str:
-    """投递「刷新网络」请求给宿主看门狗，返回请求 id。"""
-    os.makedirs(_NETFORCE_PENDING_DIR, exist_ok=True)
-    req_id = f"{int(time.time() * 1000)}-{os.getpid()}"
-    path = os.path.join(_NETFORCE_PENDING_DIR, f"{req_id}.json")
-    tmp = path + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump({"id": req_id, "ts": time.time(), "source": "qq-/刷新"}, f, ensure_ascii=False)
-    os.replace(tmp, path)
-    return req_id
-
-
-def _read_netforce_result(req_id: str) -> dict | None:
-    """读取宿主回写的刷新结果，id 不匹配视为还没轮到本次请求。"""
-    try:
-        with open(_NETFORCE_RESULT_FILE, encoding="utf-8") as f:
-            data = json.load(f)
-    except FileNotFoundError:
-        return None
-    except Exception as e:
-        logger.warning(f"[NetForce] 读取刷新结果失败: {e}")
-        return None
-    return data if str(data.get("id")) == req_id else None
-
-
-async def _wait_netforce_result(req_id: str, timeout: float = NETFORCE_WAIT_SECONDS):
-    deadline = time.time() + timeout
-    while time.time() < deadline:
-        data = _read_netforce_result(req_id)
-        if data:
-            return data
-        await asyncio.sleep(1.0)
-    return None
-
-
-def _format_netforce_reply(result: dict) -> str:
-    probes = result.get("probes") or {}
-
-    def state(name: str) -> str:
-        item = probes.get(name) or {}
-        return f"{name} {'通' if item.get('ok') else '不通'}"
-
-    detail = "，".join(state(name) for name in ("direct", "proxy") if probes.get(name))
-    if result.get("ok"):
-        return f"测试已连通（{detail}）"
-    actions = result.get("actions") or []
-    tail = f"，已尝试：{'、'.join(actions)}" if actions else ""
-    return f"没连通（{detail}）{tail}"
-
-
-async def _refresh_flow(gateway, chat_id, mode: str = "group") -> None:
-    """手动刷新网络：交给宿主看门狗真实探活（必要时重载 mihomo），结果回原会话。"""
-    try:
-        await gateway.send(chat_id, "正在测试网络连通性…", mode=mode)
-    except Exception as e:
-        logger.error(f"[NetForce] 刷新前通知失败: {e}")
-
-    try:
-        req_id = _write_netforce_request()
-    except Exception as e:
-        logger.error(f"[NetForce] 投递刷新请求失败: {e}")
-        await gateway.send(chat_id, "刷新请求没投递出去…等下一次自动巡检吧", mode=mode)
-        return
-
-    result = await _wait_netforce_result(req_id)
-    if result is None:
-        logger.warning(f"[NetForce] 请求 {req_id} 等待超时（宿主看门狗未响应）")
-        text = "宿主看门狗没有响应，刷新超时了…等下一次自动巡检吧"
-    else:
-        text = _format_netforce_reply(result)
-        logger.info(f"[NetForce] 请求 {req_id} 结果: {json.dumps(result, ensure_ascii=False)}")
-    try:
-        await gateway.send(chat_id, text, mode=mode)
-    except Exception as e:
-        logger.error(f"[NetForce] 刷新结果发送失败: {e}")
-
-
-def _write_restart_notice(chat_id, text: str, mode: str = "group") -> None:
-    """落盘「重启完成」待发消息，供新进程启动后补发到原会话。"""
-    payload = {
-        "chat_id": int(chat_id),
-        "mode": mode,
-        "text": text,
-        "ts": time.time(),
-    }
-    os.makedirs(os.path.dirname(_RESTART_NOTICE_FILE), exist_ok=True)
-    tmp = _RESTART_NOTICE_FILE + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(payload, f, ensure_ascii=False)
-    os.replace(tmp, _RESTART_NOTICE_FILE)
-
-
-def _pop_restart_notice() -> dict | None:
-    """取出并删除待发的重启通知。"""
-    try:
-        with open(_RESTART_NOTICE_FILE, encoding="utf-8") as f:
-            notice = json.load(f)
-    except FileNotFoundError:
-        return None
-    except Exception as e:
-        logger.warning(f"[Restart] 读取重启通知失败: {e}")
-        notice = None
-    try:
-        os.remove(_RESTART_NOTICE_FILE)
-    except Exception:
-        pass
-    return notice
-
-
-async def send_pending_restart_notice(gateway, retries: int = 20, delay: float = 3.0):
-    """启动后补发「重启完成」到重启前所在的会话。"""
-    notice = _pop_restart_notice()
-    if not notice:
-        return
-    if time.time() - float(notice.get("ts") or 0) > RESTART_NOTICE_MAX_AGE:
-        logger.warning("[Restart] 重启完成通知已过期，丢弃")
-        return
-
-    chat_id = notice.get("chat_id")
-    text = notice.get("text") or f"{cfg.ROBOT_NAME.title()} 重启完成，我回来啦~"
-    mode = notice.get("mode") or "group"
-    for attempt in range(1, retries + 1):
-        try:
-            await gateway.send(chat_id, text, mode=mode)
-            logger.info(f"[Restart] 已向 {chat_id} 补发重启完成通知")
-            return
-        except Exception as e:
-            logger.warning(f"[Restart] 重启完成通知发送失败（第 {attempt}/{retries} 次）: {e}")
-            await asyncio.sleep(delay)
-    logger.error("[Restart] 重启完成通知多次发送失败，已放弃")
-
-
-async def _restart_flow(gateway, group_id):
-    """先在本群喊一声“正在重启”，确认发出去了再投递重启请求。"""
-    recent = _recent_restart_count()
-    if recent >= MAX_RESTART_PER_HOUR:
-        logger.warning(f"[Restart] 一小时内已重启 {recent} 次，拒绝本次请求")
-        await gateway.send(
-            group_id, f"一个小时内人家已经重启 {recent} 次啦，先歇一会儿吧~", mode="group"
-        )
-        return
-
-    try:
-        await gateway.send(group_id, f"{cfg.ROBOT_NAME.title()} 正在重启，稍等一下下~", mode="group")
-    except Exception as e:
-        # 消息发不出去也照样重启：卡住的机器更需要重启
-        logger.error(f"[Restart] 重启前通知失败: {e}")
-
-    # 必须在容器被重建之前落盘，否则新进程不知道要回哪个会话
-    try:
-        _write_restart_notice(
-            group_id, f"{cfg.ROBOT_NAME.title()} 重启完成，我回来啦~", mode="group"
-        )
-    except Exception as e:
-        logger.error(f"[Restart] 记录重启完成通知失败: {e}")
-
-    try:
-        task_dir = request_container_restart(f"{cfg.ROBOT_NAME} 群聊 /重启 指令")
-        logger.warning(f"[Restart] 已投递重启请求: {task_dir}")
-    except Exception as e:
-        logger.error(f"[Restart] 投递重启请求失败: {e}")
-
-
-def switch_llm_route() -> str:
-    """主备请求线路对调（仅内存生效），返回给机主的提示文案。"""
-    from utils.llm_client import reset_route_state
-
-    swapped = cfg.swap_llm_route()
-    reset_route_state()
-    role = "备用" if swapped else "主"
-    logger.warning(
-        f"[Switch] 主备线路已对调，当前主模型={cfg.model.llm} 备用={cfg.model.backup}（{role}线路上线）"
-    )
-    return (
-        f"已经换成{role}模型啦（{cfg.model.llm}），"
-        f"出事就自动退到 {cfg.model.backup}，重启后会切回配置里的设定~"
-    )
-
-
-def _set_group_active(pipeline, gateway, group_id, gid_str, opening: bool) -> None:
-    """切换群聊的应答开关，群聊 /关闭 /开启 与 /强制关闭 共用。"""
-    pipeline.group_active_state[gid_str] = opening
-    save_group_state(pipeline.group_active_state)
-    logger.warning(f"[Switch] {gid_str} 群应答开关 -> {'开' if opening else '休眠'}")
-    if opening:
-        asyncio.create_task(gateway.send(group_id, f"{cfg.ROBOT_NAME.title()} 重新上线", mode="group"))
-        return
-    pipeline.yuki.message_buffer[gid_str] = []
-    task = pipeline.yuki.buffer_tasks.get(gid_str)
-    if task and not task.done():
-        task.cancel()
-    asyncio.create_task(
-        gateway.send(group_id, f"{cfg.ROBOT_NAME.title()} 已进入休眠模式，不打扰大家啦~", mode="group")
-    )
-
-
-def handle_status_command(gateway, pipeline, chat_id, gid_str, user_id, raw_msg, send_mode="group") -> bool:
-    """处理 /查询（别名 /状态、/status）：关键词式状态简报，全员可用但分层脱敏。"""
-    if not status_cmd.match_status_command(raw_msg):
-        return False
-    text = status_cmd.build_status_text(
-        pipeline.yuki,
-        gid_str,
-        group_active=bool(pipeline.group_active_state.get(gid_str, default_group_active())),
-        is_master=cfg.is_master_qq(user_id),
-    )
-    asyncio.create_task(gateway.send(chat_id, text, mode=send_mode))
-    logger.info(f"[Status] {gid_str} 状态查询 by {user_id}: {text}")
-    return True
-
-
-def handle_force_close_command(gateway, pipeline, group_id, gid_str, raw_msg) -> bool:
-    """处理 /强制关闭：任何人可用，但必须连发两次（60 秒内）才真正休眠本群。"""
-    if not status_cmd.match_force_close_command(raw_msg):
-        return False
-
-    if not status_cmd.is_force_close_confirmed(gid_str):
-        status_cmd.mark_force_close_pending(gid_str)
-        asyncio.create_task(
-            gateway.send(
-                group_id,
-                f"真的要关掉人家吗…60 秒内再发一次 /强制关闭 就睡啦（{cfg.ROBOT_NAME.title()} 会停在这个群不说话）",
-                mode="group",
-            )
-        )
-        logger.info(f"[ForceClose] {gid_str} 第一次确认请求")
-        return True
-
-    status_cmd.clear_force_close(gid_str)
-    logger.warning(f"[ForceClose] {gid_str} 二次确认完成，强制休眠该群")
-    _set_group_active(pipeline, gateway, group_id, gid_str, opening=False)
-    return True
-
-
-AUTONOMOUS_COMMANDS = ("/深思", "/工坊状态", "/强制放行", "/自主轮")
-
-
-def _autonomous(pipeline):
-    return getattr(pipeline, "autonomous", None)
-
-
-def handle_autonomous_command(pipeline, gateway, chat_id, gid_str, user_id, raw_msg,
-                              send_mode: str = "group") -> bool:
-    """处理 /深思、/工坊状态、/强制放行、/自主轮 开|关（主人限定）。"""
-    msg_clean = raw_msg.strip()
-    head = msg_clean.split()[0] if msg_clean else ""
-    if head not in AUTONOMOUS_COMMANDS:
-        return False
-
-    coordinator = _autonomous(pipeline)
-    if coordinator is None:
-        asyncio.create_task(gateway.send(chat_id, "自主轮还没装好哦～", mode=send_mode))
-        return True
-
-    if not cfg.is_master_qq(user_id):
-        asyncio.create_task(
-            gateway.send(chat_id, "只有哥哥大人才能安排我一个人的时间哦！", mode=send_mode)
-        )
-        return True
-
-    if head == "/工坊状态":
-        text = coordinator.status_text(gid_str)
-        asyncio.create_task(gateway.send(chat_id, text, mode=send_mode))
-        logger.info(f"[Autonomous] {gid_str} 状态查询 by {user_id}")
-        return True
-
-    if head == "/强制放行":
-        result = coordinator.force_release(gid_str)
-        text = (
-            "好，我马上回来～" if result.get("ok")
-            else "现在没有在独处哦，群里照常。"
-        )
-        asyncio.create_task(gateway.send(chat_id, text, mode=send_mode))
-        logger.warning(f"[Autonomous] {gid_str} 强制放行 by {user_id}: {result}")
-        return True
-
-    if head == "/自主轮":
-        parts = msg_clean.split()
-        action = parts[1] if len(parts) > 1 else ""
-        if action not in {"开", "关"}:
-            asyncio.create_task(
-                gateway.send(chat_id, "用法：/自主轮 开 或 /自主轮 关", mode=send_mode)
-            )
-            return True
-        from modules.autonomous.storage import state_store
-
-        state_store.set_group_override(gid_str, action == "开")
-        if action == "关":
-            coordinator.force_release(gid_str)
-            text = "这个群的自主轮关掉啦，以后不会自己跑去独处了。"
-        else:
-            text = "好，这个群以后我可以自己去待一会儿想事情啦～"
-        asyncio.create_task(gateway.send(chat_id, text, mode=send_mode))
-        logger.warning(f"[Autonomous] {gid_str} 运行时开关 -> {action} by {user_id}")
-        return True
-
-    # /深思
-    if send_mode == "group" and not pipeline.group_active_state.get(gid_str, default_group_active()):
-        asyncio.create_task(
-            gateway.send(
-                chat_id,
-                "这个群现在是休眠状态哦，先发 /开启 让我上线，我再去独处想事情～",
-                mode=send_mode,
-            )
-        )
-        return True
-
-    async def _start_deep_think():
-        result = await coordinator.start_run(gid_str, trigger="manual", mode_arg="group")
-        if result.get("ok"):
-            await gateway.send(
-                chat_id,
-                "嗯…我去一个人的地方待一会儿，翻翻日记想想事情。这段时间群里我先不说话，"
-                "想完了会把想到的东西拿回来给你看。",
-                mode=send_mode,
-            )
-        else:
-            await gateway.send(chat_id, str(result.get("reason") or "现在不太方便"), mode=send_mode)
-
-    asyncio.create_task(_start_deep_think())
-    logger.warning(f"[Autonomous] {gid_str} /深思 by {user_id}")
-    return True
-
-
-def handle_group_switch(pipeline, gateway, group_id, gid_str, user_id, raw_msg):
-    """处理群聊开关/重启/刷新/切换指令，返回 True 表示已拦截。"""
-    msg_clean = raw_msg.strip()
-    if msg_clean not in {"/关闭", "/开启", "/重启", "/刷新", "/切换"}:
-        return False
-
-    if not cfg.is_master_qq(user_id):
-        hint = {
-            "/关闭": "只有哥哥大人才能关掉我哦！",
-            "/开启": "只有哥哥大人才能唤醒我哦！",
-            "/重启": "只有哥哥大人才能重启我哦！",
-            "/刷新": "只有哥哥大人才能刷新网络哦！",
-            "/切换": "只有哥哥大人才能给我换模型哦！",
-        }[msg_clean]
-        asyncio.create_task(gateway.send(group_id, hint, mode="group"))
-        return True
-
-    if msg_clean == "/刷新":
-        asyncio.create_task(_refresh_flow(gateway, group_id, mode="group"))
-        return True
-
-    if msg_clean == "/切换":
-        text = switch_llm_route()
-        asyncio.create_task(gateway.send(group_id, text, mode="group"))
-        return True
-
-    if msg_clean == "/重启":
-        asyncio.create_task(_restart_flow(gateway, group_id))
-        return True
-
-    _set_group_active(pipeline, gateway, group_id, gid_str, opening=msg_clean == "/开启")
-    return True
-
-
-def handle_private_command(gateway, pipeline, user_id, raw_msg) -> bool:
-    """私聊侧指令：/刷新、/切换、/查询（/开启 /关闭 /重启 仍只在群里生效）。"""
-    msg_clean = raw_msg.strip()
-    if msg_clean in {"/工坊状态", "/强制放行"}:
-        return handle_autonomous_command(
-            pipeline, gateway, user_id, "", user_id, msg_clean, send_mode="private"
-        )
-    if msg_clean not in {"/刷新", "/切换", "/查询", "/状态", "/status"}:
-        return False
-
-    if msg_clean in {"/查询", "/状态", "/status"}:
-        text = status_cmd.build_status_text(
-            pipeline.yuki,
-            user_id,
-            group_active=True,
-            is_master=cfg.is_master_qq(user_id),
-        )
-        asyncio.create_task(gateway.send(user_id, text, mode="private"))
-        return True
-
-    if not cfg.is_master_qq(user_id):
-        hint = "只有哥哥大人才能刷新网络哦！" if msg_clean == "/刷新" else "只有哥哥大人才能给我换模型哦！"
-        asyncio.create_task(gateway.send(user_id, hint, mode="private"))
-        return True
-    if msg_clean == "/切换":
-        text = switch_llm_route()
-        asyncio.create_task(gateway.send(user_id, text, mode="private"))
-        return True
-    asyncio.create_task(_refresh_flow(gateway, user_id, mode="private"))
-    return True
-
-
 async def handle_poke_event(gateway, pipeline, data: dict, mode: str):
     """处理戳一戳事件：只把"戳 Yuki"记进管线，按普通消息入队（不插队）。"""
     if mode == "mixed":
         mode = "group"
     group_id = data.get("group_id")
-    poker_id = data.get("user_id")       # 戳人者
-    target_id = data.get("target_id")    # 被戳者
+    poker_id = data.get("user_id")
+    target_id = data.get("target_id")
 
-    # 只处理戳到 Yuki 的：其他人的互戳与机器人自己发出的戳都丢弃，
-    # 否则机器人回戳会回灌管线、再次触发对话
     if not target_id or int(target_id) != cfg.SELF_QQ:
         return
     if poker_id and int(poker_id) == cfg.SELF_QQ:
@@ -565,7 +145,6 @@ async def handle_poke_event(gateway, pipeline, data: dict, mode: str):
     if not pipeline.group_active_state.get(gid_str, default_group_active()):
         return
 
-    # 群聊白名单兜底：非白名单群直接丢弃
     if cfg.TARGET_GROUPS and group_id not in cfg.TARGET_GROUPS:
         return
 
@@ -576,13 +155,12 @@ async def handle_poke_event(gateway, pipeline, data: dict, mode: str):
 
     logger.info(f"[NapCat] 戳一戳事件: {poker_name}({poker_id}) 戳了戳 {cfg.ROBOT_NAME}({target_id}) (群:{gid_str})")
 
-    # 不调用快速唤醒：与普通群消息同一条路径，照常走防抖
     await pipeline.enqueue_message(
         gid_str,
         mode,
         message_obj=IncomingMessage(
             name=poker_name,
-            content=f'[{poker_name} 戳了戳 {cfg.ROBOT_NAME}]',
+            content=f"[{poker_name} 戳了戳 {cfg.ROBOT_NAME}]",
             raw_text="[戳一戳]",
             user_id=int(poker_id) if poker_id else None,
             is_bot=False,
@@ -591,90 +169,6 @@ async def handle_poke_event(gateway, pipeline, data: dict, mode: str):
             tags={"group", "poke"},
         ),
     )
-
-
-def _resolve_sft_logger(pipeline):
-    sft_logger = getattr(pipeline, "sft_logger", None)
-    return sft_logger if sft_logger is not None and hasattr(sft_logger, "record_label") else sft_trace_logger
-
-
-def handle_emoji_like_event(pipeline, data: dict) -> list[dict]:
-    """处理 NapCat 群贴表情通知（group_msg_emoji_like），仅采信主人打标。"""
-    user_id = data.get("user_id")
-    if not cfg.is_master_qq(user_id):
-        return []
-
-    group_id = str(data.get("group_id") or "")
-    message_id = data.get("message_id")
-    is_add = bool(data.get("is_add", True))
-    likes = data.get("likes")
-    if not isinstance(likes, list) or not likes:
-        if data.get("emoji_id") is not None:
-            likes = [{"emoji_id": data.get("emoji_id")}]
-        else:
-            likes = []
-
-    logger.info(
-        f"[NapCat] 收到主人贴表情事件: group={group_id} mid={message_id} "
-        f"is_add={is_add} likes={likes}"
-    )
-    sft_logger = _resolve_sft_logger(pipeline)
-    recorded = []
-    for item in likes:
-        if not isinstance(item, dict):
-            continue
-        emoji_id = item.get("emoji_id")
-        if emoji_id is None:
-            continue
-        rec = sft_logger.record_label(
-            message_id=message_id,
-            chat_id=group_id,
-            user_id=user_id,
-            emoji_id=emoji_id,
-            is_add=is_add,
-            source="emoji_like",
-        )
-        if rec:
-            recorded.append(rec)
-    return recorded
-
-
-def _extract_quoted_message_id(raw_msg: str, segments) -> str | None:
-    for seg in segments or []:
-        if isinstance(seg, dict) and seg.get("type") == "reply":
-            mid = (seg.get("data") or {}).get("id")
-            if mid is not None and str(mid).strip():
-                return str(mid).strip()
-    ids = extract_reply_ids(raw_msg or "")
-    return ids[0] if ids else None
-
-
-def handle_sft_quote_label(pipeline, chat_id, user_id, raw_msg: str, segments=None) -> bool:
-    """私聊/群聊备用打标：主人引用 Yuki 消息发 /good 或 /bad 时静默记录，不进聊天上下文。"""
-    if not cfg.is_master_qq(user_id):
-        return False
-    reply_id = _extract_quoted_message_id(raw_msg, segments)
-    if not reply_id:
-        return False
-    cmd = re.sub(r"\[CQ:[^\]]+\]", "", raw_msg or "").strip().lower()
-    if cmd in {"/good", "/perfect", "/赞"}:
-        label = "perfect"
-    elif cmd in {"/bad", "/差", "/踩"}:
-        label = "bad"
-    else:
-        return False
-
-    sft_logger = _resolve_sft_logger(pipeline)
-    rec = sft_logger.record_label(
-        message_id=reply_id,
-        chat_id=str(chat_id),
-        user_id=user_id,
-        emoji_id=cmd,
-        is_add=True,
-        label=label,
-        source="quote_cmd",
-    )
-    return rec is not None
 
 
 async def napcat_listen(gateway, pipeline, mode: str = "mixed"):
@@ -686,7 +180,6 @@ async def napcat_listen(gateway, pipeline, mode: str = "mixed"):
     while True:
         try:
             async for data in gateway.listen():
-                # 心跳：只用来维护在线状态，挂起/恢复后台常驻任务
                 if data.get("post_type") == "meta_event" and data.get("meta_event_type") == "heartbeat":
                     is_online = (data.get("status") or {}).get("online", False)
                     if not is_online and engine.napcat_online:
@@ -700,16 +193,15 @@ async def napcat_listen(gateway, pipeline, mode: str = "mixed"):
                 if not engine.napcat_online:
                     continue
 
-                # 戳一戳（notice/notify/poke）
-                if (data.get("post_type") == "notice"
-                        and data.get("notice_type") == "notify"
-                        and data.get("sub_type") == "poke"):
+                if (
+                    data.get("post_type") == "notice"
+                    and data.get("notice_type") == "notify"
+                    and data.get("sub_type") == "poke"
+                ):
                     asyncio.create_task(handle_poke_event(gateway, pipeline, data, mode))
                     continue
 
-                # 群贴表情（notice/group_msg_emoji_like）-> 主人 SFT 样本打标
-                if (data.get("post_type") == "notice"
-                        and data.get("notice_type") == "group_msg_emoji_like"):
+                if data.get("post_type") == "notice" and data.get("notice_type") == "group_msg_emoji_like":
                     handle_emoji_like_event(pipeline, data)
                     continue
 
@@ -725,16 +217,31 @@ async def napcat_listen(gateway, pipeline, mode: str = "mixed"):
                         continue
                     if handle_sft_quote_label(pipeline, user_id, user_id, raw_msg, data.get("message")):
                         continue
+                    private_mode = "master_private" if cfg.is_master_qq(user_id) else "private"
+                    private_sender = data.get("sender", {})
+                    private_name = private_sender.get("nickname") or private_sender.get("card") or "私聊用户"
+                    if handle_art_gacha_command(
+                        pipeline,
+                        gateway,
+                        user_id,
+                        user_id,
+                        raw_msg,
+                        sender_name=private_name,
+                        message_id=data.get("message_id"),
+                        segments=data.get("message"),
+                        send_mode=private_mode,
+                    ):
+                        continue
                     await feed_message(
                         pipeline,
                         gateway,
                         user_id,
                         raw_msg,
-                        "master_private" if cfg.is_master_qq(user_id) else "private",
+                        private_mode,
                         message_obj=_build_private_message(
                             user_id,
                             raw_msg,
-                            data.get("sender", {}),
+                            private_sender,
                             data.get("message_id"),
                             data.get("message"),
                         ),
@@ -750,9 +257,7 @@ async def napcat_listen(gateway, pipeline, mode: str = "mixed"):
                         continue
                     if handle_force_close_command(gateway, pipeline, group_id, gid_str, raw_msg):
                         continue
-                    if handle_autonomous_command(
-                        pipeline, gateway, group_id, gid_str, user_id, raw_msg
-                    ):
+                    if handle_autonomous_command(pipeline, gateway, group_id, gid_str, user_id, raw_msg):
                         continue
                     if handle_group_switch(pipeline, gateway, group_id, gid_str, user_id, raw_msg):
                         continue
@@ -779,6 +284,19 @@ async def napcat_listen(gateway, pipeline, mode: str = "mixed"):
                         message_id=data.get("message_id"),
                         is_bot=False,
                     )
+
+                    if handle_art_gacha_command(
+                        pipeline,
+                        gateway,
+                        group_id,
+                        user_id,
+                        raw_msg,
+                        sender_name=name,
+                        message_id=data.get("message_id"),
+                        segments=data.get("message"),
+                        send_mode="group",
+                    ):
+                        continue
 
                     await feed_message(
                         pipeline,
@@ -837,7 +355,6 @@ async def feed_message(
         suffix="...",
     )
 
-    # 上一次发的表情包被接梗 -> 记一次正向偏好
     if cid_str in yuki.last_sent_meme and not incoming_message.is_bot:
         feedback_words = ["哈", "草", "233", "笑", "蚌埠", "确实", "典", "好图", "偷了"]
         if any(word in incoming_message.raw_text for word in feedback_words):
@@ -861,15 +378,11 @@ async def feed_message(
         pipeline.history_manager.append_session_message(chat_id, "assistant", "(已发送帮助文档图片)")
         return
 
-    # 拦截 Bot 消息（白名单除外）
     if incoming_message.is_bot and (
         not incoming_message.user_id or incoming_message.user_id not in cfg.TARGET_WHITELIST
     ):
         return
 
-    # 被叫到（叫名字或被 @）就跳过防抖并强制回复：一个是关键词命中，
-    # 一个是结构化 at 段（必须比对机器人自己的 QQ）
-    # BOT 消息（白名单放行的）永不强制回复，否则两个 BOT 互相召唤会死循环
     called = not incoming_message.is_bot and (
         cfg.ROBOT_NAME.lower() in incoming_message.raw_text.lower()
         or mentions_self(incoming_message.segments, incoming_message.raw_text, cfg.SELF_QQ)

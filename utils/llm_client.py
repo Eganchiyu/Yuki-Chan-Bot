@@ -21,23 +21,30 @@ logger = get_logger("llm_client")
 # 全局 aiohttp Session（TCP 连接复用）
 _global_session: Optional[aiohttp.ClientSession] = None
 
-# 主备故障转移状态
+# 主备/多渠道故障转移状态（route_failures 记录各非末位节点的熔断时间戳）
 _fallback_state: Dict[str, Any] = {
     "is_degraded": False,
     "last_fail_time": 0,
     "recovery_seconds": 120.0,
+    "active_index": 0,
+    "active_provider": "主线",
+    "route_failures": {},
 }
 
 
 def reset_route_state() -> None:
-    """清空主备熔断状态：QQ /切换 换线后重新判定，不沿用旧线路的降级结论。"""
+    """清空主备/多渠道熔断状态：QQ /切换 换线后重新判定，不沿用旧线路的降级结论。"""
     _fallback_state["is_degraded"] = False
     _fallback_state["last_fail_time"] = 0.0
+    _fallback_state["active_index"] = 0
+    _fallback_state["route_failures"] = {}
 
 
 def get_route_state() -> Dict[str, Any]:
-    """读取当前主备线路状态（给 /查询 之类的状态面板用，只读快照）。"""
-    return dict(_fallback_state)
+    """读取当前线路熔断状态（给 /查询 之类的状态面板用，只读快照）。"""
+    snap = dict(_fallback_state)
+    snap["route_failures"] = dict(_fallback_state.get("route_failures") or {})
+    return snap
 
 
 _GEMINI_UNSUPPORTED_PARAMS = (
@@ -273,51 +280,91 @@ async def _request_with_failover(
     fallback_messages_factory,
     **kwargs,
 ) -> Optional[Dict[str, Any]]:
-    """执行一次主备故障转移请求，主备都失败返回 None。"""
-    # 主模型思考等级由配置决定，未配置则不传该参数
-    if cfg.THINKING_EFFORT and "reasoning_effort" not in kwargs:
-        kwargs["reasoning_effort"] = cfg.THINKING_EFFORT
-
+    """按 cfg.get_llm_routes() 队列顺序执行多 Provider 故障转移请求，全部失败返回 None。"""
     state = _fallback_state
+    now = time.time()
+    recovery = float(state.get("recovery_seconds", 120.0) or 120.0)
+    route_failures: Dict[int, float] = state.setdefault("route_failures", {})
 
-    if state["is_degraded"] and (
-        time.time() - state["last_fail_time"] > state["recovery_seconds"]
-    ):
-        state["is_degraded"] = False
-        logger.info("[LLM] 尝试恢复主线路")
+    # 兼容测试直接 monkeypatch _fallback_state["is_degraded"] = False
+    if not state.get("is_degraded"):
+        route_failures.clear()
+    elif 0 not in route_failures and state.get("last_fail_time"):
+        route_failures[0] = float(state["last_fail_time"])
 
-    if not state["is_degraded"]:
-        try:
-            return await chat_completion_raw(
+    get_routes = getattr(cfg, "get_llm_routes", None)
+    routes = get_routes() if callable(get_routes) else []
+    if not routes:
+        from core.config.schema import LLMProviderConfig
+
+        routes = [
+            LLMProviderConfig(
+                name="主线",
                 base_url=cfg.LLM_BASE_URL,
                 api_key=cfg.LLM_API_KEY,
-                messages=messages,
-                model=model or cfg.LLM_MODEL,
-                timeout=60.0,
-                **kwargs,
-            )
-        except Exception as e:
-            logger.warning(f"[LLM] 主线路失效: {e}，触发熔断并切换备用")
-            state["is_degraded"] = True
-            state["last_fail_time"] = time.time()
+                model=cfg.LLM_MODEL,
+                native_vision=cfg.LLM_NATIVE_VISION_ENABLED,
+                thinking_effort=cfg.THINKING_EFFORT,
+            ),
+            LLMProviderConfig(
+                name="备用",
+                base_url=cfg.BACKUP_BASE_URL,
+                api_key=cfg.BACKUP_API_KEY or cfg.LLM_API_KEY,
+                model=cfg.BACKUP_MODEL,
+                native_vision=cfg.BACKUP_NATIVE_VISION_ENABLED,
+                thinking_effort=cfg.THINKING_EFFORT,
+            ),
+        ]
 
-    try:
-        backup_key = cfg.BACKUP_API_KEY or cfg.LLM_API_KEY
-        backup_messages = messages
-        if fallback_messages_factory and not cfg.BACKUP_NATIVE_VISION_ENABLED:
-            backup_messages = await fallback_messages_factory()
-        # 备用线路始终使用自身模型名，不继承主线路的 model 参数
-        return await chat_completion_raw(
-            base_url=cfg.BACKUP_BASE_URL,
-            api_key=backup_key,
-            messages=backup_messages,
-            model=cfg.BACKUP_MODEL,
-            timeout=60.0,
-            **kwargs,
-        )
-    except Exception as e:
-        logger.error(f"[LLM] 备用线路也失效: {e}")
-        return None
+    last_idx = len(routes) - 1
+    degraded_messages = None
+
+    for idx, route in enumerate(routes):
+        is_terminal = idx == last_idx
+        if not is_terminal and idx in route_failures:
+            if now - route_failures[idx] > recovery:
+                route_failures.pop(idx, None)
+                if idx == 0:
+                    state["is_degraded"] = bool(route_failures)
+                logger.info(f"[LLM] 尝试恢复线路 #{idx + 1}({route.name})")
+            else:
+                continue
+
+        req_kwargs = dict(kwargs)
+        effort = route.thinking_effort or cfg.THINKING_EFFORT
+        if effort and "reasoning_effort" not in req_kwargs:
+            req_kwargs["reasoning_effort"] = effort
+
+        req_messages = messages
+        if idx > 0 and fallback_messages_factory and not route.native_vision:
+            if degraded_messages is None:
+                degraded_messages = await fallback_messages_factory()
+            req_messages = degraded_messages
+
+        req_model = (model or route.model) if idx == 0 else route.model
+        try:
+            res = await chat_completion_raw(
+                base_url=route.base_url,
+                api_key=route.api_key or cfg.LLM_API_KEY,
+                messages=req_messages,
+                model=req_model,
+                timeout=60.0,
+                **req_kwargs,
+            )
+            state["active_index"] = idx
+            state["active_provider"] = route.name
+            return res
+        except Exception as e:
+            if not is_terminal:
+                logger.warning(f"[LLM] 线路 #{idx + 1}({route.name}) 失效: {e}，触发熔断并顺延下一渠道")
+                route_failures[idx] = time.time()
+                state["is_degraded"] = True
+                if idx == 0:
+                    state["last_fail_time"] = route_failures[0]
+            else:
+                logger.error(f"[LLM] 末位兜底线路 #{idx + 1}({route.name}) 也失效: {e}")
+
+    return None
 
 
 async def llm_chat_raw(

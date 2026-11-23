@@ -34,13 +34,12 @@ def _is_download_url(value):
 
 
 def _guess_download_filename(url, filename=None):
-    if filename:
-        return filename
-    path_name = os.path.basename(urlparse(url).path)
-    if path_name:
-        return path_name
+    from network.napcat import _sanitize_download_filename
+
     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-    return f"download_{timestamp}"
+    fallback = f"download_{timestamp}"
+    raw = filename or os.path.basename(urlparse(url).path)
+    return _sanitize_download_filename(raw, fallback)
 
 
 async def _download_url_to_workspace(url, filename=None):

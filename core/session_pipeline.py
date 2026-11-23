@@ -15,8 +15,17 @@ from core.focus import focus_manager
 from core.history_filter import dialogue_length
 from core.recall_cache import recall_cache_store
 from core.reply_format import clean_visible_reply
-from core.reply_watch import auto_subscribe, is_human_incoming, resolve, subscribe
-from core.sft_logger import sft_trace_logger
+from core.reply_watch import (
+    auto_subscribe,
+    build_high_spirits_event_builder,
+    high_spirits_burst_left,
+    high_spirits_can_followup,
+    high_spirits_guard_active,
+    is_human_incoming,
+    resolve,
+    subscribe,
+)
+from core.sft_logger import record_pipeline_sft_turn, sft_trace_logger
 from core.toolchain import SKIP_REPLY_MARKER
 from init import default_group_active
 from modules.debug.context_snapshot import PIPELINE_STAGES, context_snapshot_store
@@ -125,6 +134,11 @@ class SessionPipeline:
         self.image_store = components.get("image_store")
         self.sft_logger = components.get("sft_logger") or sft_trace_logger
         self.group_active_state = group_active_state
+        if self.engine is not None and not isinstance(self.engine, MagicMock if "MagicMock" in globals() else ()):
+            try:
+                self.engine.group_active_state = group_active_state
+            except Exception:
+                pass
 
         # --- 防抖与锁机制 ---
         self._timer_tasks: dict = {}    # chat_id -> asyncio.Task (当前正在计时的防抖任务)
@@ -160,6 +174,20 @@ class SessionPipeline:
         if chat_id not in self._chat_locks:
             self._chat_locks[chat_id] = asyncio.Lock()
         return self._chat_locks[chat_id]
+
+    def cancel_pending(self, chat_id: str) -> None:
+        """清空指定会话的待处理缓冲并取消正在倒计时的防抖任务（如群聊休眠时）。"""
+        cid = str(chat_id)
+        self.yuki.message_buffer[cid] = []
+        self._skip_debounce.pop(cid, None)
+        task = self._timer_tasks.pop(cid, None)
+        if task and not task.done():
+            task.cancel()
+        legacy_tasks = getattr(self.yuki, "buffer_tasks", None)
+        if isinstance(legacy_tasks, dict):
+            legacy = legacy_tasks.pop(cid, None)
+            if legacy and not legacy.done():
+                legacy.cancel()
 
     def _schedule_image_prefetch(self, content: str):
         """入队阶段就为消息中的图片起后台预取任务，不阻塞消息缓冲。"""
@@ -507,6 +535,47 @@ class SessionPipeline:
         mode = context["mode"]
         system_prompt = self.yuki.get_setting(mode)
 
+        incoming_messages = context.get("incoming_messages") or context.get("message_objs") or []
+        has_art_gacha_jump = any(
+            isinstance(m, dict) and "art_gacha_jump" in (m.get("tags") or [])
+            for m in incoming_messages
+        )
+        if has_art_gacha_jump:
+            from core.focus.domains.art import prepare_art_gacha_jump
+
+            custom_notes: list[str] = []
+            for m in incoming_messages:
+                if isinstance(m, dict) and "art_gacha_jump" in (m.get("tags") or []):
+                    raw = str(m.get("raw_text") or "").strip()
+                    if raw.startswith("/抽图") and len(raw) > 3 and raw[3].isspace():
+                        note_part = raw[3:].strip()
+                        if note_part:
+                            custom_notes.append(note_part)
+            custom_note = " ".join(custom_notes).strip()
+
+            self.history_manager.get_session(chat_id, system_content=system_prompt)
+            jump_res = prepare_art_gacha_jump(
+                chat_id,
+                history=self.history_manager,
+                goal=custom_note or "抽图创作",
+            )
+            gacha_prompt = jump_res.get("prompt") or ""
+            gacha_source = jump_res.get("source") or ""
+            custom_hint = (
+                f"用户附带自定义要求：「{custom_note}」（请务必优先满足该要求，例如选用指定的个人资产图、人物、动作或构图，并将下方抽卡 Prompt 作为画面风格与场景灵感融入）。\n"
+                if custom_note
+                else "请直接根据以上抽卡 Prompt 结合合适的个人资产图（如有需要）改写为完整画面描述，"
+            )
+            context["art_gacha_jump"] = True
+            context["force_reply"] = True
+            context["combined_text"] = (
+                f"{context['combined_text']}\n"
+                f"【系统直达抽图指令】已为你直接进入艺术创作模式并自动完成一次抽卡（来源: {gacha_source}）。"
+                f"本次抽到的灵感 Prompt 如下：\n{gacha_prompt}\n"
+                f"{custom_hint}"
+                "立即调用 `art_draw` 进行绘画。注意：提交绘画后不要调用 `art_finish`，保持创作模式开启以便后续继续抽图。"
+            )
+
         current_time_str = datetime.datetime.now().strftime("%Y年%m月%d日%H:%M")
         session = self.history_manager.append_session_message(
             chat_id,
@@ -634,8 +703,8 @@ class SessionPipeline:
         except Exception:
             energy_val, activity_val, bioclock_val = None, None, None
 
-        # 破冰模式强制回复，跳过决策
-        if context.get("ice_break"):
+        # 破冰模式或直达抽图指令强制回复，跳过决策
+        if context.get("ice_break") or context.get("art_gacha_jump"):
             self._update_snapshot(
                 context, should_reply=True, rag_interest=round(rag_interest, 3),
                 energy=energy_val, activity=activity_val, bioclock=bioclock_val,
@@ -707,76 +776,19 @@ class SessionPipeline:
 
     def _record_sft_turn(self, context: dict, *, outcome_override: str | None = None,
                          answer_raw: str = "", answer_text: str = ""):
-        if not self.sft_logger:
-            return None
-        try:
-            capture = context.get("sft_capture")
-            if not isinstance(capture, dict):
-                capture = self._pop_engine_sft_capture(context["chat_id"])
-            senders = []
-            for m in (context.get("message_objs") or context.get("incoming_messages") or []):
-                if isinstance(m, dict):
-                    nm = str(m.get("name") or m.get("user_id") or "").strip()
-                    if nm and nm not in senders:
-                        senders.append(nm)
-            outcome = outcome_override or capture.get("outcome") or "reply"
-            image_assets = []
-            archive_images = getattr(self.sft_logger, "archive_images", None)
-            if callable(archive_images):
-                image_attachments = []
-                seen_attachments = set()
-                for message in context.get("session") or []:
-                    if not isinstance(message, dict):
-                        continue
-                    for attachment in message.get("image_attachments") or []:
-                        if not isinstance(attachment, dict):
-                            continue
-                        key = (str(attachment.get("index") or ""), str(attachment.get("id") or ""))
-                        if key not in seen_attachments:
-                            seen_attachments.add(key)
-                            image_attachments.append(attachment)
-                for attachment in context.get("native_images") or []:
-                    if not isinstance(attachment, dict):
-                        continue
-                    key = (str(attachment.get("index") or ""), str(attachment.get("id") or ""))
-                    if key not in seen_attachments:
-                        seen_attachments.add(key)
-                        image_attachments.append(attachment)
-                image_assets = archive_images(
-                    context.get("debug_snapshot_id") or context.get("turn_id") or "unknown",
-                    image_attachments,
-                    self.image_store,
-                )
-            record = self.sft_logger.record_turn({
-                "turn_id": context.get("debug_snapshot_id") or context.get("turn_id"),
-                "chat_id": context.get("chat_id", ""),
-                "mode": context.get("mode", ""),
-                "model": cfg.LLM_MODEL,
-                "ice_break": bool(context.get("ice_break", False)),
-                "outcome": outcome,
-                "llm_rounds": capture.get("llm_rounds", 0),
-                "senders": senders,
-                "combined_text": context.get("combined_text", ""),
-                "relevant_diaries": context.get("relevant_diaries") or [],
-                "input_messages": capture.get("input_messages") or [],
-                "turn_messages": capture.get("turn_messages") or [],
-                "tools_used": capture.get("tools_used") or [],
-                "tool_trace": capture.get("tool_trace") or [],
-                "image_assets": image_assets,
-                "answer_raw": answer_raw,
-                "answer_text": answer_text,
-                "sent_message_ids": list(context.get("sent_message_ids") or []),
-            })
-            if record and record.get("sent_message_ids") and hasattr(self.sft_logger, "index_messages"):
-                self.sft_logger.index_messages(
-                    record["turn_id"],
-                    record["sent_message_ids"],
-                    chat_id=record.get("chat_id", ""),
-                )
-            return record
-        except Exception as exc:
-            logger.debug(f"[SFT] 记录训练轨迹异常: {exc}")
-            return None
+        capture = context.get("sft_capture")
+        if not isinstance(capture, dict):
+            capture = self._pop_engine_sft_capture(context["chat_id"])
+        return record_pipeline_sft_turn(
+            self.sft_logger,
+            context,
+            capture=capture,
+            image_store=self.image_store,
+            model_name=cfg.LLM_MODEL,
+            outcome_override=outcome_override,
+            answer_raw=answer_raw,
+            answer_text=answer_text,
+        )
 
     async def generate_reply(self, context):
         """调用引擎生成回复。"""
@@ -1039,81 +1051,18 @@ class SessionPipeline:
         )
 
     def _high_spirits_burst_left(self, chat_id: str) -> int | None:
-        """读连发护栏剩余额度；brain 未升级时返回 None（保持旧行为）。"""
-        getter = getattr(self.yuki, "high_spirits_burst_remaining", None)
-        if not callable(getter):
-            return None
-        try:
-            return max(0, int(getter(chat_id)))
-        except Exception:
-            return None
+        return high_spirits_burst_left(self.yuki, chat_id)
 
     def _high_spirits_guard_active(self, chat_id: str) -> bool:
-        """高涨期内连发额度已用完：此时不再登记任何主动追击。"""
-        active = getattr(self.yuki, "high_spirits_active", None)
-        if not callable(active):
-            return False
-        try:
-            if not active(chat_id):
-                return False
-        except Exception:
-            return False
-        return self._high_spirits_burst_left(chat_id) == 0
+        return high_spirits_guard_active(self.yuki, chat_id)
 
     def _high_spirits_can_followup(self, chat_id: str) -> bool:
-        """能否在回群第一句后再补一句：高涨有效 + 补发配额 + 连发护栏都允许。"""
-        active = getattr(self.yuki, "high_spirits_active", None)
-        turns_left = getattr(self.yuki, "high_spirits_turns_left", None)
-        if not callable(active) or not callable(turns_left):
-            return False
-        try:
-            if not active(chat_id) or turns_left(chat_id) <= 0:
-                return False
-        except Exception:
-            return False
-        burst_left = self._high_spirits_burst_left(chat_id)
-        return burst_left is None or burst_left > 0
+        return high_spirits_can_followup(self.yuki, chat_id)
 
     def _high_spirits_event_builder(self, chat_id: str):
-        """心情高涨时构造「再轻轻补一句」的被动事件；额度/空隙不允许时返回 None。"""
-        if not self._high_spirits_can_followup(chat_id):
-            return None
-
-        gap = max(1.0, float(cfg.autonomous.high_spirits_followup_window))
-
-        def _builder(watch):
-            # 到点时再核一次：等待期间可能已经发过别的消息，超限或空隙不够就安静收手
-            if not self._high_spirits_can_followup(chat_id):
-                logger.info(f"[Pipeline] {chat_id} 心情高涨连发额度已用完，放弃补发")
-                return None
-            gap_ok = getattr(self.yuki, "high_spirits_gap_elapsed", None)
-            if callable(gap_ok):
-                try:
-                    if not gap_ok(chat_id, gap):
-                        logger.info(
-                            f"[Pipeline] {chat_id} 心情高涨连发空隙未到（需 {gap:.0f}s），放弃补发"
-                        )
-                        return None
-                except Exception:
-                    pass
-            left = self.yuki.consume_high_spirits_turn(chat_id)
-            logger.info(f"[Pipeline] {chat_id} 心情高涨被动窗口到期，轻轻补一句（剩余配额 {left} 轮）")
-            return {
-                "content": (
-                    "【心情高涨·轻轻补一句】你刚在独处时光里做出了自己挺喜欢的东西，"
-                    "回到群里心情还很好。这是回群后最多两句里的第二句——"
-                    "用你平时那种软软的、带点小得意的电子妹妹语气，只说一两句就好，"
-                    "可以带「喵」「～」和小表情。不要像汇报工作，不要重复上一句，"
-                    "也不要再展开成长篇或连发第三条。"
-                ),
-                "raw_text": "",
-                "name": "系统",
-                "time": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                "source": "yuki.high_spirits",
-                "is_reply_watch_event": True,
-            }
-
-        return _builder
+        return build_high_spirits_event_builder(
+            self.yuki, chat_id, cfg.autonomous.high_spirits_followup_window
+        )
 
     async def finalize_conversation(self, context):
         """保存回复上下文，并在历史过长时触发总结。"""
@@ -1166,9 +1115,14 @@ class SessionPipeline:
 
         # 只按聊天条数判断是否该写日记：工具调用与工具输出不算对话轮次；
         # 聚焦模式期间暂停超长日记总结，防止半途总结工作过程并截断聚焦上下文。
-        if not focus_manager.is_focused(chat_id) and dialogue_length(session) > cfg.DIARY_MAX_LENGTH:
+        writing_diary = getattr(self.yuki, "writing_diary", None)
+        already_writing = isinstance(writing_diary, set) and str(chat_id) in writing_diary
+        if (
+            not already_writing
+            and not focus_manager.is_focused(chat_id)
+            and dialogue_length(session) > cfg.DIARY_MAX_LENGTH
+        ):
             history_snapshot = session.copy()
-            self.history_manager.replace_session(chat_id, [session[0]])
             asyncio.create_task(self._background_summarize(chat_id, history_snapshot))
 
         # 破冰模式：递增失败计数
@@ -1182,10 +1136,28 @@ class SessionPipeline:
         return context
 
     async def _background_summarize(self, chat_id, history_snapshot):
-        """后台处理摘要，不阻塞主流程。"""
+        """后台处理摘要，不阻塞主流程；总结期间新增的消息自动追加回尾部，防止并发覆盖。"""
+        cid = str(chat_id)
+        writing_diary = getattr(self.yuki, "writing_diary", None)
+        if isinstance(writing_diary, set):
+            writing_diary.add(cid)
         try:
             summarized_list = await self.engine.do_summarize(chat_id, history_snapshot)
+            current = (
+                self.history_manager.get_session(chat_id)
+                if hasattr(self.history_manager, "get_session")
+                else None
+            )
+            if (
+                isinstance(current, list)
+                and len(current) > len(history_snapshot)
+                and current[: len(history_snapshot)] == history_snapshot
+            ):
+                summarized_list = list(summarized_list) + current[len(history_snapshot) :]
             self.history_manager.replace_session(chat_id, summarized_list)
             logger.info(f"[Pipeline] [{chat_id}] 日记写入完成，历史已同步")
         except Exception as e:
             logger.error(f"[Pipeline] [{chat_id}] 后台摘要失败: {e}")
+        finally:
+            if isinstance(writing_diary, set):
+                writing_diary.discard(cid)

@@ -81,7 +81,6 @@ class YukiState:
         self.energy = {}  # {chat_id: current_energy}
         self.last_update = {}
         self.message_buffer = defaultdict(list)
-        self.buffer_tasks = {}    # chat_id: task
         self.last_message_time = {} # chat_id: timestamp
         self.writing_diary = set()  # chat_id
         self.desire_to_start_topic = {} # chat_id
@@ -94,7 +93,6 @@ class YukiState:
         # 小女仆任务运行时登记表：会话内编号、并行执行、叫停都走它（唯一事实源）
         self.maid_runtime = MaidRuntime()
         self.maid_current_tasks = {}  # chat_id -> 当前任务描述（让Yuki知道她在干什么）
-        self.maid_active_chats = {}  # chat_id -> mode，重启前要往这些会话喊一声
 
         # --- 新增：用户昵称到QQ号的映射 ---
         self.user_mapping = UserMapping(ttl_rounds=10)
@@ -280,12 +278,6 @@ class YukiState:
         msgs = self.message_buffer.get(chat_id) or self.message_buffer.get(cid, [])
         self.message_buffer[chat_id] = []
         self.message_buffer[cid] = self.message_buffer[chat_id]
-        # 清理已完成的 buffer_tasks，防止内存泄漏
-        # 注意：只清理已完成的任务，避免在任务执行期间删除导致竞态条件
-        task = self.buffer_tasks.get(chat_id) or self.buffer_tasks.get(cid)
-        if task and task.done():
-            self.buffer_tasks.pop(chat_id, None)
-            self.buffer_tasks.pop(cid, None)
         return msgs
 
     @staticmethod

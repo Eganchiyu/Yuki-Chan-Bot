@@ -879,3 +879,30 @@
 - 机主给的 key 可用：`GET /v1/models` 200，仅 5 个模型：grok-4.5 / grok-4.6 / grok-4.7 / grok-build-latest / grok-composer-2.5-fast。
 - 5 个全部能跑 chat/completions；`grok-build-latest` 实际回报 `grok-4.6-build`，`grok-composer-2.5-fast` 回报 `grok-4.5`。
 - 计量：usage 带 `cost_in_usd_ticks`（同一次简单请求近 4000万 ticks，单次成本不低）。`/v1/dashboard/billing/subscription` 返回限额 1e8 占位值，非真实余额。
+
+
+## 2026-11-22 全量体检与 P0–P3 架构重构（补台修复 / 写日记并发防丢 / 多 Provider 队列 / 巨型模块拆分）
+- **P0 正确性与并发安全修复**：
+  - `core/modes/pipeline.py`：修复 `handle_catchup` 调用 `super().enqueue_message` 时漏传 `cid` 位置参数导致冻结期群消息被 `pop_buffer` 清空后抛 `TypeError` 丢失的 Bug。
+  - `core/session_pipeline.py` & `core/engine/engine_diary.py`：修复后台/空闲异步写日记等待 LLM 期间新消息被 `replace_session` 覆盖丢失的竞态，改为比对快照前缀并自动把新到达消息拼接到摘要尾部，且超长写日记与空闲巡检共用 `yuki.writing_diary` 互斥。
+  - `core/session_pipeline.py` / `modules/QQNapcatListen/` / `core/engine/engine_monitor.py` / `modules/autonomous/coordinator.py`：新增 `SessionPipeline.cancel_pending(chat_id)`，修复 `/关闭` 休眠时查空字典 `yuki.buffer_tasks` 而未取消 `_timer_tasks` 的问题；在破冰巡检与自主轮冷场自动触发中统一过滤休眠群。
+  - `network/napcat.py` & `core/tools/tools_media.py`：新增 `_sanitize_download_filename` 防下载文件名路径穿越；`send_local_file` 升级为优先调用 OneBot `upload_private_file` / `upload_group_file` 动作（失败回退 CQ 码）。
+- **P1 核心链路性能与 I/O 治理**：
+  - `core/maid/maid_tools.py`：`search_diary_fast` 缓存复用 Chroma `PersistentClient`；无参随机翻看改为先拉 `metadatas` 按软比例抽样 8 个 ID，再仅按抽中的 ID 拉取 `documents` 正文，避免每次全表拉取 6485+ 篇正文。
+  - `core/engine/engine_monitor.py` & `modules/autonomous/storage.py`：`idle_diary_checker` 仅在群空闲达标后按单群读会话，消除每 30s 全库 `history.load()` 深拷贝；`AutonomousStateStore` 增加 `(path, mtime)` 内存缓存。
+- **P2 巨型模块职责拆分与多 Provider 故障转移队列**：
+  - 配置系统拆分：`config.py`（1752 行 → 62 行门面）拆分为 `core/config/schema.py` 与 `core/config/loader.py`，用 40 行声明式 `_LEGACY_ALIASES` + `__getattr__` 替代 350 行手写大写 `@property`；新增 `LLMProviderConfig` 与 `providers` 多渠道队列，`utils/llm_client.py` 支持 N 级节点独立熔断顺延与视觉自动降级，`/切换` 支持无参轮转与 `/切换 <序号|名称>` 定向切换。
+  - 入站监听拆分：`modules/QQNapcatListen/listen_main.py`（883 行 → 315 行）拆出 `host_ipc.py`（容器重启与 `netforce` 看门狗 IPC）与 `commands.py`（斜杠命令与 SFT 打标）。
+  - 会话管线瘦身：`core/session_pipeline.py` 将 SFT 轨迹拼装下沉至 `core/sft_logger.py::record_pipeline_sft_turn`，将心情高涨追击构造器与护栏下沉至 `core/reply_watch.py`。
+- **P3 遗留兼容层与死代码清理**：
+  - `core/tools/{tools.py,__init__.py}` 直接从 `core.focus.domains.phone` 导入；清理 `YukiState` 废弃字段 `buffer_tasks`、`maid_active_chats` 及 `MemoryRAG.search_memory` 死方法。
+- **验证**：定向单测（`test_mode_router`、`test_pipeline`、`test_napcat`、`test_diary_filter`、`test_memory`、`test_autonomous_sandbox`、`test_config`、`test_llm_client`、`test_sft_logger`、`test_focus_contract`、`test_focus_snapshot`、`test_maid`、`test_tool_phone_macro`）与 `YUKI_DRY_RUN=1 python main.py` 全部通过。
+
+## 2026-11-23 硬编码 `/抽图` 直达创作模式抽卡
+
+- 在 `core/focus/domains/art.py` 抽取 `build_art_start_content()` 复用创作模式完整指南与个人资产列表注入，并新增 `prepare_art_gacha_jump()` 实现状态跳跃：
+  - 未处于 `art` 聚焦模式时直接进入 `art` 并向会话历史写入完整 `art_start` 工具上下文 + 自动抽卡结果 `art_gacha`；
+  - 已处于 `art` 聚焦模式时跳过 `art_start` 注入，直接自动抽卡写入 `art_gacha` 并保持创作模式不退出；
+- 在 `modules/QQNapcatListen/commands.py` 新增 `handle_art_gacha_command()` 并在 `listen_main.py` 群聊与私聊分支接入，支持 `/抽图` 与 `/抽图 <自定义附言>`；
+- 在 `core/session_pipeline.py` 的 `prepare_chat_context` 与 `decide_reply_action` 对带 `art_gacha_jump` 标记的消息执行跳跃、提取自定义附言并强制回复；
+- 验证：`docker exec yuki python -m pytest tests/test_art_focus.py tests/test_napcat.py -q`（27 passed）。
