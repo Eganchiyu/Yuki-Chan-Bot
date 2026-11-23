@@ -8,11 +8,11 @@
 旧格式只有 `content` 一个字段，读取时回落为 `daily`，写入时同步维护 `content`
 保持向后兼容（旧代码仍可 `load()` 拿到整本）。
 """
-import json
 import os
 import threading
 
 from utils import BASE_DIR
+from utils.json_store import atomic_write_json, read_json_cached
 from utils.logger import get_logger
 
 logger = get_logger("notebook")
@@ -37,17 +37,12 @@ class NotebookStore:
 
     # ------------------------------------------------------------ 读
     def _load_raw(self) -> dict:
-        if not os.path.exists(self.path):
-            return {}
         with self._lock:
-            try:
-                with open(self.path, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-            except Exception as e:
-                logger.warning(f"[Notebook] 读取失败: {e}")
-                return {}
+            data = read_json_cached(self.path, None, copy_result=False)
+        if data is None:
+            return {}
         if isinstance(data, dict):
-            return data
+            return dict(data)
         return {"content": data} if isinstance(data, str) else {}
 
     def load_zones(self) -> dict:
@@ -98,11 +93,8 @@ class NotebookStore:
                 f"【长期规划】{plans}" if plans else "",
             ] if p)[:NOTEBOOK_MAX_CHARS],
         }
-        temp_file = f"{self.path}.tmp"
         with self._lock:
-            with open(temp_file, "w", encoding="utf-8") as f:
-                json.dump(payload, f, ensure_ascii=False, indent=2)
-            os.replace(temp_file, self.path)
+            atomic_write_json(self.path, payload, indent=2)
 
     def save(self, content: str) -> str:
         """覆盖写入「日常随记区」（兼容旧接口），长期路标区保持不变。"""

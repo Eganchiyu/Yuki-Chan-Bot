@@ -59,8 +59,9 @@ def _set_group_active(pipeline, gateway, group_id, gid_str, opening: bool) -> No
     cancel_pending = getattr(pipeline, "cancel_pending", None)
     if callable(cancel_pending):
         cancel_pending(gid_str)
-    else:
+    if hasattr(getattr(pipeline, "yuki", None), "message_buffer"):
         pipeline.yuki.message_buffer[gid_str] = []
+    if not callable(cancel_pending):
         task = getattr(pipeline, "_timer_tasks", {}).get(gid_str) or getattr(
             pipeline.yuki, "buffer_tasks", {}
         ).get(gid_str)

@@ -1,27 +1,76 @@
-import datetime
+# core/history_manager.py
+"""会话历史管理器：按 `chat_id` 分片原子存储，支持从旧版单文件 `chat_history.json` 自动平滑迁移。"""
+from __future__ import annotations
+
 import copy
+import datetime
 import json
 import os
+import re
 import threading
+import urllib.parse
 from typing import Any
 
 from config import cfg
 from core.reply_format import normalize_reply_markup
+from utils.json_store import atomic_write_json
 from utils.logger import get_logger
 
 logger = get_logger("history")
 
+_SAFE_CID_RE = re.compile(r"^[A-Za-z0-9_-]{1,120}$")
+
+
+def _derive_history_dir(history_file: str) -> str:
+    abs_file = os.path.abspath(history_file)
+    parent = os.path.dirname(abs_file)
+    base = os.path.basename(abs_file)
+    if base == "chat_history.json":
+        return os.path.join(parent, "history")
+    stem, _ = os.path.splitext(abs_file)
+    return f"{stem}_shards"
+
+
+def _encode_cid_filename(chat_id: str) -> str:
+    cid = str(chat_id)
+    if _SAFE_CID_RE.match(cid):
+        return f"{cid}.json"
+    encoded = urllib.parse.quote(cid, safe="")
+    return f"u_{encoded}.json"
+
+
+def _decode_cid_from_shard(filename: str, payload: Any) -> str | None:
+    if isinstance(payload, dict) and "chat_id" in payload:
+        return str(payload["chat_id"])
+    if not filename.endswith(".json"):
+        return None
+    stem = filename[:-5]
+    if stem.startswith("u_"):
+        return urllib.parse.unquote(stem[2:])
+    return stem
+
 
 class HistoryManager:
-    def __init__(self, history_file=cfg.HISTORY_FILE, log_file=cfg.LOG_FILE):
+    def __init__(
+        self,
+        history_file: str = cfg.HISTORY_FILE,
+        log_file: str = cfg.LOG_FILE,
+        *,
+        history_dir: str | None = None,
+    ):
         self.history_file = history_file
         self.log_file = log_file
-        self._cache = None
-        self._dirty = False
+        self.history_dir = os.path.abspath(history_dir or _derive_history_dir(history_file))
+        self._cache: dict[str, list] | None = None
+        self._dirty_chats: set[str] = set()
         self._lock = threading.Lock()
+        self._log_lock = threading.Lock()
+
+    def _shard_path(self, chat_id: str) -> str:
+        return os.path.join(self.history_dir, _encode_cid_filename(chat_id))
 
     def preload(self) -> None:
-        """只预载历史到内存，不返回全量深拷贝；顺带修复历史里的错格式标记。"""
+        """预载分片历史到内存（首次启动自动迁移旧单文件），并修复历史里的错格式标记。"""
         with self._lock:
             data = self._get_data_locked()
             self._repair_reply_markup_locked(data)
@@ -44,21 +93,23 @@ class HistoryManager:
         return True
 
     def _repair_reply_markup_locked(self, data: dict) -> int:
-        """把内存中所有 assistant 消息的错格式标记改写为规范格式。
-
-        历史上模型写错括号（`[layout]...[/layout]`、`【MEME:...】` 等）会原样喂回
-        上下文，诱导它继续沿用错误格式。这里一次性修复并落盘，断开这个循环。
-        """
+        """把内存中所有 assistant 消息的错格式标记改写为规范格式，只刷发生修改的会话分片。"""
         fixed = 0
-        for session in data.values():
+        changed_cids: list[str] = []
+        for cid, session in data.items():
             if not isinstance(session, list):
                 continue
+            chat_fixed = 0
             for message in session:
                 if isinstance(message, dict) and self._normalize_message_markup(message):
-                    fixed += 1
+                    chat_fixed += 1
+            if chat_fixed:
+                fixed += chat_fixed
+                changed_cids.append(cid)
         if fixed:
-            logger.info(f"[History] 已修复 {fixed} 条回复的错格式标记")
-            self._save_locked(data)
+            logger.info(f"[History] 已修复 {fixed} 条回复的错格式标记（涉及 {len(changed_cids)} 个会话）")
+            for cid in changed_cids:
+                self._save_chat_locked(cid, data[cid])
         return fixed
 
     def repair_reply_markup(self) -> int:
@@ -89,23 +140,24 @@ class HistoryManager:
         return True
 
     def get_session(self, chat_id: str, system_content: str | None = None) -> list:
-        """获取单个会话，并只在 system 提示词变化时落盘。"""
+        """获取单个会话（O(1) 单会话拷贝），并只在 system 提示词变化时落盘该会话分片。"""
         cid = str(chat_id)
         with self._lock:
             data = self._get_data_locked()
             session = data.setdefault(cid, [])
             if self._ensure_system_message(session, system_content):
-                self._save_locked(data)
+                self._save_chat_locked(cid, session)
             return copy.deepcopy(session)
 
     def replace_session(self, chat_id: str, session: list) -> list:
-        """原子替换一个会话并返回替换后的独立快照。"""
+        """原子替换单个会话并仅落盘该会话分片，返回独立快照。"""
         cid = str(chat_id)
         with self._lock:
             data = self._get_data_locked()
-            data[cid] = copy.deepcopy(session)
-            self._save_locked(data)
-            return copy.deepcopy(data[cid])
+            copied = copy.deepcopy(session)
+            data[cid] = copied
+            self._save_chat_locked(cid, copied)
+            return copy.deepcopy(copied)
 
     def append_session_message(
         self,
@@ -118,7 +170,7 @@ class HistoryManager:
         return_snapshot: bool = True,
         **extra: Any,
     ):
-        """向单个会话追加消息，可按需延迟落盘或跳过返回深拷贝。"""
+        """向单个会话追加消息，按需延迟落盘或只写当前会话分片。"""
         cid = str(chat_id)
         with self._lock:
             data = self._get_data_locked()
@@ -132,62 +184,139 @@ class HistoryManager:
             item.update(extra)
             self._normalize_message_markup(item)
             session.append(item)
-            self._mark_dirty_locked(data)
             if save_immediately:
-                self._save_locked(data)
+                self._save_chat_locked(cid, session)
+            else:
+                self._dirty_chats.add(cid)
             return copy.deepcopy(session) if return_snapshot else None
 
-    def _get_data_locked(self) -> dict:
+    def _get_data_locked(self) -> dict[str, list]:
         if self._cache is None:
-            logger.info("[History] 正在预载历史数据到内存...")
+            logger.info("[History] 正在预载分片历史数据到内存...")
             self._cache = self.read_from_disk()
         return self._cache
 
-    def _mark_dirty_locked(self, data: dict) -> None:
-        self._cache = data
-        self._dirty = True
-
     def flush(self) -> None:
-        """将延迟写入的历史一次性落盘。"""
+        """将延迟写入的脏会话逐个落盘。"""
         with self._lock:
-            if self._dirty and self._cache is not None:
-                self._save_locked(self._cache)
+            if not self._dirty_chats or self._cache is None:
+                return
+            for cid in list(self._dirty_chats):
+                if cid in self._cache:
+                    self._save_chat_locked(cid, self._cache[cid])
+            self._dirty_chats.clear()
 
-    def _save_locked(self, data: dict):
-        self._cache = data
-        temp_file = f"{self.history_file}.tmp"
+    def _save_chat_locked(self, cid: str, session: list) -> None:
+        shard_file = self._shard_path(cid)
+        payload = {"chat_id": cid, "messages": session}
         try:
-            os.makedirs(os.path.dirname(os.path.abspath(self.history_file)), exist_ok=True)
-            with open(temp_file, "w", encoding="utf-8") as f:
-                json.dump(data, f, ensure_ascii=False, separators=(",", ":"))
-            os.replace(temp_file, self.history_file)
-            self._dirty = False
+            atomic_write_json(shard_file, payload, compact=True)
+            self._dirty_chats.discard(cid)
         except Exception as e:
-            logger.error(f"[History] 保存失败: {e}")
-            if os.path.exists(temp_file):
-                os.remove(temp_file)
+            logger.error(f"[History] 保存会话分片失败 ({cid}): {e}")
 
-    def read_from_disk(self) -> dict:
-        """从硬盘读取数据，增加格式校验"""
-        if not os.path.exists(self.history_file):
+    def _migrate_legacy_file_if_needed(self) -> dict[str, list]:
+        """若旧版单文件 `self.history_file` 存在，自动拆分写入分片目录并重命名备份。"""
+        if not self.history_file or not os.path.exists(self.history_file):
             return {}
         try:
             with open(self.history_file, "r", encoding="utf-8") as f:
-                data = json.load(f)
-                # 如果读出来的是 list 或者是 None，强行转成 dict
-                return data if isinstance(data, dict) else {}
+                raw = json.load(f)
         except Exception as e:
-            logger.error(f"[History] 加载文件失败: {e}")
+            logger.error(f"[History] 读取旧版历史文件失败 ({self.history_file}): {e}")
             return {}
 
-    def save(self, data: dict):
-        """原子化替换全部历史。"""
-        with self._lock:
-            self._save_locked(copy.deepcopy(data))
+        if not isinstance(raw, dict):
+            return {}
 
-    def append_to_log(self, chat_id, sender, message):
+        migrated: dict[str, list] = {}
+        os.makedirs(self.history_dir, exist_ok=True)
+        for k, v in raw.items():
+            if not isinstance(v, list):
+                continue
+            cid = str(k)
+            migrated[cid] = v
+            shard_file = self._shard_path(cid)
+            if not os.path.exists(shard_file):
+                try:
+                    atomic_write_json(shard_file, {"chat_id": cid, "messages": v}, compact=True)
+                except Exception as e:
+                    logger.error(f"[History] 迁移分片失败 ({cid}): {e}")
+
+        backup_path = f"{self.history_file}.migrated.bak"
+        try:
+            os.replace(self.history_file, backup_path)
+            logger.info(
+                f"[History] 已将 {len(migrated)} 个会话平滑迁移至分片目录 {self.history_dir} "
+                f"（旧文件备份为 {backup_path}）"
+            )
+        except OSError as e:
+            logger.debug(f"[History] 旧版历史文件备份重命名跳过: {e}")
+        return migrated
+
+    def read_from_disk(self) -> dict[str, list]:
+        """从分片目录读取全部会话（若存在未迁移的旧单文件则先自动迁移）。"""
+        legacy_data = self._migrate_legacy_file_if_needed()
+        result: dict[str, list] = dict(legacy_data)
+        if not os.path.isdir(self.history_dir):
+            return result
+
+        try:
+            entries = sorted(os.listdir(self.history_dir))
+        except OSError as e:
+            logger.error(f"[History] 扫描分片目录失败: {e}")
+            return result
+
+        for name in entries:
+            if not name.endswith(".json") or name.startswith("."):
+                continue
+            full_path = os.path.join(self.history_dir, name)
+            try:
+                with open(full_path, "r", encoding="utf-8") as f:
+                    payload = json.load(f)
+            except Exception as e:
+                logger.error(f"[History] 读取分片失败 ({full_path}): {e}")
+                continue
+
+            if isinstance(payload, dict) and isinstance(payload.get("messages"), list):
+                cid = _decode_cid_from_shard(name, payload)
+                if cid is not None:
+                    result[cid] = payload["messages"]
+            elif isinstance(payload, list):
+                cid = _decode_cid_from_shard(name, None)
+                if cid is not None:
+                    result[cid] = payload
+        return result
+
+    def save(self, data: dict) -> None:
+        """原子化替换全部历史（同步更新所有分片并清理已移除会话的分片文件）。"""
+        if not isinstance(data, dict):
+            return
+        with self._lock:
+            copied = {str(k): copy.deepcopy(v) for k, v in data.items() if isinstance(v, list)}
+            self._cache = copied
+            os.makedirs(self.history_dir, exist_ok=True)
+            expected_files = set()
+            for cid, session in copied.items():
+                expected_files.add(_encode_cid_filename(cid))
+                self._save_chat_locked(cid, session)
+            try:
+                for name in os.listdir(self.history_dir):
+                    if name.endswith(".json") and not name.startswith(".") and name not in expected_files:
+                        try:
+                            os.remove(os.path.join(self.history_dir, name))
+                        except OSError:
+                            pass
+            except OSError:
+                pass
+            self._dirty_chats.clear()
+
+    def append_to_log(self, chat_id, sender, message) -> None:
         time_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         log_entry = f"[{time_str}] [{chat_id}] {sender}: {message}\n"
-        with open(self.log_file, "a", encoding="utf-8") as f:
-            f.write(log_entry)
-
+        parent = os.path.dirname(os.path.abspath(self.log_file))
+        if parent:
+            os.makedirs(parent, exist_ok=True)
+        with self._log_lock:
+            with open(self.log_file, "a", encoding="utf-8") as f:
+                f.write(log_entry)

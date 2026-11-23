@@ -1,7 +1,7 @@
-import json
 import os
 import sys
 
+from utils.json_store import atomic_write_json, read_json_cached
 from utils.logger import get_logger
 
 GROUP_STATE_FILE = "data/group_state.json"
@@ -9,13 +9,8 @@ logger = get_logger("init")
 
 
 def load_group_state():
-    if os.path.exists(GROUP_STATE_FILE):
-        try:
-            with open(GROUP_STATE_FILE, 'r', encoding='utf-8') as f:
-                return json.load(f)
-        except Exception as e:
-            logger.warning(f"[System] 读取群聊状态失败: {e}")
-    return {}
+    data = read_json_cached(GROUP_STATE_FILE, {})
+    return data if isinstance(data, dict) else {}
 
 
 def default_group_active() -> bool:
@@ -50,9 +45,7 @@ def ensure_group_state(state: dict, groups) -> dict:
 
 def save_group_state(state):
     try:
-        os.makedirs("data", exist_ok=True)
-        with open(GROUP_STATE_FILE, 'w', encoding='utf-8') as f:
-            json.dump(state, f, ensure_ascii=False, indent=2)
+        atomic_write_json(GROUP_STATE_FILE, state, indent=2, fsync=True)
     except Exception as e:
         logger.error(f"[System] 保存群聊状态失败: {e}")
 

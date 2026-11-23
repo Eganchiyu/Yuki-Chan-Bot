@@ -928,3 +928,10 @@
 - **写日记并发合并加固**（`core/engine/engine_diary.py`, `core/session_pipeline.py`）：新增 `merge_summarized_session()`，支持在 `sync_system_prompts` 更新首条 system 或 `ToolHistoryPruner` 折叠工具消息后仍按对话尾锚点安全保留期间新增消息；摘要异常回退时跳过 `replace_session` 防止覆盖回滚；移除 `summarize_idle_session` 中对非数字 `chat_id` 的强制 `int()` 转换。
 - **热路径解绑 Event Loop 与后台任务托管**：新增 `utils/background_tasks.py`（强引用 + 异常回调）托管写日记/黑话挖掘/风格学习协程；`SessionPipeline.retrieve_memories` 改走 `asyncio.to_thread`；`JargonStore` 与 `StyleStore` 启用 WAL 长连接复用与读内存缓存；修复 `main.py` 重启通知闭包变量引用。
 - **验证**：定向单测（`test_memory`、`test_pipeline`、`test_diary_filter`、`test_jargon`、`test_style_habits` 共 35 passed）与 `compileall` 全部通过。
+
+## 2026-11-23 技术债修复 Phase 2：统一原子 JSON 底座与会话历史分片存储
+
+- **统一原子 JSON 存储底座**（`utils/json_store.py`）：提供 `atomic_write_json`（同目录进程/线程隔离 `.tmp` + `flush` + 可选 `fsync` + `os.replace`）与基于 `(mtime_ns, size, ino)` 三元组指纹的 `read_json_cached` / `CachedJsonStore`；收编 `init.py`（修复 `group_state.json` 裸 `open("w")` 截断丢键隐患）、`core/notebook.py`、`core/recall_cache.py`、`core/art_assets.py` 与 `modules/autonomous/storage.py`。
+- **会话历史按 `chat_id` 分片 + 自动平滑迁移**（`core/history_manager.py`）：将全量单文件 `data/chat_history.json` 升级为 `data/history/<chat_id>.json` 按会话独立落盘与 `O(1)` 拷贝，仅刷脏会话分片；首次启动检测到旧单文件时自动拆分迁移并备份为 `chat_history.json.migrated.bak`。
+- **顺手修复**：修复 `modules/QQNapcatListen/commands.py::_set_group_active` 在 `MagicMock` 替身下未清空 `message_buffer` 的回归。
+- **验证**：定向单测（`test_reply_format`、`test_memory`、`test_art_focus`、`test_status`、`test_autonomous_sandbox` 共 89 passed）与 `compileall` 全部通过。

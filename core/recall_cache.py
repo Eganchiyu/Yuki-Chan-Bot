@@ -1,10 +1,10 @@
 # core/recall_cache.py
 """记忆召回缓存：把每个会话「最近两轮召回各自的最佳日记」落盘，重启后不丢。"""
-import json
 import os
 import threading
 
 from utils import BASE_DIR
+from utils.json_store import atomic_write_json, read_json_cached
 from utils.logger import get_logger
 
 logger = get_logger("recall_cache")
@@ -26,14 +26,7 @@ class RecallCacheStore:
         if self._data is not None:
             return
         self._data = {}
-        if not os.path.exists(self.path):
-            return
-        try:
-            with open(self.path, "r", encoding="utf-8") as f:
-                raw = json.load(f)
-        except Exception as e:
-            logger.warning(f"[RecallCache] 读取失败: {e}")
-            return
+        raw = read_json_cached(self.path, None, copy_result=False)
         if not isinstance(raw, dict):
             return
         for chat_id, items in raw.items():
@@ -58,11 +51,7 @@ class RecallCacheStore:
     def _flush(self) -> None:
         """调用方需持有 self._lock。"""
         try:
-            os.makedirs(os.path.dirname(self.path), exist_ok=True)
-            temp_file = f"{self.path}.tmp"
-            with open(temp_file, "w", encoding="utf-8") as f:
-                json.dump(self._data, f, ensure_ascii=False, indent=2, default=str)
-            os.replace(temp_file, self.path)
+            atomic_write_json(self.path, self._data, indent=2, default=str)
         except Exception as e:
             logger.error(f"[RecallCache] 写入失败: {e}")
 

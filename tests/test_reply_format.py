@@ -224,3 +224,43 @@ async def test_chat_with_tools_text_call_and_working_notice():
     assert thought[0]["sent_realtime"] is False
     assert raw == "<layout>后续盘算</layout>"
     assert visible == WORKING_NOTICE
+
+
+def test_history_manager_sharded_migration_and_single_chat_flush(tmp_path):
+    """旧单文件 chat_history.json 自动迁移为分片目录并备份 .migrated.bak；单会话更新不重写其他分片。"""
+    import json
+    import os
+
+    legacy_file = tmp_path / "chat_history.json"
+    legacy_file.write_text(
+        json.dumps(
+            {
+                "10001": [{"role": "user", "content": "群1旧消息"}],
+                "20002": [{"role": "user", "content": "群2旧消息"}],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    mgr = HistoryManager(history_file=str(legacy_file), log_file=str(tmp_path / "log.txt"))
+    mgr.preload()
+
+    shard_dir = tmp_path / "history"
+    assert not legacy_file.exists()
+    assert (tmp_path / "chat_history.json.migrated.bak").exists()
+    assert (shard_dir / "10001.json").exists()
+    assert (shard_dir / "20002.json").exists()
+
+    ino_20002_before = os.stat(shard_dir / "20002.json").st_ino
+    mgr.append_session_message("10001", "user", "群1新消息", save_immediately=False)
+    mgr.flush()
+    ino_20002_after = os.stat(shard_dir / "20002.json").st_ino
+    assert ino_20002_after == ino_20002_before  # 群2分片未被重写
+
+    # 含特殊字符的 chat_id 安全编码并可跨实例重读
+    mgr.append_session_message("room/with:slash", "user", "特殊会话")
+    reloaded = HistoryManager(history_file=str(legacy_file), log_file=str(tmp_path / "log.txt"))
+    assert reloaded.get_session("10001")[-1]["content"] == "群1新消息"
+    assert reloaded.get_session("room/with:slash")[0]["content"] == "特殊会话"
+

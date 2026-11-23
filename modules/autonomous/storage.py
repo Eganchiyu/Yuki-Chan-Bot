@@ -21,6 +21,7 @@ import threading
 import time
 
 from utils import BASE_DIR
+from utils.json_store import atomic_write_json, read_json_cached
 from utils.logger import get_logger
 
 logger = get_logger("autonomous.storage")
@@ -61,22 +62,11 @@ def _ensure_dir(path: str) -> None:
 
 
 def _load_json(path: str, default):
-    if not os.path.exists(path):
-        return default
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except Exception as exc:
-        logger.warning(f"[AutonomousStorage] 读取 {path} 失败: {exc}")
-        return default
+    return read_json_cached(path, default)
 
 
 def _write_json(path: str, data) -> None:
-    _ensure_dir(os.path.dirname(path))
-    temp_file = f"{path}.tmp"
-    with open(temp_file, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
-    os.replace(temp_file, path)
+    atomic_write_json(path, data, indent=2)
 
 
 def _append_jsonl(path: str, record: dict) -> None:

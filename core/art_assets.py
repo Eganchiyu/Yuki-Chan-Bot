@@ -153,12 +153,10 @@ class ArtAssetStore:
 
     def _save_unlocked(self) -> None:
         try:
-            os.makedirs(os.path.dirname(self.json_path), exist_ok=True)
+            from utils.json_store import atomic_write_json
+
             payload = {"version": 1, "assets": list(self._assets.values())}
-            tmp_path = f"{self.json_path}.tmp"
-            with open(tmp_path, "w", encoding="utf-8") as f:
-                json.dump(payload, f, ensure_ascii=False, indent=2)
-            os.replace(tmp_path, self.json_path)
+            atomic_write_json(self.json_path, payload, indent=2)
         except Exception as exc:
             logger.warning(f"[ArtAsset] 保存资产文件失败 {self.json_path}: {exc}")
 
