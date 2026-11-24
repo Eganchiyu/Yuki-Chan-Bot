@@ -27,9 +27,12 @@ WORKSHOP_SANDBOX_TOOLS = [
     "inspect_work_session",
     "list_recent_work_sessions",
     "write_work_diary",
+    "publish_to_corner",
+    "save_inspiration",
+    "wait_maid_tasks",
     "work_finish",
 ]
-# 收尾工具永不被裁剪，保证任何子模式下都能结束工坊
+# 收尾与上架工具永不被裁剪，保证任何子模式下都能收尾和发布
 WORKSHOP_PINNED = set(WORKSHOP_SANDBOX_TOOLS)
 
 ZERO_TOOL_NUDGE = (
@@ -76,6 +79,7 @@ class Workshop:
         self.max_tool_calls = max(1, int(cfg.autonomous.workshop_max_tool_calls))
         self.zero_tool_max_retries = max(0, int(cfg.autonomous.zero_tool_max_retries))
         self.inner_events: list[dict] = []
+        self._inner_event_signal = asyncio.Event()
 
         self.history = AdaptorHistory(self.chat_id)
         self.sender = SilentSender(self.chat_id)
@@ -92,6 +96,8 @@ class Workshop:
             image_store=deps.image_store,
             metadata={
                 "sandbox": state,
+                "workshop": self,
+                "stop_check": self.stop_check,
                 "is_autonomous": True,
                 "is_autonomous_work": True,
                 "history_manager": self.history,     # 子聚焦退出只覆写内存流
@@ -114,6 +120,12 @@ class Workshop:
     def queue_inner_event(self, event: dict) -> None:
         if event:
             self.inner_events.append(event)
+            self._inner_event_signal.set()
+
+    def pop_inner_events(self) -> list[dict]:
+        events, self.inner_events = self.inner_events, []
+        self._inner_event_signal.clear()
+        return events
 
     # ------------------------------------------------------------ 主循环
     async def run(self) -> WorkshopOutcome:
@@ -250,19 +262,23 @@ class Workshop:
 
     def _append_budget_reminder(self, messages: list[dict]) -> None:
         used = self.loop.tool_calls_count
-        if used < max(1, self.max_tool_calls - 5):
-            return
         if used > self.max_tool_calls:
             return
-        if messages and messages[-1].get("role") == "tool":
+        if not messages or messages[-1].get("role") != "tool":
+            return
+        if used >= max(1, self.max_tool_calls - 5):
             messages[-1]["content"] = str(messages[-1].get("content") or "") + (
                 BUDGET_REMINDER_TEMPLATE.format(used=used, limit=self.max_tool_calls)
             )
+        elif self.max_tool_calls >= 20 and used in (20, 35, 45):
+            messages[-1]["content"] = str(messages[-1].get("content") or "") + (
+                f"\n\n[工坊节奏提示：已用 {used}/{self.max_tool_calls} 次工具调用]"
+            )
 
     def _drain_inner_events(self, messages: list[dict]) -> None:
-        if not self.inner_events:
+        events = self.pop_inner_events()
+        if not events:
             return
-        events, self.inner_events = self.inner_events, []
         for event in events:
             messages.append({
                 "role": "user",

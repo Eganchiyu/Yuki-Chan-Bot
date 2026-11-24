@@ -1,7 +1,7 @@
 # Yuki 自主轮架构（Autonomous Sandbox）现态说明
 
-> 单一事实源：本文只描述**当前代码实际行为**（P0–P7 已落地）。历史愿景稿与施工规划已归档删除（git 历史可查）。
-> 代码总量约 3.8k 行：`core/modes/`（模式层，553 行）+ `modules/autonomous/`（沙盒层，3.2k 行）。
+> 单一事实源：本文只描述**当前代码实际行为**（P0–P8 已落地，含创造力引擎与 Yuki's Corner 公网展柜闭环）。历史愿景稿与施工规划已归档删除（git 历史可查）。
+> 代码总量约 4.6k 行：`core/modes/`（模式层）+ `modules/autonomous/`（沙盒层、多源灵感与展柜客户端）。
 > 默认全关：`autonomous.enabled=false`、`enabled_groups=[]`，只有被 `/自主轮 开` 的群才会用。
 
 ---
@@ -152,8 +152,9 @@ for step in 1..debate_max_rounds:
 ```
 
 - **收敛条件**：连续两步 `agree_to_end=True` **且** `verdict` 完全一致（`SandboxState.consensus()`）。
-- **可见工具（检索窗口）**：前 `debate_retrieval_steps`（默认 5）步放开 `search_diary`、`search_group_snapshots`、`list_recent_work_sessions`、`inspect_work_session` + `inner_vote`；窗口关闭后视图只剩 `inner_vote`，进入纯讨论（越窗调用由 `ToolCallManager` 的 view 拦截成「该工具当前未展开」）。锚点仍由 `DiarySeedSampler` 一次性注入 3 条日记（2 条近 7 天本群 + 1 条 30 天前）。
-- **三段式压力旁白**（纯代码，不花 token）：第 `debate_retrieval_steps` 步→提醒「这是最后一步还能翻资料」；第 `debate_retrieval_steps+1` 步→提醒「检索收起来了，只凭记得的画面往下推」；第 11 步→推演落地细节；第 `max(23, 0.7*上限)` 步→催收敛。`debate_retrieval_steps=0` 时退化为无检索，第 4 步仍提醒「挑一个锚点，别急着查」。
+- **多源灵感与双念头重塑（P8）**：开启 `creative_mode_enabled` 时，开局除 `DiarySeedSampler` 抽样 3 条日记外，还经 `inspiration.py` 注入**多源灵感混合块**（`Yuki's Corner` 未读访客纸条与展品近况、连续同媒介反无聊提醒、本群黑话碎片、好奇心剪贴簿 `data/inspiration_inbox.json`、以及 20 张跨界玩法策略卡中加权抽取的 1 张火花卡）。双念头定位为「好奇火花 A（跨界脑洞）」×「造物导演 B（媒介升维与分工落地）」，并在提示词中亮出浏览器采风、画图工坊、小女仆写单页 HTML/Canvas/WebAudio 与一键上架展柜的完整能力图谱。
+- **可见工具与检索回显**：前 `debate_retrieval_steps`（默认 5）步放开 `search_diary`、`search_group_snapshots`、`list_recent_work_sessions`、`inspect_work_session` + `inner_vote`；非投票工具的真实返回摘要会写入 `turn["tool_findings"]` 并透传给下一轮上下文，避免重复盲查；窗口关闭后只剩 `inner_vote`。
+- **三段式压力旁白**（纯代码，不花 token）：第 `debate_retrieval_steps` 步→提醒「这是最后一步还能翻资料」；第 `debate_retrieval_steps+1` 步→提醒「资料收起来了，专心打磨创意」；第 10 步→催定媒介、亮点与分工；第 `max(20, 0.7*上限)` 步→催收敛。`debate_retrieval_steps=0` 时第 4 步提醒挑跨界组合往下推。
 
 ### 3.4 reflection 步骤（`coordinator._reflect`）
 
@@ -176,8 +177,9 @@ for step in 1..:
     state.finished (work_finish 被调用) ? break
 ```
 
-- **工具可见性**：`ToolView.resolve(registry, focus_manager, chat_id).visible | pinned`，`pinned = {inspect_work_session, list_recent_work_sessions, write_work_diary, work_finish}`；子聚焦（phone/art）期间 `work_finish` 仍在，绝不会被锁死。
-- **预算**：`workshop_max_tool_calls`（默认 60）；到 55 次起在工具结果尾部追加系统提醒；用完只剩 `work_finish`。
+- **工具可见性**：`ToolView.resolve(registry, focus_manager, chat_id).visible | pinned`，`pinned = {inspect_work_session, list_recent_work_sessions, write_work_diary, publish_to_corner, save_inspiration, wait_maid_tasks, work_finish}`；子聚焦（phone/art/browser）期间收尾与上架工具仍在，绝不会被锁死。
+- **造物与展柜上架闭环（P8）**：工坊中派小女仆（`delegate_to_maid`）写单页互动 HTML/排版小报后，可调 `wait_maid_tasks`（响应 `stop_check`，上限 150s）等待回报并核对产物，再调 `publish_to_corner`（安全打包 `workspace/`/`output/`/`temp_images/` 内文件或 `inline_content`）一键上架到公网展柜 `Yuki's Corner`，拿到的公网直达链接会自动合并进 `artifacts` 与 L4 今日工作记忆，方便回群高涨期直接甩群里给大家玩；纯采风所得可调 `save_inspiration` 存入 `data/inspiration_inbox.json`。
+- **预算**：`workshop_max_tool_calls`（默认 60）；第 20/35/45 次附短进度提示，到 55 次起在工具结果尾部追加收尾提醒；用完只剩 `work_finish`。
 - **零工具熔断**：`zero_tool_max_retries`（默认 2）次追问后直接收尾，用最近几轮文本拼一份兜底日志、`status=paused`。
 - **内部事件**：`maid_worker` 的汇报只写历史、不传 `message_obj`，路由从历史尾部认出 `is_maid_report` 并投给 `WorkshopMode.on_inner_event` → 下一轮开头并入上下文（不发群）。
 
@@ -294,6 +296,8 @@ chat ────────► debate ──投票 start_work──► reflect
 | `catchup.py` | 136 | `build_digest`、`build_catchup_event`、时间/人名格式化 |
 | `inspect.py` | 350 | WebUI 快照 `autonomous_snapshot()`（含准入看板 `groups`、冻结/补台、配置基线）+ 逐轮记录 `autonomous_transcripts()` / `autonomous_transcript()` |
 | `transcript.py` | 147 | `RunTranscript`：逐轮记录到 `logs/autonomous/<run_id>.jsonl` |
+| `corner_client.py` | ~270 | `Yuki's Corner` 公网展柜轻量客户端：安全打包发布 `publish_work`、访客纸条与互动回流 `fetch_feedback`、状态更新 `update_status` |
+| `inspiration.py` | ~260 | 多源灵感混合器：`InspirationStore`（`data/inspiration_inbox.json`）、20 张跨界玩法火花卡、只读群黑话采样、反无聊信号 |
 | `__init__.py` | 36 | 导出 storage 单例与惰性 `AutonomousCoordinator` |
 
 ### 5.3 被改动的既有文件（只加极小钩子）
@@ -375,6 +379,10 @@ chat ────────► debate ──投票 start_work──► reflect
 | `high_spirits_minutes` | `25` | 高涨持续（回复欲望加成） |
 | `high_spirits_desire_bonus` | `0.45` | 欲望加成（换算成 +45 分） |
 | `high_spirits_followup_window` | `30` | 两次连发之间的最小空隙秒数（30~60 为宜） |
+| `corner_base_url` | `""` | `Yuki's Corner` 公网展柜服务地址（如 `http://111.229.105.41`，留空则仅本地落盘） |
+| `corner_public_url` | `""` | 展柜对外分享根地址（留空同 `corner_base_url`） |
+| `corner_token` | `""` | 展柜发布与反馈 API 鉴权 Bearer Token |
+| `creative_mode_enabled` | `true` | 开启多源灵感混合器（展柜回音、黑话、创意火花卡与反无聊提醒） |
 
 ---
 

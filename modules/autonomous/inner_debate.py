@@ -7,7 +7,8 @@ from dataclasses import dataclass, field
 
 from config import cfg
 from core.tool_markup import strip_tool_call_markup
-from modules.autonomous import prompts as sb_prompts
+from modules.autonomous import corner_client, prompts as sb_prompts
+from modules.autonomous.inspiration import build_inspiration_bundle, render_inspiration_block
 from modules.autonomous.sandbox_loop import (
     AdaptorHistory,
     SandboxLoop,
@@ -16,7 +17,7 @@ from modules.autonomous.sandbox_loop import (
     parse_tool_payload,
     run_step_with_timeout,
 )
-from modules.autonomous.storage import diary_seed_sampler
+from modules.autonomous.storage import diary_seed_sampler, work_session_store
 from modules.autonomous.tools import SandboxState, build_registry
 from modules.autonomous.transcript import transcript_for
 from utils.llm_client import llm_chat
@@ -110,11 +111,29 @@ class InnerDebate:
     async def run(self) -> DebateResult:
         result = DebateResult()
         seeds = await asyncio.to_thread(diary_seed_sampler.sample, self.chat_id)
+        inspiration_text = ""
+        spark_title = ""
+        unread_count = 0
+        if getattr(cfg.autonomous, "creative_mode_enabled", True):
+            corner_fb = await corner_client.fetch_feedback(limit=6, mark_read=True)
+            recent_sessions = await asyncio.to_thread(work_session_store.list, None, 6)
+            bundle = await asyncio.to_thread(
+                build_inspiration_bundle,
+                self.chat_id,
+                corner_feedback=corner_fb,
+                work_sessions=recent_sessions,
+            )
+            inspiration_text = render_inspiration_block(bundle)
+            spark_title = str((bundle.get("spark_card") or {}).get("title") or "")
+            unread_count = len(bundle.get("unread_notes") or [])
+
         shared = sb_prompts.debate_shared(self.chat_label, self.retrieval_steps)
         transcript = transcript_for(self.state, mode="debate")
         transcript.event("debate_start", rounds_limit=self.max_rounds,
                         retrieval_steps=self.retrieval_steps,
-                        seeds=[s.get("source") for s in seeds])
+                        seeds=[s.get("source") for s in seeds],
+                        spark_card=spark_title,
+                        corner_unread_notes=unread_count)
         turns: list[dict] = []
         anchor = ""
         used_retrieval = False
@@ -131,7 +150,9 @@ class InnerDebate:
             narration = sb_prompts.pressure_narration(
                 step, self.max_rounds, used_retrieval, self.retrieval_steps,
             )
-            messages = self._build_messages(shared, role, seeds, turns, anchor, narration, step)
+            messages = self._build_messages(
+                shared, role, seeds, inspiration_text, turns, anchor, narration, step,
+            )
 
             try:
                 msg, _llm_ms = await run_step_with_timeout(
@@ -149,6 +170,7 @@ class InnerDebate:
             content = strip_tool_call_markup(msg.get("content") or "").strip()
             calls = self.loop.extract_calls(msg, visible)
             step_results: list[dict] = []
+            tool_findings: list[dict] = []
             if calls:
                 self.context.metadata["debate_role"] = role
                 names = {((c.get("function") or {}).get("name") or "") for c in calls}
@@ -166,8 +188,9 @@ class InnerDebate:
                     break
                 step_results = results
                 for message in results:
-                    if message.get("name") == "inner_vote":
-                        payload = parse_tool_payload(message)
+                    tname = str(message.get("name") or "")
+                    payload = parse_tool_payload(message)
+                    if tname == "inner_vote":
                         logger.info(
                             f"[Debate] {self.chat_id} step={step} role={role} vote={payload.get('data')}"
                         )
@@ -175,9 +198,18 @@ class InnerDebate:
                         if vote:
                             transcript.vote(step, role, vote.get("agree"),
                                             vote.get("verdict"), vote.get("note", ""))
+                    else:
+                        finding_text = str(
+                            payload.get("content") or payload.get("error") or message.get("content") or ""
+                        ).strip()
+                        if finding_text:
+                            tool_findings.append({"tool": tname or "tool", "content": finding_text})
 
             result.rounds = step
-            turns.append({"role": role, "content": content or "（先翻了翻旧记录和档案）"})
+            turn_entry: dict = {"role": role, "content": content or "（先翻了翻旧记录和档案）"}
+            if tool_findings:
+                turn_entry["tool_findings"] = tool_findings
+            turns.append(turn_entry)
             transcript.debate_step(step, role, content, calls, step_results, narration)
 
             consensus = self.state.consensus()
@@ -210,10 +242,12 @@ class InnerDebate:
             return set(DEBATE_VISIBLE)
         return set(DISCUSSION_ONLY_TOOLS)
 
-    def _build_messages(self, shared, role, seeds, turns, anchor, narration, step) -> list[dict]:
+    def _build_messages(self, shared, role, seeds, inspiration_text, turns, anchor, narration, step) -> list[dict]:
         body = []
         if seeds:
             body.append(sb_prompts.seeds_block(seeds))
+        if inspiration_text:
+            body.append(inspiration_text)
         body.append(sb_prompts.transcript_block(turns, anchor))
         if narration:
             body.append(narration)

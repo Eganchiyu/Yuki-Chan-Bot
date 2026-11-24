@@ -956,3 +956,15 @@
   - `test_status.py` 归并入 `test_napcat.py`；
   - 同步刷新 `tests/README.md` 模块地图（25 个文件收敛为 20 个高内聚测试模块）。
 - **验证**：定向单测（`test_focus_snapshot`、`test_tool_phone_macro`、`test_reply_format`、`test_memory`、`test_pipeline`、`test_napcat` 共 87 passed）与全库 `compileall` 通过。
+
+## 2026-11-24 自主轮 P8：创造力引擎升级与 Yuki's Corner 公网展柜闭环
+
+- **修复 `debate` 检索盲查 Bug**（`modules/autonomous/inner_debate.py`、`prompts.py`）：将 `search_diary` / `search_group_snapshots` / `list_recent_work_sessions` / `inspect_work_session` 返回摘要存入 `turn["tool_findings"]` 并透传至下一轮上下文，根治反复盲查空转问题。
+- **多源灵感混合器与双念头重塑**（`modules/autonomous/inspiration.py`、`prompts.py`）：
+  - 融合 `Yuki's Corner` 未读访客纸条与展品互动近况、连续同媒介反无聊提醒、本群只读黑话碎片、好奇心剪贴簿 `data/inspiration_inbox.json` 及 20 张跨界玩法策略卡；
+  - 将双念头由「直觉 vs 刹车」重塑为「好奇火花 A × 造物导演 B」，在系统提示中完整亮出浏览器采风、画图工坊、小女仆写单页 HTML/Canvas/WebAudio 玩具及公网展柜上架能力与隐私边界；
+  - `coordinator._ensure_work_session` 仅在显式指定 `resume_session_id` 或标题同主题时续作旧 `paused` 会话，避免新企划被旧标题覆盖。
+- **公网展柜客户端与工坊闭环工具**（`modules/autonomous/corner_client.py`、`tools.py`、`workshop.py`、`core/config/schema.py`、`core/prompts.py`）：
+  - 新增 `AutonomousConfig` 字段 `corner_base_url`/`corner_public_url`/`corner_token`/`creative_mode_enabled`，并在 `configs/config.yaml` 接入 `mio` 80 端口展柜；
+  - 工坊新增 `publish_to_corner`（仅允许打包 `workspace/`/`output/`/`temp_images/` 内文件或 `inline_content`，返回公网链接并自动并入 `artifacts` 与 L4 今日工作记忆）、`save_inspiration`、`wait_maid_tasks`（响应 `stop_check` 等待后台小女仆汇报并衔接验收发布）；高涨期提示支持自然分享展柜链接。
+- **验证与上线**：更新 `docs/autonomous-architecture.md`；定向单测 `tests/test_autonomous_sandbox.py` + `tests/test_mode_router.py` + `tests/test_config.py` 共 **56 passed**；通过 `deploy/supervisor.py::restart_container()` 平滑重启生产容器，`/health` ready 且容器直连展柜 API 验收通过。

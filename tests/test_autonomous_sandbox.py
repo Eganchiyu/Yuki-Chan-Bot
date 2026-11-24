@@ -75,10 +75,16 @@ def sandbox_data(tmp_path, monkeypatch):
     daily_store = storage.DailyWorkMemoryStore(stores.daily.path, stores.daily.archive_dir)
 
     from core.notebook import NotebookStore
+    from modules.autonomous.inspiration import InspirationStore
 
     notebook_store = NotebookStore(str(tmp_path / "notebook.json"))
+    insp_store = InspirationStore(str(tmp_path / "inspiration_inbox.json"))
     monkeypatch.setattr("core.notebook.notebook_store", notebook_store)
     monkeypatch.setattr("modules.autonomous.coordinator.notebook_store", notebook_store, raising=False)
+    monkeypatch.setattr("modules.autonomous.inspiration.inspiration_store", insp_store)
+    monkeypatch.setattr("modules.autonomous.tools.inspiration_store", insp_store)
+    monkeypatch.setattr(cfg.autonomous, "corner_base_url", "")
+    monkeypatch.setattr(cfg.autonomous, "corner_token", "")
 
     monkeypatch.setattr("modules.autonomous.transcript.TRANSCRIPT_DIR", str(transcript_dir))
 
@@ -87,6 +93,7 @@ def sandbox_data(tmp_path, monkeypatch):
     monkeypatch.setattr("modules.autonomous.tools.daily_memory_store", daily_store)
     monkeypatch.setattr("modules.autonomous.coordinator.state_store", state_store)
     monkeypatch.setattr("modules.autonomous.coordinator.work_session_store", session_store)
+    monkeypatch.setattr("modules.autonomous.inner_debate.work_session_store", session_store)
     monkeypatch.setattr("modules.autonomous.storage.state_store", state_store)
     monkeypatch.setattr("modules.autonomous.storage.work_session_store", session_store)
     return SimpleNamespace(
@@ -94,6 +101,7 @@ def sandbox_data(tmp_path, monkeypatch):
         session_store=session_store,
         diary_store=diary_store,
         daily_store=daily_store,
+        inspiration_store=insp_store,
         transcripts=transcript_dir,
         root=tmp_path,
     )
@@ -848,3 +856,182 @@ async def test_deep_think_refused_when_group_sleeping(monkeypatch):
     coordinator.start_run.assert_not_awaited()
     sent = gateway.send.await_args.args[1]
     assert "/开启" in sent
+
+
+# ==================== P8：创造力引擎与 Yuki's Corner 展柜闭环 ====================
+
+async def test_debate_feeds_tool_findings_to_next_step(sandbox_data, monkeypatch):
+    """修复盲查 Bug：debate 中检索工具的真实返回必须传进下一步上下文。"""
+    monkeypatch.setattr(cfg.autonomous, "debate_retrieval_steps", 2)
+
+    async def diary_handler(context, **kwargs):
+        return ToolResult(success=True, content="查到真实记忆：上周大家在群里约定一起做星光扭蛋机。")
+
+    registry = _main_registry()
+    registry.register(ToolSpec(
+        name="search_diary", description="查日记",
+        parameters={"type": "object", "properties": {"keyword": {"type": "string"}}},
+        handler=diary_handler,
+    ))
+    script = [
+        {"content": "先查查上周的约定。", "tool_calls": [tool_call("search_diary", keyword="扭蛋机")]},
+        {"content": "看到啦！那就做成网页小玩具。"},
+    ]
+    llm = ScriptedLLM(script)
+    monkeypatch.setattr("modules.autonomous.sandbox_loop.llm_chat_raw", llm)
+    monkeypatch.setattr("modules.autonomous.inner_debate.diary_seed_sampler.sample", lambda cid: [])
+
+    state = SandboxState(run_id="run-findings", chat_id="1057020972")
+    debate = InnerDebate(
+        chat_id="1057020972", chat_label="测试群", state=state,
+        main_registry=registry, yuki=SimpleNamespace(), max_rounds=2,
+    )
+    await debate.run()
+
+    step2_user = llm.calls[1]["messages"][1]["content"]
+    assert "星光扭蛋机" in step2_user
+    assert "search_diary 查到的结果" in step2_user
+
+
+def test_inspiration_bundle_combines_feedback_boredom_and_spark(sandbox_data):
+    """多源灵感混合器：融合展柜新纸条、反无聊提醒、剪贴簿灵感与随机创意火花卡。"""
+    from modules.autonomous.inspiration import build_inspiration_bundle, render_inspiration_block
+
+    sandbox_data.inspiration_store.add(
+        title="WebAudio 雨声合成",
+        snippet="用棕色噪声加滤波可以纯前端合成逼真雨声。",
+        source_url="https://example.test/rain",
+    )
+    feedback = {
+        "unread_notes": [
+            {"author": "月白", "work_title": "《倒计时》", "message": "下次想玩个能点的像素小游戏！"}
+        ],
+        "recent_works": [
+            {"slug": "n1", "title": "倒计时", "kind": "note", "views": 5, "reactions_total": 3, "guestbook_count": 1},
+            {"slug": "n2", "title": "随想二", "kind": "note", "views": 2, "reactions_total": 1, "guestbook_count": 0},
+        ],
+    }
+    bundle = build_inspiration_bundle(
+        "1057020972",
+        corner_feedback=feedback,
+        store=sandbox_data.inspiration_store,
+        jargon_db_path=str(sandbox_data.root / "missing_jargon.db"),
+    )
+    text = render_inspiration_block(bundle)
+    assert "月白" in text and "像素小游戏" in text
+    assert "纯文字手账" in text
+    assert "WebAudio 雨声合成" in text
+    assert "创意火花卡" in text
+
+
+async def test_publish_to_corner_and_save_inspiration_tools(sandbox_data, monkeypatch):
+    """工坊内可调用 save_inspiration 与 publish_to_corner，并把公网链接写入 artifacts 与 L4 记忆。"""
+    from modules.autonomous import corner_client, tools as sb_tools
+
+    local_corner = sandbox_data.root / "corner_local"
+    monkeypatch.setattr(corner_client, "CORNER_LOCAL_ROOT", local_corner)
+    monkeypatch.setattr(cfg.autonomous, "corner_base_url", "http://corner.test")
+    monkeypatch.setattr(cfg.autonomous, "corner_token", "yc_test_token")
+
+    captured = {}
+
+    def fake_http(method, url, *, payload=None, token="", timeout=15.0):
+        captured["method"] = method
+        captured["url"] = url
+        captured["payload"] = payload
+        captured["token"] = token
+        return {
+            "ok": True,
+            "slug": payload["slug"],
+            "page_url": f"http://corner.test/w/{payload['slug']}",
+            "files": [f["path"] for f in payload["files"]],
+        }
+
+    monkeypatch.setattr(corner_client, "_http_request_sync", fake_http)
+
+    script = [
+        {"content": "先剪贴一条采风灵感", "tool_calls": [tool_call(
+            "save_inspiration", title="会发光的水母算法", snippet="Canvas 贝塞尔触手动画超梦幻",
+        )]},
+        {"content": "把互动玩具上架展柜", "tool_calls": [tool_call(
+            "publish_to_corner",
+            slug="star-gacha",
+            title="星光扭蛋机",
+            kind="toy",
+            summary="点一下摇出群友今日运势",
+            inline_content="<!doctype html><html><body><h1>Star Gacha</h1></body></html>",
+            inline_filename="index.html",
+            tags=["扭蛋", "互动"],
+        )]},
+        {"content": "收尾", "tool_calls": [tool_call(
+            "work_finish", status="completed",
+            work_log="做好了《星光扭蛋机》互动网页并上架展柜！",
+        )]},
+    ]
+    workshop, state, llm = _workshop(script, sandbox_data)
+    monkeypatch.setattr("modules.autonomous.sandbox_loop.llm_chat_raw", llm)
+    outcome = await workshop.run()
+
+    assert outcome.status == "completed"
+    assert captured["url"] == "http://corner.test/api/publish"
+    assert captured["token"] == "yc_test_token"
+    assert captured["payload"]["kind"] == "toy"
+    assert "http://corner.test/w/star-gacha" in state.published_urls
+    assert "http://corner.test/w/star-gacha" in outcome.artifacts
+    assert len(sandbox_data.inspiration_store.list_recent()) == 1
+
+    sb_tools.record_work_memory(state, {"title": "星光扭蛋机"}, status="已完成")
+    assert "http://corner.test/w/star-gacha" in sandbox_data.daily_store.text()
+
+
+async def test_wait_maid_tasks_returns_report_immediately(sandbox_data, monkeypatch):
+    """工坊里调用 wait_maid_tasks 会在小女仆汇报到达时立即返回内容。"""
+    from core.maid.maid_runtime import MaidRuntime
+
+    runtime = MaidRuntime()
+    rec = runtime.register("做个星光扭蛋机网页", chat_id="1057020972")
+    runtime.mark(rec.uid, "running")
+
+    script = [
+        {"content": "等小女仆干完活", "tool_calls": [tool_call("wait_maid_tasks", timeout_seconds=10)]},
+        {"content": "收到汇报，收尾", "tool_calls": [tool_call(
+            "work_finish", status="completed", work_log="小女仆写好并验收完毕",
+        )]},
+    ]
+    workshop, state, llm = _workshop(script, sandbox_data)
+    workshop.deps.yuki.maid_runtime = runtime
+    workshop.context.runtime.yuki_state = workshop.deps.yuki
+    monkeypatch.setattr("modules.autonomous.sandbox_loop.llm_chat_raw", llm)
+
+    async def deliver_soon():
+        await asyncio.sleep(0.05)
+        workshop.queue_inner_event({"content": "小女仆 #1 已把网页写到 workspace/yuki_corner/star/index.html"})
+        runtime.remove(rec.uid)
+
+    feeder = asyncio.create_task(deliver_soon())
+    outcome = await workshop.run()
+    await feeder
+
+    assert outcome.status == "completed"
+    second_call = json.dumps(llm.calls[1]["messages"], ensure_ascii=False)
+    assert "workspace/yuki_corner/star/index.html" in second_call
+
+
+def test_ensure_work_session_splits_new_topic_from_old_paused(sandbox_data):
+    """全新创意企划不会硬套旧的无关 paused 会话；显式 resume_session_id 可精准续作。"""
+    sandbox_data.session_store.save({
+        "session_id": "sess_old_01", "title": "旧企划：紧急开关", "kind": "creative",
+        "status": "paused", "work_log": "写了一半", "chat_id": "1057020972",
+    })
+    pipeline = FakePipeline()
+    coordinator = AutonomousCoordinator(pipeline)
+
+    new_sess = coordinator._ensure_work_session("1057020972", {"title": "星光扭蛋机网页"})
+    assert new_sess["session_id"] != "sess_old_01"
+    assert new_sess["title"] == "星光扭蛋机网页"
+
+    resumed = coordinator._ensure_work_session(
+        "1057020972", {"title": "继续写紧急开关", "resume_session_id": "sess_old_01"},
+    )
+    assert resumed["session_id"] == "sess_old_01"
+    assert resumed["status"] == "active"

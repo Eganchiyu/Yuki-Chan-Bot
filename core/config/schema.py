@@ -418,6 +418,18 @@ class AutonomousConfig:
     high_spirits_followup_window: int = config_field(
         30, comment="两次连发之间的最小空隙秒数（30~60 为宜；到期无人接话才补第二句）", section="autonomous"
     )
+    corner_base_url: str = config_field(
+        "", comment="Yuki's Corner 公网展柜服务地址（如 http://111.229.105.41，留空则仅本地落盘）", section="autonomous"
+    )
+    corner_public_url: str = config_field(
+        "", comment="展柜对外展示分享根地址（留空时沿用 corner_base_url）", section="autonomous"
+    )
+    corner_token: str = config_field(
+        "", comment="Yuki's Corner 发布与反馈 API 的 Bearer Token", section="autonomous"
+    )
+    creative_mode_enabled: bool = config_field(
+        True, comment="开启多源灵感混合器（展柜纸条回流、群黑话、创意玩法卡与反无聊提醒）", section="autonomous"
+    )
 
 
 @dataclass

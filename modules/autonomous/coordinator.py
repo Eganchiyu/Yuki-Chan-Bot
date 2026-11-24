@@ -16,7 +16,7 @@ from config import cfg
 from core.focus import focus_manager
 from core.modes.base import Mode
 from core.modes.router import ModeBusyError, ModeRouter
-from modules.autonomous import prompts as sb_prompts
+from modules.autonomous import corner_client, prompts as sb_prompts
 from modules.autonomous.mode_impl import DebateMode, WorkshopMode, make_mode_factory
 from modules.autonomous.sandbox_loop import (
     AdaptorHistory,
@@ -267,6 +267,9 @@ class AutonomousCoordinator:
             session = self._ensure_work_session(gid, reflection)
             state.session_id = session["session_id"]
             state_store.set_active_mode(gid, "workshop", run_id, session_id=state.session_id)
+            if corner_client.is_configured():
+                title_hint = str(reflection.get("title") or "新作品")[:24]
+                asyncio.create_task(corner_client.update_status("🔨", f"正在秘密工坊捣鼓《{title_hint}》中…"))
             workshop_mode = WorkshopMode(
                 chat_id=gid, router=self.router, run_id=run_id,
                 session_id=state.session_id, goal=reflection.get("title", ""),
@@ -380,15 +383,34 @@ class AutonomousCoordinator:
 
     # ------------------------------------------------------------ 落盘辅助
     def _ensure_work_session(self, gid, reflection: dict) -> dict:
+        resume_sid = str(reflection.get("resume_session_id") or "").strip()
+        if resume_sid:
+            explicit = work_session_store.load(resume_sid)
+            if explicit is not None and explicit.get("status") in ("active", "paused"):
+                explicit["status"] = "active"
+                return work_session_store.save(explicit)
+
+        new_title = str(reflection.get("title") or "").strip()
         resumable = work_session_store.latest_resumable(chat_id=gid)
         if resumable is not None:
-            resumable["status"] = "active"
-            resumable.setdefault("title", reflection.get("title", ""))
-            return work_session_store.save(resumable)
+            old_title = str(resumable.get("title") or "").strip()
+            # 未起新标题，或新旧标题明显同一企划时才接续，避免把全新脑洞错套到旧 paused 标题上
+            same_topic = (
+                not new_title
+                or not old_title
+                or new_title == old_title
+                or new_title in old_title
+                or old_title in new_title
+            )
+            if same_topic:
+                resumable["status"] = "active"
+                if new_title:
+                    resumable["title"] = new_title
+                return work_session_store.save(resumable)
         session_id = work_session_store.new_session_id(gid)
         return work_session_store.save({
             "session_id": session_id,
-            "title": reflection.get("title", "未命名工作"),
+            "title": new_title or "未命名工作",
             "kind": "creative",
             "status": "active",
             "work_log": "",
@@ -501,6 +523,8 @@ class AutonomousCoordinator:
         if state is not None:
             if state.session_id:
                 lines.append(f"工作会话：{state.session_id}")
+            if state.published_urls:
+                lines.append("公网展柜链接：" + " / ".join(state.published_urls[:3]))
             if state.work_log:
                 lines.append("工作日志：" + truncate_chars(state.work_log, 300))
             if state.artifacts:

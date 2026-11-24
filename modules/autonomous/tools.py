@@ -6,10 +6,14 @@
 """
 from __future__ import annotations
 
+import asyncio
+import time
 from dataclasses import dataclass, field
 from typing import Any
 
 from core.toolchain import FunctionRegistry, ToolResult, ToolSpec
+from modules.autonomous import corner_client
+from modules.autonomous.inspiration import inspiration_store
 from modules.autonomous.storage import (
     WORK_LOG_MAX_CHARS,
     daily_memory_store,
@@ -31,6 +35,9 @@ SANDBOX_TOOL_NAMES = frozenset({
     "list_recent_work_sessions",
     "inspect_work_session",
     "write_work_diary",
+    "publish_to_corner",
+    "save_inspiration",
+    "wait_maid_tasks",
     "work_finish",
 })
 
@@ -47,6 +54,7 @@ class SandboxState:
     reflection: dict | None = None
     work_log: str = ""
     artifacts: list[str] = field(default_factory=list)
+    published_urls: list[str] = field(default_factory=list)
     finished: bool = False
     finish_status: str = ""
     tool_calls: int = 0
@@ -114,7 +122,7 @@ async def inner_vote_tool(context, agree_to_end: bool = False, verdict: str = "d
 
 async def conclude_reflection_tool(context, action: str = "memo_only", title: str = "",
                                    memo_content: str = "", work_diary_entry: str = "",
-                                   notebook_pointer: str = ""):
+                                   notebook_pointer: str = "", resume_session_id: str = ""):
     state = _state_of(context)
     if action not in REFLECTION_ACTIONS:
         return ToolResult.failure(
@@ -126,6 +134,7 @@ async def conclude_reflection_tool(context, action: str = "memo_only", title: st
         "memo_content": str(memo_content or "").strip(),
         "work_diary_entry": str(work_diary_entry or "").strip(),
         "notebook_pointer": str(notebook_pointer or "").strip(),
+        "resume_session_id": str(resume_session_id or "").strip(),
     }
     if state is not None:
         state.reflection = payload
@@ -191,6 +200,197 @@ async def write_work_diary_tool(context, content: str = "", title: str = "", kin
     )
 
 
+# ---------------------------------------------------------------- 展柜上架 / 采风剪贴 / 等待小女仆
+
+async def publish_to_corner_tool(
+    context,
+    slug: str = "",
+    title: str = "",
+    kind: str = "toy",
+    summary: str = "",
+    entry_file: str = "",
+    inline_content: str = "",
+    inline_filename: str = "",
+    cover_file: str = "",
+    extra_files: list[str] | None = None,
+    notes: str = "",
+    tags: list[str] | None = None,
+    visibility: str = "public",
+):
+    state = _state_of(context)
+    chat_id = str(getattr(context, "chat_id", "") or "")
+    session_id = state.session_id if state else ""
+    clean_title = str(title or "").strip()
+    if not clean_title:
+        return ToolResult.failure("title 不能为空：请给展品起个好听的名字", "empty_title", name="publish_to_corner")
+    try:
+        res = await corner_client.publish_work(
+            slug=slug or clean_title,
+            title=clean_title,
+            kind=kind,
+            summary=summary,
+            notes=notes,
+            entry_file=entry_file,
+            inline_content=inline_content,
+            inline_filename=inline_filename,
+            cover_file=cover_file,
+            extra_files=extra_files,
+            tags=tags,
+            session_id=session_id,
+            source_chat=chat_id,
+            visibility=visibility,
+        )
+    except Exception as exc:
+        logger.warning(f"[Sandbox] publish_to_corner 失败: {exc}")
+        return ToolResult.failure(f"上架展柜失败：{exc}", "publish_failed", name="publish_to_corner")
+
+    page_url = str(res.get("page_url") or "")
+    local_path = str(res.get("local_path") or "")
+    if state is not None:
+        if page_url and page_url not in state.published_urls:
+            state.published_urls.append(page_url)
+        for item in (page_url, local_path):
+            if item and item not in state.artifacts:
+                state.artifacts.append(item)
+        state.notes.append(f"上架展柜《{clean_title}》{page_url or local_path}")
+    if res.get("published_remote") and page_url:
+        vis_hint = "（私藏 unlisted，仅持链接可见）" if visibility == "unlisted" else "（已公开展示在首页）"
+        content = (
+            f"作品《{clean_title}》已成功上架到 Yuki's Corner {vis_hint}！\n"
+            f"公网分享链接：{page_url}\n"
+            f"包含文件：{', '.join(res.get('files') or [])}\n"
+            "记住把这个链接写进 work_finish 的 work_log 和 artifacts，回群就能分享给大家玩啦！"
+        )
+    else:
+        content = f"作品《{clean_title}》已保存在本地：{local_path}（{res.get('message') or '未配置远端展柜'}）。"
+    return ToolResult(success=True, content=content, data=res, name="publish_to_corner")
+
+
+async def save_inspiration_tool(
+    context,
+    title: str = "",
+    snippet: str = "",
+    source_url: str = "",
+    tags: list[str] | None = None,
+):
+    clean_title = str(title or "").strip()
+    clean_snippet = str(snippet or "").strip()
+    if not clean_title or not clean_snippet:
+        return ToolResult.failure("title 和 snippet 都不能为空", "empty_inspiration", name="save_inspiration")
+    record = inspiration_store.add(
+        title=clean_title,
+        snippet=clean_snippet,
+        source_url=source_url,
+        tags=tags,
+        chat_id=str(getattr(context, "chat_id", "") or ""),
+    )
+    state = _state_of(context)
+    if state is not None:
+        state.notes.append(f"剪贴灵感《{clean_title}》")
+    return ToolResult(
+        success=True,
+        content=f"已把灵感《{clean_title}》夹进好奇心剪贴簿（id={record['id']}），以后独处时会重新翻出来发酵！",
+        data={"inspiration": record},
+        name="save_inspiration",
+    )
+
+
+async def wait_maid_tasks_tool(context, timeout_seconds: int = 120):
+    """等待本会话正在后台干活的小女仆任务完成并立刻拿回汇报。"""
+    from core.maid.maid_runtime import runtime_of
+
+    chat_id = str(getattr(context, "chat_id", "") or "")
+    yuki = getattr(context, "yuki", None)
+    meta = getattr(context, "metadata", None) or {}
+    workshop = meta.get("workshop")
+    stop_check = meta.get("stop_check") or (lambda: False)
+
+    # 先消费已经在队列里等着的汇报
+    if workshop is not None and hasattr(workshop, "pop_inner_events"):
+        queued = workshop.pop_inner_events()
+        if queued:
+            texts = [str(ev.get("content") or "").strip()[:1500] for ev in queued if ev]
+            return ToolResult(
+                success=True,
+                content="小女仆刚才已经汇报完啦：\n" + "\n---\n".join(texts),
+                data={"reports": texts, "remaining": 0},
+                name="wait_maid_tasks",
+            )
+
+    runtime = runtime_of(yuki) if yuki is not None else None
+    active = runtime.live_for_chat(chat_id) if runtime is not None else []
+    if not active:
+        return ToolResult(
+            success=True,
+            content="现在没有正在跑的小女仆任务了，你可以直接检查文件、上架展柜或继续下一步。",
+            data={"reports": [], "remaining": 0},
+            name="wait_maid_tasks",
+        )
+
+    wait_cap = max(5.0, min(float(timeout_seconds or 120), 150.0))
+    deadline = time.monotonic() + wait_cap
+    reports: list[str] = []
+
+    while time.monotonic() < deadline:
+        if stop_check():
+            return ToolResult(
+                success=True,
+                content="收到停止信号，提前结束等待小女仆，请尽快用 work_finish 保存当前进度。",
+                data={"reports": reports, "stopped": True},
+                name="wait_maid_tasks",
+            )
+        if workshop is not None and hasattr(workshop, "pop_inner_events"):
+            ev_batch = workshop.pop_inner_events()
+            if ev_batch:
+                reports.extend(str(ev.get("content") or "").strip()[:1500] for ev in ev_batch if ev)
+                break
+        still_running = runtime.live_for_chat(chat_id) if runtime is not None else []
+        if not still_running:
+            # 给 maid_worker 0.3s 把汇报投递进 inner_events
+            await asyncio.sleep(0.3)
+            if workshop is not None and hasattr(workshop, "pop_inner_events"):
+                ev_batch = workshop.pop_inner_events()
+                reports.extend(str(ev.get("content") or "").strip()[:1500] for ev in ev_batch if ev)
+            break
+        signal = getattr(workshop, "_inner_event_signal", None) if workshop is not None else None
+        remain = max(0.2, min(1.0, deadline - time.monotonic()))
+        if signal is not None:
+            try:
+                await asyncio.wait_for(signal.wait(), timeout=remain)
+                signal.clear()
+            except asyncio.TimeoutError:
+                pass
+        else:
+            await asyncio.sleep(remain)
+
+    remaining = runtime.live_for_chat(chat_id) if runtime is not None else []
+    if reports:
+        tail = f"\n（后台还有 {len(remaining)} 个小女仆任务在跑）" if remaining else ""
+        return ToolResult(
+            success=True,
+            content="小女仆干完活回报啦：\n" + "\n---\n".join(reports) + tail,
+            data={"reports": reports, "remaining": len(remaining)},
+            name="wait_maid_tasks",
+        )
+    if not remaining:
+        return ToolResult(
+            success=True,
+            content="后台小女仆任务已经结束了，请核对目标产物文件是否存在，确认无误就可以 publish_to_corner 上架！",
+            data={"reports": [], "remaining": 0},
+            name="wait_maid_tasks",
+        )
+    labels = "、".join(r.label() for r in remaining)
+    return ToolResult(
+        success=True,
+        content=(
+            f"等了 {int(wait_cap)} 秒，小女仆还在忙：{labels}。"
+            "你可以再调一次 wait_maid_tasks 继续等，或者趁这会儿先去 art_start 画张封面图，或者先 work_finish(status='paused')。"
+        ),
+        data={"reports": [], "remaining": len(remaining), "timeout": True},
+        name="wait_maid_tasks",
+    )
+
+
 # ---------------------------------------------------------------- 工坊收尾
 
 async def work_finish_tool(context, status: str = "completed", work_log: str = "",
@@ -208,6 +408,10 @@ async def work_finish_tool(context, status: str = "completed", work_log: str = "
     truncated = len(text) > WORK_LOG_MAX_CHARS
     text = truncate_chars(text, WORK_LOG_MAX_CHARS)
     artifacts = [str(a) for a in (artifacts or []) if str(a).strip()]
+    if state is not None and state.published_urls:
+        for url in state.published_urls:
+            if url not in artifacts:
+                artifacts.append(url)
 
     session_id = state.session_id if state and state.session_id else ""
     record = work_session_store.load(session_id) if session_id else None
@@ -299,6 +503,8 @@ CONCLUDE_REFLECTION_SPEC = ToolSpec(
                                  "description": "可选：往工作日记本里再记一条 150~400 字的思考产物"},
             "notebook_pointer": {"type": "string",
                                  "description": "可选：写进小本本「长期规划路标区」的一句话（≤160 字）"},
+            "resume_session_id": {"type": "string",
+                                  "description": "可选：若本次要续作某个已暂停的工作会话，填其 session_id；全新企划请留空"},
         },
         "required": ["action", "title", "memo_content"],
     },
@@ -376,12 +582,77 @@ WORK_FINISH_SPEC = ToolSpec(
     persist_result=False,
 )
 
+PUBLISH_TO_CORNER_SPEC = ToolSpec(
+    name="publish_to_corner",
+    description=(
+        "把你在工坊里做出来的作品一键上架到公网展柜「Yuki's Corner」，返回可发到群里玩的直达链接。"
+        "支持互动网页/小游戏(toy)、电子画作/条漫(art)、采风图文小报(zine)、角落手账(note)。"
+        "可传 workspace/ 或 output/ 下已生成的 entry_file，或直接传 inline_content。"
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "slug": {"type": "string", "description": "英文短路径标识，如 star-gacha、group-jargon-quiz（小写字母数字短横线）"},
+            "title": {"type": "string", "description": "作品展示标题"},
+            "kind": {"type": "string", "enum": ["toy", "art", "zine", "note"],
+                     "description": "媒介类型：toy=互动网页/游戏/小工具，art=画作/漫画，zine=采风图文小报，note=手账短篇"},
+            "summary": {"type": "string", "description": "一句话展品介绍，展示在展柜卡片上"},
+            "entry_file": {"type": "string", "description": "主入口文件路径（相对项目根目录，如 workspace/yuki_corner/star-gacha/index.html 或画好的图片路径）"},
+            "inline_content": {"type": "string", "description": "可选：若还没写文件，可直接传入完整 HTML 或正文内容自动落盘发布"},
+            "inline_filename": {"type": "string", "description": "可选：配合 inline_content 使用的文件名，如 index.html 或 note.txt"},
+            "cover_file": {"type": "string", "description": "可选：展品封面图路径（如 art_draw 画出的图）"},
+            "extra_files": {"type": "array", "items": {"type": "string"}, "description": "可选：一并打包上传的额外静态资源路径"},
+            "notes": {"type": "string", "description": "可选：Yuki 的创作手记/幕后花絮，展示在作品下方"},
+            "tags": {"type": "array", "items": {"type": "string"}, "description": "可选：2~4 个短标签"},
+            "visibility": {"type": "string", "enum": ["public", "unlisted"],
+                           "description": "public=公开展示在展柜首页（默认）；unlisted=仅持链接可见的私密收藏"},
+        },
+        "required": ["title", "kind"],
+    },
+    handler=publish_to_corner_tool,
+)
+
+SAVE_INSPIRATION_SPEC = ToolSpec(
+    name="save_inspiration",
+    description="把上网采风看到的有趣内容或突发的未成熟脑洞剪贴到好奇心灵感本，供以后独处跨界碰撞。",
+    parameters={
+        "type": "object",
+        "properties": {
+            "title": {"type": "string", "description": "灵感短标题"},
+            "snippet": {"type": "string", "description": "让你觉得有趣的核心细节、玩法或摘录（≤500 字）"},
+            "source_url": {"type": "string", "description": "可选：来源网页 URL"},
+            "tags": {"type": "array", "items": {"type": "string"}, "description": "可选：标签"},
+        },
+        "required": ["title", "snippet"],
+    },
+    handler=save_inspiration_tool,
+)
+
+WAIT_MAID_TASKS_SPEC = ToolSpec(
+    name="wait_maid_tasks",
+    description=(
+        "在工坊里等待刚通过 delegate_to_maid 派出去的小女仆任务完成并立刻拿回汇报，"
+        "方便紧接着检查作品并调用 publish_to_corner 上架展柜。"
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "timeout_seconds": {"type": "integer", "description": "本次最多等待多少秒（默认 120，上限 150）"},
+        },
+    },
+    handler=wait_maid_tasks_tool,
+    persist_result=False,
+)
+
 ALL_SANDBOX_SPECS = {
     "inner_vote": INNER_VOTE_SPEC,
     "conclude_reflection": CONCLUDE_REFLECTION_SPEC,
     "list_recent_work_sessions": LIST_WORK_SESSIONS_SPEC,
     "inspect_work_session": INSPECT_WORK_SESSION_SPEC,
     "write_work_diary": WRITE_WORK_DIARY_SPEC,
+    "publish_to_corner": PUBLISH_TO_CORNER_SPEC,
+    "save_inspiration": SAVE_INSPIRATION_SPEC,
+    "wait_maid_tasks": WAIT_MAID_TASKS_SPEC,
     "work_finish": WORK_FINISH_SPEC,
 }
 
@@ -406,6 +677,10 @@ def record_work_memory(state: SandboxState, reflection: dict, status: str = "可
     summary = state.work_log or (reflection or {}).get("memo_content", "")
     if not summary:
         return
+    if state.published_urls:
+        missing = [u for u in state.published_urls if u not in summary]
+        if missing:
+            summary = f"{summary}（展柜直达链接：{' / '.join(missing[:2])}）"
     daily_memory_store.add(
         summary=summary,
         status=status,
