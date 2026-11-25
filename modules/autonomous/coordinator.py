@@ -250,6 +250,8 @@ class AutonomousCoordinator:
             save_work_diary_entry(reflection, gid, state.session_id)
             self._apply_notebook_pointer(reflection)
             state.notes.append(f"memo={memo_id or '-'}")
+            if state.seen_note_ids and corner_client.is_configured():
+                asyncio.create_task(corner_client.ack_feedback(state.seen_note_ids))
 
             if reflection.get("action") != "start_work":
                 record_work_memory(

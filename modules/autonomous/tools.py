@@ -55,6 +55,7 @@ class SandboxState:
     work_log: str = ""
     artifacts: list[str] = field(default_factory=list)
     published_urls: list[str] = field(default_factory=list)
+    seen_note_ids: list[int] = field(default_factory=list)
     finished: bool = False
     finish_status: str = ""
     tool_calls: int = 0
@@ -215,6 +216,7 @@ async def publish_to_corner_tool(
     extra_files: list[str] | None = None,
     notes: str = "",
     tags: list[str] | None = None,
+    fulfilled_note_ids: list[int] | None = None,
     visibility: str = "public",
 ):
     state = _state_of(context)
@@ -236,6 +238,7 @@ async def publish_to_corner_tool(
             cover_file=cover_file,
             extra_files=extra_files,
             tags=tags,
+            fulfilled_note_ids=fulfilled_note_ids,
             session_id=session_id,
             source_chat=chat_id,
             visibility=visibility,
@@ -295,7 +298,7 @@ async def save_inspiration_tool(
     )
 
 
-async def wait_maid_tasks_tool(context, timeout_seconds: int = 120):
+async def wait_maid_tasks_tool(context, timeout_seconds: int = 150):
     """等待本会话正在后台干活的小女仆任务完成并立刻拿回汇报。"""
     from core.maid.maid_runtime import runtime_of
 
@@ -384,7 +387,8 @@ async def wait_maid_tasks_tool(context, timeout_seconds: int = 120):
         success=True,
         content=(
             f"等了 {int(wait_cap)} 秒，小女仆还在忙：{labels}。"
-            "你可以再调一次 wait_maid_tasks 继续等，或者趁这会儿先去 art_start 画张封面图，或者先 work_finish(status='paused')。"
+            "（写精美单文件网页通常需要 2~4 分钟，建议直接再调 1~2 次 wait_maid_tasks(timeout_seconds=150) "
+            "等她写完直接上架，不必急着 paused；实在来不及再 work_finish(status='paused')。）"
         ),
         data={"reports": [], "remaining": len(remaining), "timeout": True},
         name="wait_maid_tasks",
@@ -604,6 +608,11 @@ PUBLISH_TO_CORNER_SPEC = ToolSpec(
             "extra_files": {"type": "array", "items": {"type": "string"}, "description": "可选：一并打包上传的额外静态资源路径"},
             "notes": {"type": "string", "description": "可选：Yuki 的创作手记/幕后花絮，展示在作品下方"},
             "tags": {"type": "array", "items": {"type": "string"}, "description": "可选：2~4 个短标签"},
+            "fulfilled_note_ids": {
+                "type": "array",
+                "items": {"type": "integer"},
+                "description": "可选：如果这件作品回应了展柜里的某些访客纸条，填上对应纸条编号（如 [1, 3]），网页会自动盖上「已做成展品」印章并挂链接",
+            },
             "visibility": {"type": "string", "enum": ["public", "unlisted"],
                            "description": "public=公开展示在展柜首页（默认）；unlisted=仅持链接可见的私密收藏"},
         },

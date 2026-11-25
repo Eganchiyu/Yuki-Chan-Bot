@@ -115,7 +115,8 @@ class InnerDebate:
         spark_title = ""
         unread_count = 0
         if getattr(cfg.autonomous, "creative_mode_enabled", True):
-            corner_fb = await corner_client.fetch_feedback(limit=6, mark_read=True)
+            # 不在进门瞬间提前吞掉未读纸条，留到本轮有效结束后再由 coordinator 统一签收
+            corner_fb = await corner_client.fetch_feedback(limit=6, mark_read=False)
             recent_sessions = await asyncio.to_thread(work_session_store.list, None, 6)
             bundle = await asyncio.to_thread(
                 build_inspiration_bundle,
@@ -125,7 +126,12 @@ class InnerDebate:
             )
             inspiration_text = render_inspiration_block(bundle)
             spark_title = str((bundle.get("spark_card") or {}).get("title") or "")
-            unread_count = len(bundle.get("unread_notes") or [])
+            unread_notes = bundle.get("unread_notes") or []
+            unread_count = len(unread_notes)
+            if self.state is not None:
+                self.state.seen_note_ids = [
+                    int(n["id"]) for n in unread_notes if str(n.get("id", "")).isdigit()
+                ]
 
         shared = sb_prompts.debate_shared(self.chat_label, self.retrieval_steps)
         transcript = transcript_for(self.state, mode="debate")

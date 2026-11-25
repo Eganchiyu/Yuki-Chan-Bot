@@ -968,3 +968,18 @@
   - 新增 `AutonomousConfig` 字段 `corner_base_url`/`corner_public_url`/`corner_token`/`creative_mode_enabled`，并在 `configs/config.yaml` 接入 `mio` 80 端口展柜；
   - 工坊新增 `publish_to_corner`（仅允许打包 `workspace/`/`output/`/`temp_images/` 内文件或 `inline_content`，返回公网链接并自动并入 `artifacts` 与 L4 今日工作记忆）、`save_inspiration`、`wait_maid_tasks`（响应 `stop_check` 等待后台小女仆汇报并衔接验收发布）；高涨期提示支持自然分享展柜链接。
 - **验证与上线**：更新 `docs/autonomous-architecture.md`；定向单测 `tests/test_autonomous_sandbox.py` + `tests/test_mode_router.py` + `tests/test_config.py` 共 **56 passed**；通过 `deploy/supervisor.py::restart_container()` 平滑重启生产容器，`/health` ready 且容器直连展柜 API 验收通过。
+- **线上启用与首播通知**：安全停机修改 `configs/config.yaml`（`autonomous.enabled: true`、`auto_trigger_enabled: true`、`enabled_groups: ['1057020972']`，`data/autonomous_state.json` 的 `group_overrides` 仅保留 `1057020972`），并通过 `tasks/dsh/corner_launch_20261124` 注入上线通知后重启容器；Yuki 已自动在群 `1057020972` 内发出展柜开张官宣消息。
+
+
+## 2026-11-25 修复：多 Provider 队列下辅助调用误传 BACKUP_MODEL 触发主线 CPA 400 熔断
+
+- **根因**：`configs/config.yaml` 中队首线路 `CPA-gemini`（`gemini-3.5-flash-lite`）配置无误，但 `core/sentence_splitter.py`、`modules/memory/jargon_miner.py`、`modules/memory/style_learner.py`、`core/engine/engine_diary.py` 4 处默认把 `cfg.BACKUP_MODEL`（线路 #2 `rua-gemini` 的 `[按次]gemini-3.7-flash`）传给了 `llm_chat()`；`_request_with_failover` 将该模型名覆写到线路 #1 `CPA-gemini` 请求，导致 CPA 返回 HTTP 400 `model_not_found` 并触发 120s 全局熔断，继而顺延 rua（403 余额不足）最终落到 DeepSeek。
+- **修复**：
+  - 上述 4 处辅助/重试调用默认传 `model=None`，统一跟随当前主线路模型（`gemini-3.5-flash-lite`）；
+  - `utils/llm_client.py` 增加跨渠道模型名防护（传入模型名属于其他非队首线路时，队首仍使用自身 `route.model`，不触发误熔断），并修复线路 #1 熔断恢复时未清零 `last_fail_time` 导致重复打印恢复日志的小问题；
+  - `tests/test_llm_client.py` 补充 2 条回归用例，隔离 `cfg.providers` 对旧用例的影响。
+- **验证**：容器内定向单测（`test_llm_client`、`test_reply_format`、`test_memory`、`test_pipeline`）全部通过。
+
+## 2026-11-25 自主轮小幅微调：展柜纸条延迟签收与工坊等待体验
+- `inner_debate.py` 拉取展柜未读纸条改为 `mark_read=False` 并记录 `state.seen_note_ids`，由 `coordinator.py` 在本轮有效进入 `memo_only`/`start_work` 后才调用 `corner_client.ack_feedback` 签收，防止 `do_nothing` 或中断提前吞掉纸条。
+- `publish_to_corner` 与 `corner_client.publish_work` 新增 `fulfilled_note_ids`，上架展品时自动为对应纸条盖上「已做成展品」印章；`wait_maid_tasks` 默认等待提至 150s 并在文案中提示可连续等待 1~2 轮拿成品直接上架。

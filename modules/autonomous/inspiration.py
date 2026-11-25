@@ -247,10 +247,12 @@ def render_inspiration_block(bundle: dict[str, Any] | None) -> str:
 
     unread = bundle.get("unread_notes") or []
     if unread:
-        lines = ["【展柜信箱·大家给你的新纸条（可以顺着纸条回应、魔改旧作品或实现许愿！）】"]
+        lines = ["【展柜信箱·大家给你的未读新纸条（可以顺着纸条回应、魔改旧作品或实现许愿；上架时可在 fulfilled_note_ids 填对应纸条编号！）】"]
         for n in unread:
+            nid = n.get("id")
+            id_tag = f"[纸条#{nid}] " if nid else ""
             target = f"《{n.get('work_title') or '展柜留言墙'}》"
-            lines.append(f"- {n.get('author') or '小伙伴'} 在 {target} 留言：「{n.get('message') or ''}」")
+            lines.append(f"- {id_tag}{n.get('author') or '小伙伴'} 在 {target} 留言：「{n.get('message') or ''}」")
         sections.append("\n".join(lines))
 
     recent_works = bundle.get("recent_works") or []

@@ -242,6 +242,7 @@ async def publish_work(
     cover_file: str = "",
     extra_files: list[str] | None = None,
     tags: list[str] | None = None,
+    fulfilled_note_ids: list[int] | None = None,
     session_id: str = "",
     source_chat: str = "",
     visibility: str = "public",
@@ -282,6 +283,7 @@ async def publish_work(
         "entry_file": entry_rel,
         "cover_file": cover_rel,
         "tags": [str(t).strip()[:20] for t in (tags or []) if str(t).strip()][:8],
+        "fulfilled_note_ids": [int(x) for x in (fulfilled_note_ids or []) if str(x).isdigit()],
         "session_id": str(session_id or ""),
         "source_chat": str(source_chat or ""),
         "visibility": "unlisted" if str(visibility).strip().lower() == "unlisted" else "public",
@@ -312,6 +314,27 @@ async def fetch_feedback(*, limit: int = 8, mark_read: bool = False, timeout: fl
     except Exception as exc:
         logger.debug(f"[Corner] 拉取展柜反馈失败（忽略）: {exc}")
         return None
+
+
+async def ack_feedback(ids: list[int], fulfilled_slug: str = "", timeout: float = 4.0) -> bool:
+    """签收指定纸条为已读（可选附带已实现展品 slug，失败静默）。"""
+    clean_ids = [int(x) for x in (ids or []) if str(x).isdigit()]
+    if not clean_ids or not is_configured():
+        return False
+    url = f"{_base_url()}/api/feedback/ack"
+    try:
+        res = await asyncio.to_thread(
+            _http_request_sync,
+            "POST",
+            url,
+            payload={"ids": clean_ids, "fulfilled_slug": fulfilled_slug},
+            token=_token(),
+            timeout=timeout,
+        )
+        return bool(isinstance(res, dict) and res.get("ok"))
+    except Exception as exc:
+        logger.debug(f"[Corner] 签收展柜纸条已读失败（忽略）: {exc}")
+        return False
 
 
 async def update_status(mood: str, activity: str, latest_slug: str = "", timeout: float = 4.0) -> bool:
