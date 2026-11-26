@@ -135,7 +135,7 @@ def _slice_evidence(user_lines: List[str], idx: int, window: int = 2) -> str:
 
 
 async def _call_fast_llm(prompt: str, *, model: Optional[str] = None) -> str:
-    target_model = model or getattr(cfg, "BACKUP_MODEL", "") or getattr(cfg, "LLM_MODEL", "")
+    target_model = model or None
     return await llm_chat(
         messages=[{"role": "user", "content": prompt}],
         model=target_model,

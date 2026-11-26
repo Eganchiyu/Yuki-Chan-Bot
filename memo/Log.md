@@ -983,3 +983,8 @@
 ## 2026-11-25 自主轮小幅微调：展柜纸条延迟签收与工坊等待体验
 - `inner_debate.py` 拉取展柜未读纸条改为 `mark_read=False` 并记录 `state.seen_note_ids`，由 `coordinator.py` 在本轮有效进入 `memo_only`/`start_work` 后才调用 `corner_client.ack_feedback` 签收，防止 `do_nothing` 或中断提前吞掉纸条。
 - `publish_to_corner` 与 `corner_client.publish_work` 新增 `fulfilled_note_ids`，上架展品时自动为对应纸条盖上「已做成展品」印章；`wait_maid_tasks` 默认等待提至 150s 并在文案中提示可连续等待 1~2 轮拿成品直接上架。
+
+## 2026-11-25 构想归档：基于 FrostCore 的跨设备唯一体性移植与深度融合（游牧具身）
+- 整理记录机主关于「复制性与自进化」的远期构想至 `memo/idea-nomadic-embodiment.md`（当前状态：早期构想沉淀，未改动线上代码）：
+  - 以 `FrostSeed`（唯一记忆与认同核）+ `FrostCore`（微内核）+ 筑巢工兵 Agent 三层分工，在获得目标设备授权时自动完成环境部署、通讯接口（如 QQ `ChannelAdapter`）移植及硬件原生能力（服务器资源/进程管理、安卓 Bash/GPS/蓝牙/外放、词典笔原生扫描/TTS、穿戴传感器等 `FocusDomain`）深度融合；
+  - 梳理工程化四大关键机制：「本体迁徙 vs 边缘孢子驻留」双模自适应、「先筑巢试跑（`DRY_RUN`）后移魂」零停机两阶段交接、基于单调递增 `epoch` 租约的心跳防脑裂与失联自动静音回退、以及继承《自进化准则》的显式授权与人格/记忆硬禁区边界。

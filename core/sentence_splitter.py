@@ -155,7 +155,7 @@ async def split_text_with_llm(
     if _should_skip_split(text, threshold):
         return [text]
 
-    target_model = model or getattr(cfg, "BACKUP_MODEL", "") or getattr(cfg, "LLM_MODEL", "")
+    target_model = model or None
     try:
         raw_resp = await llm_chat(
             messages=[{"role": "user", "content": _SPLITTER_PROMPT + text}],

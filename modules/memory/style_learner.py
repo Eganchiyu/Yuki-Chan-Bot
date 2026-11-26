@@ -88,7 +88,7 @@ def _extract_user_lines(dialogue_msgs: List[Dict[str, Any]]) -> List[str]:
 
 
 async def _call_style_llm(prompt: str, *, model: Optional[str] = None) -> str:
-    target_model = model or getattr(cfg, "BACKUP_MODEL", "") or getattr(cfg, "LLM_MODEL", "")
+    target_model = model or None
     return await llm_chat(
         messages=[{"role": "user", "content": prompt}],
         model=target_model,

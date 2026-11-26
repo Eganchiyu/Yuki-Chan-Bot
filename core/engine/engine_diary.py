@@ -112,10 +112,10 @@ class EngineDiaryService:
             
             # 检查是否为 Filtered 或长度异常短（例如小于 50 个字符）
             if not diary_content or diary_content == "Filtered" or len(diary_content.strip()) < 50:
-                logger.warning(f"[Engine] [{chat_id}] 主模型生成日记异常 (内容: {repr(diary_content)}), 切换备用模型重试...")
+                logger.warning(f"[Engine] [{chat_id}] 主模型生成日记异常 (内容: {repr(diary_content)}), 重新请求重试...")
                 diary_content = await llm_chat(
                     messages=messages,
-                    model=cfg.BACKUP_MODEL,
+                    model=None,
                     temperature=0.7,
                     top_p=0.8,
                     frequency_penalty=0.1,

@@ -325,6 +325,7 @@ async def _request_with_failover(
             if now - route_failures[idx] > recovery:
                 route_failures.pop(idx, None)
                 if idx == 0:
+                    state["last_fail_time"] = 0.0
                     state["is_degraded"] = bool(route_failures)
                 logger.info(f"[LLM] 尝试恢复线路 #{idx + 1}({route.name})")
             else:
@@ -341,7 +342,11 @@ async def _request_with_failover(
                 degraded_messages = await fallback_messages_factory()
             req_messages = degraded_messages
 
-        req_model = (model or route.model) if idx == 0 else route.model
+        # 防止调用方把其他渠道（如 BACKUP_MODEL）的模型名错误透传到队首线路导致 400 误熔断
+        if idx == 0 and model and model != route.model and any(r.model == model for r in routes[1:]):
+            req_model = route.model
+        else:
+            req_model = (model or route.model) if idx == 0 else route.model
         try:
             res = await chat_completion_raw(
                 base_url=route.base_url,

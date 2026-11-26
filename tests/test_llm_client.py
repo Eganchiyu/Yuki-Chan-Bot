@@ -20,7 +20,7 @@ class _RequestRecorder:
         self.calls = []
 
     async def __call__(self, base_url, api_key, messages, model, timeout=60.0, **kwargs):
-        self.calls.append({"messages": messages, "base_url": base_url})
+        self.calls.append({"messages": messages, "base_url": base_url, "model": model})
         result = self.responses.pop(0) if self.responses else {"role": "assistant", "content": ""}
         if isinstance(result, Exception):
             raise result
@@ -112,6 +112,7 @@ async def test_empty_reply_retry_and_nudge_injection(monkeypatch):
 
 async def test_request_failure_and_exhaustion_fallbacks(monkeypatch):
     """请求失败立即重试、耗尽后按原因返回降级文案，retries=0 时不重试。"""
+    monkeypatch.setattr(cfg, "providers", [])
     # 首轮主+备失败 -> 第二轮备用恢复
     msg, rec = await _run_chat_raw(
         monkeypatch,
@@ -216,3 +217,56 @@ async def test_multi_provider_three_node_failover_chain(monkeypatch):
     assert msg["content"] == "n3 ok"
     assert [c["base_url"] for c in rec.calls] == ["http://n1/v1", "http://n2/v1", "http://n3/v1"]
     assert llm_client.get_route_state()["active_provider"] == "node3"
+
+
+async def test_other_route_model_does_not_override_primary_route(monkeypatch):
+    """误传其他渠道（如 BACKUP_MODEL）的模型名时，队首仍使用自身模型，避免 400 误熔断。"""
+    from config import LLMProviderConfig
+
+    monkeypatch.setattr(
+        cfg,
+        "providers",
+        [
+            LLMProviderConfig(name="cpa", base_url="http://cpa/v1", api_key="k1", model="gemini-3.5-flash-lite"),
+            LLMProviderConfig(name="rua", base_url="http://rua/v1", api_key="k2", model="[按次]gemini-3.7-flash"),
+            LLMProviderConfig(name="ds", base_url="http://ds/v1", api_key="k3", model="deepseek-chat"),
+        ],
+    )
+    llm_client.reset_route_state()
+
+    msg, rec = await _run_chat_raw(
+        monkeypatch,
+        [{"role": "assistant", "content": "cpa ok"}],
+        model="[按次]gemini-3.7-flash",
+    )
+    assert msg["content"] == "cpa ok"
+    assert rec.calls[0]["base_url"] == "http://cpa/v1"
+    assert rec.calls[0]["model"] == "gemini-3.5-flash-lite"
+
+
+async def test_primary_recovery_clears_last_fail_time_when_backup_still_degraded(monkeypatch):
+    """线路 #1 熔断恢复后应清零 last_fail_time，即使线路 #2 仍在熔断也不重复触发恢复。"""
+    from config import LLMProviderConfig
+
+    monkeypatch.setattr(
+        cfg,
+        "providers",
+        [
+            LLMProviderConfig(name="cpa", base_url="http://cpa/v1", api_key="k1", model="m1"),
+            LLMProviderConfig(name="rua", base_url="http://rua/v1", api_key="k2", model="m2"),
+            LLMProviderConfig(name="ds", base_url="http://ds/v1", api_key="k3", model="m3"),
+        ],
+    )
+    llm_client.reset_route_state()
+    state = llm_client._fallback_state
+    state["is_degraded"] = True
+    state["last_fail_time"] = 1.0
+    state["route_failures"] = {0: 1.0, 1: 9999999999.0}
+
+    recorder = _RequestRecorder([{"role": "assistant", "content": "ok"}])
+    monkeypatch.setattr(llm_client, "chat_completion_raw", recorder)
+
+    msg = await llm_chat_raw(messages=[{"role": "user", "content": "hi"}])
+    assert msg["content"] == "ok"
+    assert state["last_fail_time"] == 0.0
+    assert 0 not in state["route_failures"]
