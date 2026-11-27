@@ -1,12 +1,102 @@
 # core/tools/tools_message.py
 """消息发送类工具：私聊通知、戳一戳、发送本地文件。"""
 import os
+import shutil
+import time
 
 from config import cfg
 from core.toolchain import ToolResult
 from modules.shot_memory import shot_live_buffer
 
 from .tools_common import _resolve_image_path, logger
+
+# 项目根（容器内与宿主机同路径，其子目录为 rw 挂载）
+_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# 容器内可读可写的挂载目录：优先查 data/inbox（宿主机产物同步落点），再查其它 rw 目录
+_MOUNTED_DIRS = ("data/inbox", "temp", "output", "workspace", "temp_images", "data")
+_SKIP_DIRS = {"node_modules", "__pycache__", ".git", "maid_venv", "models"}
+# 兜底复制的落点（data/ 是 rw 挂载，容器内外同路径可见）
+_FALLBACK_DIR = os.path.join(_PROJECT_ROOT, "data", "sent_files")
+
+
+def _path_candidates(raw_path):
+    """把各种形态的路径映射成容器内可能的等价路径（按优先级排序）。"""
+    p = str(raw_path or "").strip()
+    if p.startswith("file://"):
+        p = p[7:]
+    if p.startswith("~"):
+        p = os.path.expanduser(p)
+    if not os.path.isabs(p):
+        p = os.path.join(_PROJECT_ROOT, p)
+
+    candidates = [p]
+    # 宿主机前缀不同、但文件其实在项目里时：/某个前缀/output/a.png → <项目根>/output/a.png
+    parts = [x for x in p.split("/") if x]
+    for i in range(1, len(parts)):
+        tail = os.path.join(_PROJECT_ROOT, *parts[i:])
+        if tail not in candidates:
+            candidates.append(tail)
+    return candidates
+
+
+def _find_same_name(name, max_entries=50000):
+    """在可写挂载目录里按文件名找同源文件（有界遍历，取 mtime 最新的那个）。"""
+    if not name:
+        return ""
+    best, best_mtime, seen = "", None, 0
+    for d in _MOUNTED_DIRS:
+        base = os.path.join(_PROJECT_ROOT, d)
+        if not os.path.isdir(base):
+            continue
+        for root, dirs, files in os.walk(base):
+            if root[len(base):].count(os.sep) >= 3:
+                dirs[:] = []
+            dirs[:] = [x for x in dirs if x not in _SKIP_DIRS]
+            for f in files:
+                seen += 1
+                if seen > max_entries:
+                    return best
+                if f != name:
+                    continue
+                fp = os.path.join(root, f)
+                try:
+                    mt = os.path.getmtime(fp)
+                except OSError:
+                    continue
+                if best_mtime is None or mt > best_mtime:
+                    best, best_mtime = fp, mt
+    return best
+
+
+def _ensure_sendable_path(raw_path):
+    """返回 (容器内可发送的路径, 错误码)。
+
+    容器内读不到给定路径时（典型：宿主机 /tmp、/home/asumi 下容器未挂载的路径，
+    或者 cwd 不同导致的相对路径），先试项目内等价路径，再按同名文件兜底，
+    找到源文件后复制进 data/sent_files/ 并校验，返回容器内路径。
+    """
+    for candidate in _path_candidates(raw_path):
+        if os.path.isfile(candidate):
+            return candidate, ""
+
+    name = os.path.basename(str(raw_path or "").strip().rstrip("/"))
+    src = _find_same_name(name)
+    if not src:
+        return "", "file_not_found"
+
+    try:
+        os.makedirs(_FALLBACK_DIR, exist_ok=True)
+        dst = os.path.join(_FALLBACK_DIR, f"{time.strftime('%Y%m%d_%H%M%S')}_{name}")
+        shutil.copy2(src, dst)
+    except OSError as e:
+        logger.warning(f"[Tool] 兜底复制文件失败 {src} -> {_FALLBACK_DIR}: {e}")
+        return "", "file_copy_failed"
+
+    if not os.path.isfile(dst) or os.path.getsize(dst) != os.path.getsize(src):
+        logger.warning(f"[Tool] 兜底复制校验失败: {src} -> {dst}")
+        return "", "file_copy_failed"
+    logger.info(f"[Tool] 路径兜底：{raw_path} -> {src}，复制到 {dst}")
+    return dst, ""
 
 
 async def send_master_private_tool(context, message):
@@ -83,14 +173,28 @@ async def poke_tool(context, target=None, user_id=None):
 
 
 async def send_qq_file_tool(context, file_path, file_type="auto", caption=None):
-    """发送本地图片、语音或普通文件。支持 [img:XXX] 索引。"""
+    """发送本地图片、语音或普通文件。支持 [img:XXX] 索引。
+
+    容器内读不到给定路径时（宿主机 /tmp 等未挂载路径、cwd 不同的相对路径），
+    会兜底把文件复制到 data/sent_files/ 再用容器内路径发送。
+    """
     if not file_path:
         return ToolResult(success=False, content="缺少文件路径", error="missing_file_path")
 
     file_path = _resolve_image_path(context, file_path)
-    abs_path = os.path.abspath(os.path.expanduser(file_path))
-    if not os.path.isfile(abs_path):
-        return ToolResult(success=False, content="文件不存在，无法发送。", error="file_not_found")
+    abs_path, err = _ensure_sendable_path(file_path)
+    if not abs_path:
+        if err == "file_copy_failed":
+            return ToolResult(
+                success=False,
+                content=f"文件读到了但复制到 data/sent_files/ 失败，无法发送：{file_path}",
+                error="file_copy_failed",
+            )
+        return ToolResult(
+            success=False,
+            content=f"文件不存在，也无法在项目挂载目录里找到同名文件：{file_path}",
+            error="file_not_found",
+        )
 
     suffix = os.path.splitext(abs_path)[1].lower()
     if file_type == "auto":

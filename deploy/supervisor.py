@@ -515,6 +515,11 @@ def main():
                 log(f"本轮处理了 {n} 个请求")
         except Exception as e:
             log(f"轮询异常: {e}")
+        try:
+            import inbox_sync
+            inbox_sync.sync(log=log)
+        except Exception:
+            pass
         time.sleep(3)
 
 

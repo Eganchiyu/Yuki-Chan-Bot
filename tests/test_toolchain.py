@@ -187,6 +187,24 @@ async def test_send_qq_file_and_parse_rich_message(tmp_path):
     assert file_res.success is True and file_res.data["file_type"] == "file"
     assert sent_files[0][0] == "test_chat"
 
+    # 容器内读不到宿主机 /tmp 路径时，应能从 data/inbox 同名兜底复制到 data/sent_files 并发送
+    from core.tools import tools_message as tm
+    fake_inbox = tmp_path / "inbox"
+    fake_inbox.mkdir()
+    inbox_file = fake_inbox / "maid_artifact_test.pdf"
+    inbox_file.write_bytes(b"%PDF-1.4 test")
+    fake_sent = tmp_path / "sent_files"
+    old_root, old_dirs, old_fallback = tm._PROJECT_ROOT, tm._MOUNTED_DIRS, tm._FALLBACK_DIR
+    try:
+        tm._PROJECT_ROOT = str(tmp_path)
+        tm._MOUNTED_DIRS = ("inbox",)
+        tm._FALLBACK_DIR = str(fake_sent)
+        fallback_res = await send_qq_file_tool(ctx, "/tmp/not_in_container/maid_artifact_test.pdf")
+        assert fallback_res.success is True and fallback_res.data["file_type"] == "file"
+        assert sent_files[-1][1].startswith(str(fake_sent))
+    finally:
+        tm._PROJECT_ROOT, tm._MOUNTED_DIRS, tm._FALLBACK_DIR = old_root, old_dirs, old_fallback
+
     ctx.metadata["message_objs"] = [{
         "name": "测试群友",
         "message_id": 1376986332,

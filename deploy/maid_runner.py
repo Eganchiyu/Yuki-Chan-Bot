@@ -30,6 +30,7 @@ import json
 import os
 import re
 import queue
+import shutil
 import signal
 import subprocess
 import sys
@@ -77,6 +78,59 @@ def write_json_atomic(path, payload):
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(payload, f, ensure_ascii=False, indent=2)
     os.replace(tmp, path)
+
+
+_MOUNTED_PREFIXES = tuple(
+    os.path.join(ROOT, d) + os.sep
+    for d in ("data", "output", "temp", "workspace", "temp_images")
+)
+_SYS_PREFIXES = ("/usr/", "/etc/", "/bin/", "/sbin/", "/lib/", "/var/", "/proc/", "/sys/", "/dev/")
+_ARTIFACT_PATH_RE = re.compile(r"(?:file://)?((?:/|~/)[A-Za-z0-9_.\-/~]+)")
+
+
+def _collect_unmounted_artifacts(text, max_bytes=200 * 1024 * 1024):
+    """将小女仆结果中提及的宿主机未挂载文件复制到 data/inbox/，确保容器内 Yuki 可直接发送。"""
+    if not text:
+        return []
+    inbox_dir = os.path.join(ROOT, "data", "inbox")
+    synced = []
+    seen = set()
+    for raw in _ARTIFACT_PATH_RE.findall(str(text)):
+        p = raw.rstrip(".,;:!?\"'`).")
+        if not p or p in seen:
+            continue
+        seen.add(p)
+        abs_p = os.path.abspath(os.path.expanduser(p))
+        if abs_p.startswith(_SYS_PREFIXES) or abs_p.startswith(_MOUNTED_PREFIXES):
+            continue
+        if abs_p.startswith(os.path.join(ROOT, "core") + os.sep) or abs_p.startswith(os.path.join(ROOT, "deploy") + os.sep):
+            continue
+        if not os.path.isfile(abs_p):
+            continue
+        try:
+            st = os.stat(abs_p)
+        except OSError:
+            continue
+        if st.st_size <= 0 or st.st_size > max_bytes:
+            continue
+        dst = os.path.join(inbox_dir, os.path.basename(abs_p))
+        try:
+            os.makedirs(inbox_dir, exist_ok=True)
+            if not (os.path.isfile(dst) and os.path.getsize(dst) == st.st_size and os.path.getmtime(dst) >= st.st_mtime):
+                shutil.copy2(abs_p, dst)
+            synced.append(dst)
+        except OSError as e:
+            log(f"收集产物失败 {abs_p} -> {dst}: {e}")
+    return synced
+
+
+def _sync_host_inbox():
+    """触发一次宿主机 inbox（host_inbox / /tmp/yuki_outbox）向 data/inbox 的同步。"""
+    try:
+        import inbox_sync
+        inbox_sync.sync(log=log)
+    except Exception:
+        pass
 
 
 def read_api_key():
@@ -149,6 +203,8 @@ class TaskRunner:
             # 超时/崩溃时 final 往往是空的；丢掉全部进度等于白跑，这里拼个部分结论
             summary = self.partial_summary()
             text = f"[任务未完成：{status}] {detail}\n{summary}".strip()
+        inbox_files = _collect_unmounted_artifacts(text)
+        _sync_host_inbox()
         payload = {
             "status": status,
             "result": (text or detail or "")[:RESULT_MAX_CHARS],
@@ -160,6 +216,9 @@ class TaskRunner:
             "elapsed": round(time.time() - started, 1),
             "finished_at": datetime.now().isoformat(timespec="seconds"),
         }
+        if inbox_files:
+            payload["inbox_files"] = inbox_files
+            log(f"[{self.task_id}] 同步宿主机产物到 data/inbox: {inbox_files}")
         write_json_atomic(self.result_path, payload)
         log(f"[{self.task_id}] {status}: {payload['elapsed']}s / {self.steps} 步 / "
             f"工具 {self.tools[-5:] or '-'} / {payload['result'][:160]!r}")
